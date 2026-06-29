@@ -8,143 +8,112 @@
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --font-sans: var(--font-sans);
-  --font-mono: var(--font-geist-mono);
-  --font-heading: var(--font-sans);
   --color-ring: var(--ring);
   --color-input: var(--input);
   --color-border: var(--border);
   --color-destructive: var(--destructive);
-  --color-accent-foreground: var(--accent-foreground);
-  --color-accent: var(--accent);
   --color-muted-foreground: var(--muted-foreground);
   --color-muted: var(--muted);
-  --color-secondary-foreground: var(--secondary-foreground);
-  --color-secondary: var(--secondary);
   --color-primary-foreground: var(--primary-foreground);
   --color-primary: var(--primary);
-  --color-popover-foreground: var(--popover-foreground);
-  --color-popover: var(--popover);
   --color-card-foreground: var(--card-foreground);
   --color-card: var(--card);
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) * 1.4);
-  --radius-2xl: calc(var(--radius) * 1.8);
 }
 
-/* ============================================================
-   ЦВЕТОВАЯ СХЕМА — БЕЛАЯ С ЗЕЛЁНЫМ АКЦЕНТОМ
-   ============================================================ */
 :root {
-  /* Базовые */
-  --background:       #ffffff;
-  --foreground:       #0a0a0a;
+  --background:        #ffffff;
+  --foreground:        #111111;
+  --card:              #ffffff;
+  --card-foreground:   #111111;
+  --muted:             #f5f5f5;
+  --muted-foreground:  #888888;
+  --primary:           #00c26b;
+  --primary-foreground:#ffffff;
+  --destructive:       #ef4444;
+  --border:            #e8e8e8;
+  --input:             #f5f5f5;
+  --ring:              rgba(0,194,107,0.25);
+  --radius:            0.75rem;
 
-  /* Зелёный акцент 2470 */
-  --green:            #00c26b;
-  --green-dark:       #00954f;
-  --green-light:      rgba(0, 194, 107, 0.08);
-  --green-glow:       rgba(0, 194, 107, 0.25);
+  /* Зелёный акцент */
+  --green:             #00c26b;
+  --green-bg:          #f0fdf6;
+  --green-border:      #bbf0d6;
 
-  /* Карточки и поверхности */
-  --card:             #ffffff;
-  --card-foreground:  #0a0a0a;
-  --surface:          #f8fffe;
-  --surface-2:        #f2f2f2;
-
-  /* Компоненты */
-  --popover:          #ffffff;
-  --popover-foreground: #0a0a0a;
-  --primary:          #00c26b;
-  --primary-foreground: #ffffff;
-  --secondary:        #f3f4f6;
-  --secondary-foreground: #0a0a0a;
-  --muted:            #f5f5f5;
-  --muted-foreground: #6b7280;
-  --accent:           rgba(0, 194, 107, 0.08);
-  --accent-foreground: #00954f;
-  --destructive:      #ef4444;
-  --border:           rgba(0, 0, 0, 0.08);
-  --input:            #f5f5f5;
-  --ring:             rgba(0, 194, 107, 0.3);
-  --radius:           0.875rem;
-
-  /* Тени */
-  --shadow-sm:  0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
-  --shadow-md:  0 4px 16px rgba(0,0,0,0.08), 0 1px 3px rgba(0,0,0,0.05);
-  --shadow-lg:  0 8px 32px rgba(0,0,0,0.10), 0 2px 8px rgba(0,0,0,0.06);
-  --shadow-green: 0 4px 20px rgba(0,194,107,0.30), 0 1px 4px rgba(0,150,80,0.15);
-  --shadow-green-lg: 0 8px 32px rgba(0,194,107,0.35), 0 2px 8px rgba(0,150,80,0.2);
+  /* Тени — только серые, без цвета */
+  --shadow-xs: 0 1px 2px rgba(0,0,0,0.05);
+  --shadow-sm: 0 1px 4px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.08), 0 1px 3px rgba(0,0,0,0.05);
+  --shadow-lg: 0 8px 24px rgba(0,0,0,0.10), 0 2px 6px rgba(0,0,0,0.06);
 }
 
 /* ============================================================
    БАЗОВЫЕ СТИЛИ
    ============================================================ */
 @layer base {
-  * {
-    @apply border-border outline-ring/50;
-  }
+  * { @apply border-border; }
 
   body {
-    background-color: #ffffff;
-    color: #0a0a0a;
-    font-family: var(--font-sans), 'Montserrat', sans-serif;
-    /* Лёгкий зеленоватый градиент на фоне */
-    background-image:
-      radial-gradient(ellipse 80% 50% at 100% 0%, rgba(0,194,107,0.04) 0%, transparent 60%),
-      radial-gradient(ellipse 60% 40% at 0% 100%, rgba(0,194,107,0.03) 0%, transparent 50%);
-    min-height: 100vh;
+    background: #ffffff;
+    color: #111111;
+    font-family: var(--font-sans), 'Manrope', sans-serif;
   }
 
-  html {
-    color-scheme: light;
-  }
+  html { color-scheme: light; }
 
-  h1, h2, h3, h4, h5, h6 {
+  h1, h2, h3, h4 {
     font-weight: 700;
     letter-spacing: -0.02em;
+    color: #111111;
   }
 }
 
 /* ============================================================
-   КОМПОНЕНТЫ
+   УТИЛИТЫ
    ============================================================ */
 @layer utilities {
 
   /* --- КАРТОЧКИ --- */
+
+  /* Базовая белая карточка с тенью */
   .card-base {
     background: #ffffff;
-    border: 1px solid rgba(0,0,0,0.07);
-    border-radius: 1.25rem;
+    border: 1px solid #e8e8e8;
+    border-radius: 1rem;
     box-shadow: var(--shadow-sm);
-    transition: box-shadow 0.2s, border-color 0.2s;
   }
 
-  .card-base:hover {
-    box-shadow: var(--shadow-md);
-    border-color: rgba(0,0,0,0.1);
-  }
-
+  /* Карточка с зелёным акцентом (бордер + фон) */
   .card-green {
-    background: linear-gradient(135deg, rgba(0,194,107,0.06) 0%, rgba(0,194,107,0.02) 100%);
-    border: 1px solid rgba(0,194,107,0.18);
-    border-radius: 1.25rem;
-    box-shadow: 0 2px 12px rgba(0,194,107,0.08);
+    background: #f0fdf6;
+    border: 1px solid #bbf0d6;
+    border-radius: 1rem;
+    box-shadow: var(--shadow-xs);
   }
 
-  .card-accent {
-    background: linear-gradient(135deg, #00c26b 0%, #00954f 100%);
-    border-radius: 1.25rem;
-    box-shadow: var(--shadow-green);
-    color: #fff;
+  /* Карточка приподнятая — для stat-блоков */
+  .card-stat {
+    background: #ffffff;
+    border: 1px solid #e8e8e8;
+    border-radius: 1rem;
+    box-shadow: var(--shadow-md);
+    transition: box-shadow 0.2s, transform 0.2s;
+  }
+
+  .card-stat:hover {
+    box-shadow: var(--shadow-lg);
+    transform: translateY(-1px);
   }
 
   /* --- САЙДБАР --- */
   .sidebar-base {
     background: #ffffff;
-    border-right: 1px solid rgba(0,0,0,0.07);
-    box-shadow: 4px 0 20px rgba(0,0,0,0.04);
+    border-right: 1px solid #e8e8e8;
+    box-shadow: var(--shadow-sm);
   }
 
   /* --- НАВИГАЦИЯ --- */
@@ -152,153 +121,164 @@
     display: flex;
     align-items: center;
     gap: 0.75rem;
-    padding: 0.625rem 0.875rem;
-    border-radius: 0.875rem;
+    padding: 0.6rem 0.875rem;
+    border-radius: 0.625rem;
     font-size: 0.875rem;
     font-weight: 500;
-    color: #6b7280;
-    transition: all 0.18s ease;
+    color: #888888;
+    transition: all 0.15s ease;
     text-decoration: none;
+    cursor: pointer;
+    width: 100%;
+    background: transparent;
+    border: none;
+    text-align: left;
   }
 
   .nav-item:hover {
-    background: rgba(0,194,107,0.07);
-    color: #00954f;
+    background: #f5f5f5;
+    color: #111111;
   }
 
   .nav-item-active {
-    background: linear-gradient(135deg, rgba(0,194,107,0.12) 0%, rgba(0,194,107,0.06) 100%);
-    color: #00954f;
-    border: 1px solid rgba(0,194,107,0.2);
-    box-shadow: 0 2px 8px rgba(0,194,107,0.1);
+    background: #f0fdf6;
+    color: #00a85a;
     font-weight: 600;
+    border: 1px solid #bbf0d6;
   }
 
   /* --- КНОПКИ --- */
-  .btn-green {
-    background: linear-gradient(135deg, #00c26b 0%, #00a85c 100%);
-    color: #fff;
+  .btn-primary {
+    background: #111111;
+    color: #ffffff;
     font-weight: 600;
-    border-radius: 0.875rem;
-    padding: 0.75rem 1.5rem;
+    border-radius: 0.75rem;
+    padding: 0.7rem 1.5rem;
     font-size: 0.875rem;
+    font-family: inherit;
     border: none;
     cursor: pointer;
-    box-shadow: var(--shadow-green);
+    box-shadow: var(--shadow-md);
     transition: all 0.2s ease;
     letter-spacing: 0.01em;
   }
 
-  .btn-green:hover {
-    box-shadow: var(--shadow-green-lg);
+  .btn-primary:hover {
+    background: #222222;
+    box-shadow: var(--shadow-lg);
     transform: translateY(-1px);
-    background: linear-gradient(135deg, #00d475 0%, #00c26b 100%);
   }
 
-  .btn-green:active {
+  .btn-primary:active {
     transform: translateY(0);
-    box-shadow: var(--shadow-green);
-  }
-
-  .btn-outline {
-    background: transparent;
-    color: #0a0a0a;
-    font-weight: 600;
-    border-radius: 0.875rem;
-    padding: 0.75rem 1.5rem;
-    font-size: 0.875rem;
-    border: 1.5px solid rgba(0,0,0,0.12);
-    cursor: pointer;
     box-shadow: var(--shadow-sm);
-    transition: all 0.2s ease;
   }
 
-  .btn-outline:hover {
-    border-color: #00c26b;
-    color: #00954f;
-    background: rgba(0,194,107,0.04);
-    box-shadow: 0 2px 12px rgba(0,194,107,0.12);
+  .btn-primary:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+  }
+
+  .btn-ghost {
+    background: transparent;
+    color: #888888;
+    font-weight: 500;
+    border-radius: 0.75rem;
+    padding: 0.7rem 1.5rem;
+    font-size: 0.875rem;
+    font-family: inherit;
+    border: 1px solid #e8e8e8;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .btn-ghost:hover {
+    background: #f5f5f5;
+    color: #111111;
   }
 
   /* --- ПОЛЯ ВВОДА --- */
   .input-base {
-    background: #f8f8f8;
-    border: 1.5px solid rgba(0,0,0,0.08);
-    border-radius: 0.875rem;
+    background: #f5f5f5;
+    border: 1.5px solid #e8e8e8;
+    border-radius: 0.75rem;
     padding: 0.75rem 1rem;
     font-size: 0.875rem;
     font-family: inherit;
-    color: #0a0a0a;
+    color: #111111;
     width: 100%;
-    transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
+    transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
     outline: none;
   }
 
   .input-base::placeholder {
-    color: #b0b0b0;
+    color: #b8b8b8;
   }
 
   .input-base:focus {
     border-color: #00c26b;
     background: #ffffff;
-    box-shadow: 0 0 0 3px rgba(0,194,107,0.12);
+    box-shadow: 0 0 0 3px rgba(0,194,107,0.1);
   }
 
-  /* --- БЕЙДЖИ --- */
+  /* --- ЗЕЛЁНЫЕ АКЦЕНТ-ЭЛЕМЕНТЫ --- */
+
+  /* Иконка-блок с зелёным фоном */
+  .icon-green {
+    background: #f0fdf6;
+    border: 1px solid #bbf0d6;
+    border-radius: 0.625rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #00a85a;
+    flex-shrink: 0;
+  }
+
+  /* Зелёный текст-акцент */
+  .text-green { color: #00a85a; }
+
+  /* Бейдж зелёный */
   .badge-green {
-    background: rgba(0,194,107,0.1);
-    color: #00954f;
-    border: 1px solid rgba(0,194,107,0.2);
+    background: #f0fdf6;
+    color: #00a85a;
+    border: 1px solid #bbf0d6;
     border-radius: 999px;
-    padding: 0.2rem 0.65rem;
+    padding: 0.2rem 0.7rem;
     font-size: 0.7rem;
-    font-weight: 600;
+    font-weight: 700;
     letter-spacing: 0.02em;
   }
 
+  /* Бейдж серый */
   .badge-grey {
-    background: rgba(0,0,0,0.05);
-    color: #6b7280;
-    border: 1px solid rgba(0,0,0,0.08);
+    background: #f5f5f5;
+    color: #888888;
+    border: 1px solid #e8e8e8;
     border-radius: 999px;
-    padding: 0.2rem 0.65rem;
+    padding: 0.2rem 0.7rem;
     font-size: 0.7rem;
     font-weight: 600;
   }
 
   /* --- ПРОГРЕСС --- */
   .progress-track {
-    background: rgba(0,0,0,0.06);
+    background: #f0f0f0;
     border-radius: 999px;
     height: 6px;
     overflow: hidden;
   }
 
   .progress-fill {
-    background: linear-gradient(90deg, #00c26b, #00d47a);
+    background: #00c26b;
     border-radius: 999px;
     height: 100%;
-    box-shadow: 0 0 8px rgba(0,194,107,0.4);
     transition: width 0.5s ease;
   }
 
-  /* --- СТРАНИЦА ЛОГИНА --- */
-  .login-card {
-    background: #ffffff;
-    border: 1px solid rgba(0,0,0,0.07);
-    border-radius: 1.5rem;
-    box-shadow: var(--shadow-lg);
-    padding: 2.5rem;
-  }
-
-  /* --- РАЗДЕЛИТЕЛИ --- */
+  /* --- РАЗДЕЛИТЕЛЬ --- */
   .divider {
-    border-color: rgba(0,0,0,0.07);
+    border-color: #e8e8e8;
   }
-
-  /* --- СТАТУС-ТОЧКИ --- */
-  .dot-green { color: #00c26b; }
-  .dot-blue  { color: #3b82f6; }
-  .dot-red   { color: #ef4444; }
-  .dot-grey  { color: #9ca3af; }
 }

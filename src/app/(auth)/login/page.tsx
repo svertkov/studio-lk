@@ -27,36 +27,23 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-4" style={{
-      background: 'linear-gradient(135deg, #f8fffe 0%, #ffffff 50%, #f0fff8 100%)'
-    }}>
-      {/* Декоративные круги */}
-      <div className="absolute top-0 right-0 w-96 h-96 rounded-full pointer-events-none"
-        style={{ background: 'radial-gradient(circle, rgba(0,194,107,0.06) 0%, transparent 70%)' }} />
-      <div className="absolute bottom-0 left-0 w-72 h-72 rounded-full pointer-events-none"
-        style={{ background: 'radial-gradient(circle, rgba(0,194,107,0.04) 0%, transparent 70%)' }} />
-
-      <div className="w-full max-w-sm relative">
-        {/* Логотип */}
-        <div className="text-center mb-8">
-          <img
-            src="https://static.tildacdn.com/tild3463-3931-4930-b937-626565363162/std_black-black_1_1.png"
-            alt="2470 Studio"
-            className="h-10 mx-auto mb-4 object-contain"
-          />
-          <p className="text-xs tracking-widest uppercase font-semibold"
-            style={{ color: '#00c26b' }}>
-            Личный кабинет
-          </p>
+    <div className="min-h-screen bg-white flex items-center justify-center p-4">
+      <div className="w-full max-w-sm">
+        {/* Заголовок */}
+        <div className="mb-8">
+          <p className="text-3xl tracking-tight text-gray-900" style={{ fontWeight: 800 }}>2470</p>
+          <p className="text-sm text-gray-400 mt-1">Личный кабинет клиента</p>
         </div>
 
-        <div className="login-card">
-          <h2 className="text-xl font-bold text-gray-900 mb-1">Добро пожаловать</h2>
-          <p className="text-sm text-gray-400 mb-6">Войдите, чтобы получить доступ к материалам</p>
+        {/* Форма */}
+        <div className="card-base p-7">
+          <h2 className="text-lg font-bold text-gray-900 mb-5">Войти</h2>
 
           <form onSubmit={handleLogin} className="space-y-4">
             <div className="space-y-1.5">
-              <label className="text-xs font-600 uppercase tracking-wider text-gray-400">Email</label>
+              <label className="text-xs font-semibold uppercase tracking-wider text-gray-400">
+                Email
+              </label>
               <input
                 type="email"
                 placeholder="you@example.com"
@@ -68,7 +55,9 @@ export default function LoginPage() {
             </div>
 
             <div className="space-y-1.5">
-              <label className="text-xs font-semibold uppercase tracking-wider text-gray-400">Пароль</label>
+              <label className="text-xs font-semibold uppercase tracking-wider text-gray-400">
+                Пароль
+              </label>
               <input
                 type="password"
                 placeholder="••••••••"
@@ -81,16 +70,16 @@ export default function LoginPage() {
 
             {error && <p className="text-red-500 text-sm">{error}</p>}
 
-            <button type="submit" disabled={loading} className="btn-green w-full mt-2">
-              {loading ? 'Входим...' : 'Войти в кабинет'}
+            <button type="submit" disabled={loading} className="btn-primary w-full mt-1">
+              {loading ? 'Входим...' : 'Войти'}
             </button>
           </form>
         </div>
 
         <p className="text-center text-gray-400 text-xs mt-5">
           Команда студии →{' '}
-          <a href="/staff-login" className="font-semibold hover:underline" style={{ color: '#00c26b' }}>
-            Войти как сотрудник
+          <a href="/staff-login" className="text-gray-600 font-semibold hover:underline">
+            Вход для сотрудников
           </a>
         </p>
       </div>

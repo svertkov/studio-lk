@@ -3,7 +3,6 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import { Settings2 } from 'lucide-react'
 
 export default function StaffLoginPage() {
   const router = useRouter()
@@ -35,67 +34,52 @@ export default function StaffLoginPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-4 relative overflow-hidden">
-      <div className="absolute inset-0 pointer-events-none">
-        <div className="absolute top-1/3 right-1/3 w-96 h-96 rounded-full bg-white/[0.015] blur-3xl" />
-        <div className="absolute bottom-1/3 left-1/3 w-72 h-72 rounded-full bg-white/[0.01] blur-3xl" />
-      </div>
-
-      <div className="w-full max-w-sm relative">
-        <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl glass mb-4">
-            <Settings2 className="w-7 h-7 text-white" />
-          </div>
-          <h1 className="text-3xl font-bold text-white tracking-tight">2470</h1>
-          <p className="text-white/30 text-sm mt-1 tracking-wider uppercase">Панель управления</p>
+    <div className="min-h-screen bg-white flex items-center justify-center p-4">
+      <div className="w-full max-w-sm">
+        <div className="mb-8">
+          <p className="text-3xl tracking-tight text-gray-900" style={{ fontWeight: 800 }}>2470</p>
+          <p className="text-sm text-gray-400 mt-1">Панель управления студией</p>
         </div>
 
-        <div className="glass-login rounded-2xl p-8">
-          <h2 className="text-white font-semibold text-lg mb-1">Вход для команды</h2>
-          <p className="text-white/40 text-sm mb-6">Менеджеры, сотрудники, владелец</p>
+        <div className="card-base p-7">
+          <h2 className="text-lg font-bold text-gray-900 mb-5">Вход для команды</h2>
 
           <form onSubmit={handleLogin} className="space-y-4">
             <div className="space-y-1.5">
-              <label className="text-white/50 text-xs uppercase tracking-wider">Email</label>
+              <label className="text-xs font-semibold uppercase tracking-wider text-gray-400">Email</label>
               <input
                 type="email"
                 placeholder="staff@2470.ru"
                 value={email}
                 onChange={e => setEmail(e.target.value)}
                 required
-                className="glass-input w-full rounded-xl px-4 py-3 text-sm focus:outline-none"
+                className="input-base"
               />
             </div>
 
             <div className="space-y-1.5">
-              <label className="text-white/50 text-xs uppercase tracking-wider">Пароль</label>
+              <label className="text-xs font-semibold uppercase tracking-wider text-gray-400">Пароль</label>
               <input
                 type="password"
                 placeholder="••••••••"
                 value={password}
                 onChange={e => setPassword(e.target.value)}
                 required
-                className="glass-input w-full rounded-xl px-4 py-3 text-sm focus:outline-none"
+                className="input-base"
               />
             </div>
 
-            {error && (
-              <p className="text-red-400 text-sm">{error}</p>
-            )}
+            {error && <p className="text-red-500 text-sm">{error}</p>}
 
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full mt-2 bg-white text-black font-semibold rounded-xl py-3 text-sm transition-all hover:bg-white/90 active:scale-[0.98] disabled:opacity-50"
-            >
+            <button type="submit" disabled={loading} className="btn-primary w-full mt-1">
               {loading ? 'Входим...' : 'Войти'}
             </button>
           </form>
         </div>
 
-        <p className="text-center text-white/20 text-xs mt-6">
+        <p className="text-center text-gray-400 text-xs mt-5">
           Клиент студии? →{' '}
-          <a href="/login" className="text-white/40 hover:text-white/70 underline transition-colors">
+          <a href="/login" className="text-gray-600 font-semibold hover:underline">
             Личный кабинет
           </a>
         </p>
