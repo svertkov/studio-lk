@@ -3,7 +3,6 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import { Mic2 } from 'lucide-react'
 
 export default function LoginPage() {
   const router = useRouter()
@@ -28,70 +27,69 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-4 relative overflow-hidden">
-      {/* фоновые блики */}
-      <div className="absolute inset-0 pointer-events-none">
-        <div className="absolute top-1/4 left-1/4 w-96 h-96 rounded-full bg-white/[0.015] blur-3xl" />
-        <div className="absolute bottom-1/4 right-1/4 w-80 h-80 rounded-full bg-white/[0.01] blur-3xl" />
-      </div>
+    <div className="min-h-screen flex items-center justify-center p-4" style={{
+      background: 'linear-gradient(135deg, #f8fffe 0%, #ffffff 50%, #f0fff8 100%)'
+    }}>
+      {/* Декоративные круги */}
+      <div className="absolute top-0 right-0 w-96 h-96 rounded-full pointer-events-none"
+        style={{ background: 'radial-gradient(circle, rgba(0,194,107,0.06) 0%, transparent 70%)' }} />
+      <div className="absolute bottom-0 left-0 w-72 h-72 rounded-full pointer-events-none"
+        style={{ background: 'radial-gradient(circle, rgba(0,194,107,0.04) 0%, transparent 70%)' }} />
 
       <div className="w-full max-w-sm relative">
         {/* Логотип */}
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl glass mb-4">
-            <Mic2 className="w-7 h-7 text-white" />
-          </div>
-          <h1 className="text-3xl font-bold text-white tracking-tight">2470</h1>
-          <p className="text-white/30 text-sm mt-1 tracking-wider uppercase">Студия звукозаписи</p>
+          <img
+            src="https://static.tildacdn.com/tild3463-3931-4930-b937-626565363162/std_black-black_1_1.png"
+            alt="2470 Studio"
+            className="h-10 mx-auto mb-4 object-contain"
+          />
+          <p className="text-xs tracking-widest uppercase font-semibold"
+            style={{ color: '#00c26b' }}>
+            Личный кабинет
+          </p>
         </div>
 
-        {/* Карточка */}
-        <div className="glass-login rounded-2xl p-8">
-          <h2 className="text-white font-semibold text-lg mb-1">Добро пожаловать</h2>
-          <p className="text-white/40 text-sm mb-6">Войдите в личный кабинет</p>
+        <div className="login-card">
+          <h2 className="text-xl font-bold text-gray-900 mb-1">Добро пожаловать</h2>
+          <p className="text-sm text-gray-400 mb-6">Войдите, чтобы получить доступ к материалам</p>
 
           <form onSubmit={handleLogin} className="space-y-4">
             <div className="space-y-1.5">
-              <label className="text-white/50 text-xs uppercase tracking-wider">Email</label>
+              <label className="text-xs font-600 uppercase tracking-wider text-gray-400">Email</label>
               <input
                 type="email"
                 placeholder="you@example.com"
                 value={email}
                 onChange={e => setEmail(e.target.value)}
                 required
-                className="glass-input w-full rounded-xl px-4 py-3 text-sm focus:outline-none"
+                className="input-base"
               />
             </div>
 
             <div className="space-y-1.5">
-              <label className="text-white/50 text-xs uppercase tracking-wider">Пароль</label>
+              <label className="text-xs font-semibold uppercase tracking-wider text-gray-400">Пароль</label>
               <input
                 type="password"
                 placeholder="••••••••"
                 value={password}
                 onChange={e => setPassword(e.target.value)}
                 required
-                className="glass-input w-full rounded-xl px-4 py-3 text-sm focus:outline-none"
+                className="input-base"
               />
             </div>
 
-            {error && (
-              <p className="text-red-400 text-sm">{error}</p>
-            )}
+            {error && <p className="text-red-500 text-sm">{error}</p>}
 
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full mt-2 bg-white text-black font-semibold rounded-xl py-3 text-sm transition-all hover:bg-white/90 active:scale-[0.98] disabled:opacity-50"
-            >
-              {loading ? 'Входим...' : 'Войти'}
+            <button type="submit" disabled={loading} className="btn-green w-full mt-2">
+              {loading ? 'Входим...' : 'Войти в кабинет'}
             </button>
           </form>
         </div>
 
-        <p className="text-center text-white/20 text-xs mt-6">
-          Сотрудники студии →{' '}
-          <a href="/staff-login" className="text-white/40 hover:text-white/70 underline transition-colors">
+        <p className="text-center text-gray-400 text-xs mt-5">
+          Команда студии →{' '}
+          <a href="/staff-login" className="font-semibold hover:underline" style={{ color: '#00c26b' }}>
             Войти как сотрудник
           </a>
         </p>
