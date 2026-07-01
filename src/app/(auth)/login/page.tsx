@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { createClient } from '@/lib/supabase/client'
+import { signIn } from 'next-auth/react'
 
 export default function LoginPage() {
   const router = useRouter()
@@ -15,11 +15,10 @@ export default function LoginPage() {
     e.preventDefault()
     setLoading(true)
     setError('')
-    const supabase = createClient()
-    const { error } = await supabase.auth.signInWithPassword({ email, password })
-    if (error) {
+    const result = await signIn('credentials', { email, password, redirect: false })
+    setLoading(false)
+    if (result?.error) {
       setError('Неверный email или пароль')
-      setLoading(false)
       return
     }
     router.push('/dashboard')
@@ -29,13 +28,11 @@ export default function LoginPage() {
   return (
     <div className="min-h-screen bg-white flex items-center justify-center p-4">
       <div className="w-full max-w-sm">
-        {/* Заголовок */}
         <div className="mb-8">
           <p className="text-3xl tracking-tight text-gray-900" style={{ fontWeight: 800 }}>2470</p>
           <p className="text-sm text-gray-400 mt-1">Личный кабинет клиента</p>
         </div>
 
-        {/* Форма */}
         <div className="card-base p-7">
           <h2 className="text-lg font-bold text-gray-900 mb-5">Войти</h2>
 

@@ -1,47 +1,56 @@
 'use client'
 
 import Link from 'next/link'
-import { usePathname, useRouter } from 'next/navigation'
-import { createClient } from '@/lib/supabase/client'
-import { Profile } from '@/lib/types'
+import { usePathname } from 'next/navigation'
+import { signOut } from 'next-auth/react'
 import { cn } from '@/lib/utils'
-import { LayoutDashboard, Users, Calendar, BarChart3, LogOut, FileText } from 'lucide-react'
+import {
+  LayoutDashboard, Users, ShoppingBag, Calendar, Film,
+  DollarSign, FileText, HardDrive, BarChart3, UserCheck,
+  Settings, LogOut,
+} from 'lucide-react'
 
-interface Props { profile: Profile }
+interface Props {
+  user: { name?: string | null; role: string; email: string }
+}
 
-const navByRole = {
+const navByRole: Record<string, { href: string; label: string; icon: React.ElementType }[]> = {
   OWNER: [
-    { href: '/admin/dashboard', label: 'Дашборд',    icon: LayoutDashboard },
-    { href: '/admin/clients',   label: 'Клиенты',    icon: Users },
-    { href: '/admin/schedule',  label: 'Расписание', icon: Calendar },
-    { href: '/admin/reports',   label: 'Отчёты',     icon: BarChart3 },
-    { href: '/admin/finance',   label: 'Финансы',    icon: FileText },
+    { href: '/admin/dashboard',  label: 'Дашборд',    icon: LayoutDashboard },
+    { href: '/admin/clients',    label: 'Клиенты',    icon: Users },
+    { href: '/admin/orders',     label: 'Заказы',     icon: ShoppingBag },
+    { href: '/admin/schedule',   label: 'Расписание', icon: Calendar },
+    { href: '/admin/editing',    label: 'Монтаж',     icon: Film },
+    { href: '/admin/finance',    label: 'Финансы',    icon: DollarSign },
+    { href: '/admin/documents',  label: 'Документы',  icon: FileText },
+    { href: '/admin/materials',  label: 'Материалы',  icon: HardDrive },
+    { href: '/admin/reports',    label: 'Отчёты',     icon: BarChart3 },
+    { href: '/admin/team',       label: 'Команда',    icon: UserCheck },
+    { href: '/admin/settings',   label: 'Настройки',  icon: Settings },
   ],
-  MANAGER: [
-    { href: '/admin/dashboard', label: 'Дашборд',    icon: LayoutDashboard },
-    { href: '/admin/clients',   label: 'Клиенты',    icon: Users },
-    { href: '/admin/schedule',  label: 'Расписание', icon: Calendar },
+  ADMIN: [
+    { href: '/admin/dashboard',  label: 'Дашборд',    icon: LayoutDashboard },
+    { href: '/admin/clients',    label: 'Клиенты',    icon: Users },
+    { href: '/admin/orders',     label: 'Заказы',     icon: ShoppingBag },
+    { href: '/admin/schedule',   label: 'Расписание', icon: Calendar },
   ],
-  STAFF: [
-    { href: '/admin/dashboard', label: 'Главная',        icon: LayoutDashboard },
-    { href: '/admin/schedule',  label: 'Моё расписание', icon: Calendar },
+  OPERATOR: [
+    { href: '/admin/dashboard',  label: 'Главная',        icon: LayoutDashboard },
+    { href: '/admin/schedule',   label: 'Моё расписание', icon: Calendar },
   ],
 }
 
 const ROLE_LABELS: Record<string, string> = {
-  OWNER: 'Владелец', MANAGER: 'Менеджер', STAFF: 'Сотрудник',
+  OWNER: 'Владелец', ADMIN: 'Администратор', OPERATOR: 'Оператор',
+  EDITOR: 'Монтажёр', CLIENT: 'Клиент',
 }
 
-export default function AdminSidebar({ profile }: Props) {
+export default function AdminSidebar({ user }: Props) {
   const pathname = usePathname()
-  const router = useRouter()
-  const navItems = navByRole[profile.role as keyof typeof navByRole] ?? navByRole.STAFF
+  const navItems = navByRole[user.role] ?? navByRole.OPERATOR ?? []
 
   async function handleLogout() {
-    const supabase = createClient()
-    await supabase.auth.signOut()
-    router.push('/staff-login')
-    router.refresh()
+    await signOut({ callbackUrl: '/staff-login' })
   }
 
   return (
@@ -53,18 +62,20 @@ export default function AdminSidebar({ profile }: Props) {
 
       <div className="px-4 py-4 border-b divider">
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-full flex items-center justify-center text-white text-sm font-bold flex-shrink-0"
-            style={{ background: '#111111' }}>
-            {profile.full_name?.charAt(0).toUpperCase() ?? '?'}
+          <div
+            className="w-9 h-9 rounded-full flex items-center justify-center text-white text-sm font-bold flex-shrink-0"
+            style={{ background: '#111111' }}
+          >
+            {user.name?.charAt(0).toUpperCase() ?? user.email.charAt(0).toUpperCase()}
           </div>
           <div>
-            <p className="text-sm font-semibold text-gray-900">{profile.full_name}</p>
-            <p className="text-xs text-gray-400 mt-0.5">{ROLE_LABELS[profile.role] ?? profile.role}</p>
+            <p className="text-sm font-semibold text-gray-900">{user.name ?? user.email}</p>
+            <p className="text-xs text-gray-400 mt-0.5">{ROLE_LABELS[user.role] ?? user.role}</p>
           </div>
         </div>
       </div>
 
-      <nav className="flex-1 p-3 space-y-0.5">
+      <nav className="flex-1 p-3 space-y-0.5 overflow-y-auto">
         {navItems.map(({ href, label, icon: Icon }) => {
           const isActive = pathname === href || pathname.startsWith(href + '/')
           return (

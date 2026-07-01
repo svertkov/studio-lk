@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { createClient } from '@/lib/supabase/client'
+import { signIn } from 'next-auth/react'
 
 export default function StaffLoginPage() {
   const router = useRouter()
@@ -15,18 +15,10 @@ export default function StaffLoginPage() {
     e.preventDefault()
     setLoading(true)
     setError('')
-    const supabase = createClient()
-    const { data, error } = await supabase.auth.signInWithPassword({ email, password })
-    if (error || !data.user) {
+    const result = await signIn('credentials', { email, password, redirect: false })
+    setLoading(false)
+    if (result?.error) {
       setError('Неверный email или пароль')
-      setLoading(false)
-      return
-    }
-    const { data: profile } = await supabase.from('profiles').select('role').eq('id', data.user.id).single()
-    if (profile?.role === 'CLIENT') {
-      await supabase.auth.signOut()
-      setError('Этот вход только для сотрудников студии')
-      setLoading(false)
       return
     }
     router.push('/admin/dashboard')

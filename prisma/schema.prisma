@@ -1,0 +1,187 @@
+// Схема базы данных платформы 2470
+// ORM: Prisma | База: Timeweb Cloud PostgreSQL
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================
+// РОЛИ
+// ============================================================
+
+enum Role {
+  OWNER
+  ADMIN
+  OPERATOR
+  EDITOR
+  CLIENT
+}
+
+enum ClientType {
+  INDIVIDUAL
+  SELF_EMPLOYED
+  IP
+  LLC
+  AGENCY
+}
+
+enum ClientStatus {
+  NEW
+  ACTIVE
+  REGULAR
+  SLEEPING
+  PROBLEM
+  ARCHIVED
+}
+
+enum ClientSource {
+  YANDEX_MAPS
+  CONTEXT_ADS
+  RECOMMENDATION
+  REPEAT_REQUEST
+  WEBSITE
+  TELEGRAM
+  INSTAGRAM
+  YOUTUBE
+  AVITO_PROFI
+  COLD_OUTREACH
+  PARTNER_AGENCY
+  OTHER
+}
+
+// ============================================================
+// ПОЛЬЗОВАТЕЛИ (CMS)
+// ============================================================
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  password  String?
+  role      Role     @default(OPERATOR)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt      @map("updated_at")
+
+  clients   Client[]     @relation("ResponsibleUser")
+  notes     ClientNote[]
+  auditLogs AuditLog[]
+
+  @@map("cms_user")
+}
+
+// ============================================================
+// КЛИЕНТ
+// ============================================================
+
+model Client {
+  id               String        @id @default(cuid())
+  name             String
+  type             ClientType    @default(INDIVIDUAL)
+  status           ClientStatus  @default(NEW)
+  source           ClientSource?
+  customSource     String?       @map("custom_source")
+  contactPerson    String?       @map("contact_person")
+  phone            String?
+  telegram         String?
+  email            String?
+  companyName      String?       @map("company_name")
+  inn              String?
+  kpp              String?
+  ogrn             String?
+  legalAddress     String?       @map("legal_address")
+  documentComment  String?       @map("document_comment")
+  notes            String?
+  responsibleUserId String?      @map("responsible_user_id")
+  createdAt        DateTime      @default(now()) @map("created_at")
+  updatedAt        DateTime      @updatedAt      @map("updated_at")
+  deletedAt        DateTime?     @map("deleted_at")
+
+  responsibleUser  User?          @relation("ResponsibleUser", fields: [responsibleUserId], references: [id])
+  contacts         ClientContact[]
+  clientNotes      ClientNote[]
+  documents        Document[]
+
+  @@map("cms_client")
+}
+
+// ============================================================
+// ДОПОЛНИТЕЛЬНЫЕ КОНТАКТЫ
+// ============================================================
+
+model ClientContact {
+  id        String   @id @default(cuid())
+  clientId  String   @map("client_id")
+  name      String?
+  role      String?
+  phone     String?
+  telegram  String?
+  email     String?
+  comment   String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt      @map("updated_at")
+
+  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@map("cms_client_contact")
+}
+
+// ============================================================
+// ВНУТРЕННИЕ ЗАМЕТКИ
+// ============================================================
+
+model ClientNote {
+  id        String   @id @default(cuid())
+  clientId  String   @map("client_id")
+  authorId  String?  @map("author_id")
+  text      String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt      @map("updated_at")
+
+  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  author    User?    @relation(fields: [authorId], references: [id])
+
+  @@map("cms_client_note")
+}
+
+// ============================================================
+// ЖУРНАЛ ДЕЙСТВИЙ
+// ============================================================
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String?  @map("user_id")
+  action     String
+  entityType String   @map("entity_type")
+  entityId   String   @map("entity_id")
+  metadata   Json?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  user       User?    @relation(fields: [userId], references: [id])
+
+  @@index([entityType, entityId])
+  @@index([userId])
+  @@map("cms_audit_log")
+}
+
+// ============================================================
+// ДОКУМЕНТЫ
+// ============================================================
+
+model Document {
+  id           String   @id @default(cuid())
+  clientId     String?  @map("client_id")
+  type         String?
+  fileName     String   @map("file_name")
+  storageUrl   String   @map("storage_url")
+  uploadedById String?  @map("uploaded_by_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  client       Client?  @relation(fields: [clientId], references: [id])
+
+  @@map("cms_document")
+}

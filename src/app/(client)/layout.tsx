@@ -1,30 +1,16 @@
 import { redirect } from 'next/navigation'
-import { createClient } from '@/lib/supabase/server'
+import { auth } from '@/auth'
 import ClientSidebar from '@/components/client/ClientSidebar'
 
 export default async function ClientLayout({ children }: { children: React.ReactNode }) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  const session = await auth()
 
-  if (!user) redirect('/login')
-
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('*')
-    .eq('id', user.id)
-    .single()
-
-  if (!profile || profile.role !== 'CLIENT') redirect('/admin/dashboard')
-
-  const { data: client } = await supabase
-    .from('clients')
-    .select('*')
-    .eq('profile_id', user.id)
-    .single()
+  if (!session) redirect('/login')
+  if (session.user.role !== 'CLIENT') redirect('/admin/dashboard')
 
   return (
     <div className="min-h-screen bg-zinc-950 flex">
-      <ClientSidebar profile={profile} client={client} />
+      <ClientSidebar user={session.user} />
       <main className="flex-1 overflow-auto">
         {children}
       </main>
