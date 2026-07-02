@@ -14,7 +14,8 @@ interface Props {
 }
 
 const EMPTY: CreateClientInput = {
-  name: '', type: 'INDIVIDUAL', status: 'NEW', source: null,
+  firstName: '', lastName: '', patronymic: '', workplace: '',
+  type: 'INDIVIDUAL', status: 'NEW', source: null,
   customSource: '', contactPerson: '', phone: '', telegram: '', email: '',
   companyName: '', inn: '', kpp: '', ogrn: '', legalAddress: '',
   documentComment: '', notes: '',
@@ -37,7 +38,7 @@ export default function AddClientModal({ onSuccess }: Props) {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!form.name.trim()) return
+    if (!form.firstName.trim()) return
     setLoading(true)
     setError(null)
     const result = await createStudioClient(form)
@@ -70,10 +71,27 @@ export default function AddClientModal({ onSuccess }: Props) {
 
             <p className={SECTION}>Основное</p>
 
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className={LABEL}>Фамилия</label>
+                <input className={INPUT} placeholder="Иванов" value={form.lastName ?? ''}
+                  onChange={e => set('lastName', e.target.value)} />
+              </div>
+              <div>
+                <label className={LABEL}>Имя <span className="text-red-400">*</span></label>
+                <input className={INPUT} placeholder="Иван" value={form.firstName}
+                  onChange={e => set('firstName', e.target.value)} required />
+              </div>
+            </div>
             <div>
-              <label className={LABEL}>Имя / название <span className="text-red-400">*</span></label>
-              <input className={INPUT} placeholder="Иван Иванов" value={form.name}
-                onChange={e => set('name', e.target.value)} required />
+              <label className={LABEL}>Отчество</label>
+              <input className={INPUT} placeholder="Иванович" value={form.patronymic ?? ''}
+                onChange={e => set('patronymic', e.target.value)} />
+            </div>
+            <div>
+              <label className={LABEL}>Компания, в которой работает</label>
+              <input className={INPUT} placeholder="Название компании" value={form.workplace ?? ''}
+                onChange={e => set('workplace', e.target.value)} />
             </div>
 
             <div className="grid grid-cols-2 gap-3">

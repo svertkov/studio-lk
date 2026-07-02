@@ -141,7 +141,10 @@ export async function getClientById(id: string) {
 // ============================================================
 
 export interface CreateClientInput {
-  name: string
+  firstName: string
+  lastName?: string
+  patronymic?: string
+  workplace?: string
   type?: ClientType
   status?: ClientStatus
   source?: ClientSource | null
@@ -160,13 +163,24 @@ export interface CreateClientInput {
   responsibleUserId?: string
 }
 
+function buildFullName(parts: { lastName?: string; firstName?: string; patronymic?: string }) {
+  return [parts.lastName, parts.firstName, parts.patronymic]
+    .map(p => p?.trim())
+    .filter(Boolean)
+    .join(' ')
+}
+
 export async function createClient(input: CreateClientInput) {
   const userId = await getAuthUserId()
 
   try {
     const client = await prisma.client.create({
       data: {
-        name: input.name.trim(),
+        name: buildFullName(input),
+        firstName: input.firstName.trim(),
+        lastName: input.lastName?.trim() || null,
+        patronymic: input.patronymic?.trim() || null,
+        workplace: input.workplace?.trim() || null,
         type: input.type ?? 'INDIVIDUAL',
         status: input.status ?? 'NEW',
         source: input.source ?? null,
@@ -211,10 +225,28 @@ export async function updateClient(id: string, input: UpdateClientInput) {
   const userId = await getAuthUserId()
 
   try {
+    const nameChanged = input.firstName !== undefined || input.lastName !== undefined || input.patronymic !== undefined
+    let computedName: string | undefined
+    if (nameChanged) {
+      const current = await prisma.client.findUnique({
+        where: { id },
+        select: { firstName: true, lastName: true, patronymic: true },
+      })
+      computedName = buildFullName({
+        firstName: input.firstName !== undefined ? input.firstName : current?.firstName ?? undefined,
+        lastName: input.lastName !== undefined ? input.lastName : current?.lastName ?? undefined,
+        patronymic: input.patronymic !== undefined ? input.patronymic : current?.patronymic ?? undefined,
+      })
+    }
+
     const client = await prisma.client.update({
       where: { id },
       data: {
-        ...(input.name !== undefined && { name: input.name.trim() }),
+        ...(computedName !== undefined && { name: computedName }),
+        ...(input.firstName !== undefined && { firstName: input.firstName.trim() }),
+        ...(input.lastName !== undefined && { lastName: input.lastName?.trim() || null }),
+        ...(input.patronymic !== undefined && { patronymic: input.patronymic?.trim() || null }),
+        ...(input.workplace !== undefined && { workplace: input.workplace?.trim() || null }),
         ...(input.type !== undefined && { type: input.type }),
         ...(input.status !== undefined && { status: input.status }),
         ...(input.source !== undefined && { source: input.source }),

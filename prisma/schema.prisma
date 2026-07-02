@@ -81,6 +81,10 @@ model User {
 model Client {
   id               String        @id @default(cuid())
   name             String
+  firstName        String?       @map("first_name")
+  lastName         String?       @map("last_name")
+  patronymic       String?
+  workplace        String?
   type             ClientType    @default(INDIVIDUAL)
   status           ClientStatus  @default(NEW)
   source           ClientSource?

@@ -13,6 +13,10 @@ import {
 interface ClientData {
   id: string
   name: string
+  firstName?: string | null
+  lastName?: string | null
+  patronymic?: string | null
+  workplace?: string | null
   type: string
   status: string
   source?: string | null
@@ -43,7 +47,10 @@ export default function EditClientModal({ client }: Props) {
   const router = useRouter()
   const [open, setOpen] = useState(false)
   const [form, setForm] = useState<UpdateClientInput>({
-    name: client.name,
+    firstName: client.firstName ?? '',
+    lastName: client.lastName ?? '',
+    patronymic: client.patronymic ?? '',
+    workplace: client.workplace ?? '',
     type: client.type as ClientType,
     status: client.status as ClientStatus,
     source: (client.source ?? null) as ClientSource | null,
@@ -69,7 +76,7 @@ export default function EditClientModal({ client }: Props) {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!form.name?.trim()) return
+    if (!form.firstName?.trim()) return
     setLoading(true)
     setError(null)
     const result = await updateClient(client.id, form)
@@ -101,10 +108,27 @@ export default function EditClientModal({ client }: Props) {
 
             <p className={SECTION}>Основное</p>
 
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className={LABEL}>Фамилия</label>
+                <input className={INPUT} placeholder="Иванов" value={form.lastName ?? ''}
+                  onChange={e => set('lastName', e.target.value)} />
+              </div>
+              <div>
+                <label className={LABEL}>Имя <span className="text-red-400">*</span></label>
+                <input className={INPUT} placeholder="Иван" value={form.firstName ?? ''}
+                  onChange={e => set('firstName', e.target.value)} required />
+              </div>
+            </div>
             <div>
-              <label className={LABEL}>Имя / название <span className="text-red-400">*</span></label>
-              <input className={INPUT} placeholder="Иван Иванов" value={form.name ?? ''}
-                onChange={e => set('name', e.target.value)} required />
+              <label className={LABEL}>Отчество</label>
+              <input className={INPUT} placeholder="Иванович" value={form.patronymic ?? ''}
+                onChange={e => set('patronymic', e.target.value)} />
+            </div>
+            <div>
+              <label className={LABEL}>Компания, в которой работает</label>
+              <input className={INPUT} placeholder="Название компании" value={form.workplace ?? ''}
+                onChange={e => set('workplace', e.target.value)} />
             </div>
 
             <div className="grid grid-cols-2 gap-3">

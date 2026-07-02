@@ -57,29 +57,28 @@ export async function fetchCalendarEvents(
     ? Object.entries(CALENDARS).filter(([, id]) => id)
     : [[filter, CALENDARS[filter]]].filter(([, id]) => id)
 
-  const allEvents = await Promise.all(
-    calIds.map(async ([key, calendarId]) => {
-      const res = await calendar.events.list({
-        calendarId,
-        timeMin,
-        timeMax,
-        singleEvents: true,
-        orderBy: 'startTime',
-        maxResults: 250,
-      })
-      return (res.data.items ?? []).map(event => ({
-        id: event.id ?? '',
-        title: event.summary ?? '(без названия)',
-        start: event.start?.dateTime ?? event.start?.date ?? '',
-        end: event.end?.dateTime ?? event.end?.date ?? '',
-        allDay: !event.start?.dateTime,
-        description: descriptionToPlainText(event.description ?? ''),
-        location: event.location ?? '',
-        calendar: key,
-        color: key === 'studio' ? '#00c26b' : '#3b82f6',
-      }))
+  const allEvents = []
+  for (const [key, calendarId] of calIds) {
+    const res = await calendar.events.list({
+      calendarId,
+      timeMin,
+      timeMax,
+      singleEvents: true,
+      orderBy: 'startTime',
+      maxResults: 250,
     })
-  )
+    allEvents.push((res.data.items ?? []).map(event => ({
+      id: event.id ?? '',
+      title: event.summary ?? '(без названия)',
+      start: event.start?.dateTime ?? event.start?.date ?? '',
+      end: event.end?.dateTime ?? event.end?.date ?? '',
+      allDay: !event.start?.dateTime,
+      description: descriptionToPlainText(event.description ?? ''),
+      location: event.location ?? '',
+      calendar: key,
+      color: key === 'studio' ? '#00c26b' : '#3b82f6',
+    })))
+  }
 
   return allEvents.flat().sort((a, b) =>
     new Date(a.start).getTime() - new Date(b.start).getTime()
