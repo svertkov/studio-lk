@@ -4,6 +4,8 @@ import { revalidatePath } from 'next/cache'
 import { prisma } from '@/lib/prisma'
 import { auth } from '@/auth'
 import { type ClientType, type ClientStatus, type ClientSource, Prisma } from '@prisma/client'
+import { computeVisitStats } from '@/lib/visit-stats'
+import { computeStatusFromVisitCount } from '@/lib/client-model'
 
 // ============================================================
 // ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
@@ -81,10 +83,22 @@ export async function getClients(filters: ClientFilters = {}) {
       orderBy: { createdAt: 'desc' },
       include: {
         contacts: { take: 1, orderBy: { createdAt: 'asc' } },
+        visits: { select: { date: true, room: true, format: true, durationHours: true, grossAmount: true, netAmount: true } },
       },
     })
 
-    return { ok: true as const, data: clients }
+    const data = clients.map(({ visits, ...c }) => {
+      const stats = computeVisitStats(visits)
+      return {
+        ...c,
+        visitsCount: stats.totalVisits,
+        totalHours: stats.totalHours,
+        totalGross: stats.grossTotal,
+        lastVisitDate: stats.lastVisit,
+      }
+    })
+
+    return { ok: true as const, data }
   } catch (e) {
     console.error('[getClients]', e)
     return { ok: false as const, data: [], error: 'DB не подключена или произошла ошибка' }
@@ -100,7 +114,7 @@ export async function getClientsStats() {
     const [total, active, legal] = await Promise.all([
       prisma.client.count({ where: { deletedAt: null } }),
       prisma.client.count({
-        where: { deletedAt: null, status: { in: ['ACTIVE', 'REGULAR'] } },
+        where: { deletedAt: null, status: { in: ['ACTIVE', 'REPEAT', 'REGULAR'] } },
       }),
       prisma.client.count({
         where: { deletedAt: null, type: { not: 'INDIVIDUAL' } },
@@ -127,6 +141,7 @@ export async function getClientById(id: string) {
           take: 50,
         },
         documents: { orderBy: { createdAt: 'desc' } },
+        visits: { orderBy: { date: 'desc' } },
       },
     })
     return { ok: true as const, data: client }
@@ -307,6 +322,66 @@ export async function softDeleteClient(id: string) {
   } catch (e) {
     console.error('[softDeleteClient]', e)
     return { ok: false as const, error: 'Не удалось удалить клиента' }
+  }
+}
+
+// ============================================================
+// ОБЪЕДИНЕНИЕ КЛИЕНТОВ
+// ============================================================
+
+export async function mergeClients(sourceId: string, targetId: string) {
+  if (sourceId === targetId) return { ok: false as const, error: 'Нельзя объединить клиента с самим собой' }
+  const userId = await getAuthUserId()
+
+  try {
+    const [source, target] = await Promise.all([
+      prisma.client.findFirst({ where: { id: sourceId, deletedAt: null } }),
+      prisma.client.findFirst({ where: { id: targetId, deletedAt: null } }),
+    ])
+    if (!source || !target) {
+      return { ok: false as const, error: 'Один из клиентов не найден' }
+    }
+
+    await prisma.$transaction(async tx => {
+      // Сохраняем данные объединяемого клиента как доп. контакт на основной карточке — данные не теряются
+      await tx.clientContact.create({
+        data: {
+          clientId: targetId,
+          name: source.name,
+          phone: source.phone,
+          telegram: source.telegram,
+          email: source.email,
+          comment: `Объединено с карточкой «${source.name}»${source.workplace ? ` (${source.workplace})` : ''}`,
+        },
+      })
+
+      // Переносим историю визитов, документы и заметки на основную карточку
+      await tx.clientVisit.updateMany({ where: { clientId: sourceId }, data: { clientId: targetId } })
+      await tx.document.updateMany({ where: { clientId: sourceId }, data: { clientId: targetId } })
+      await tx.clientNote.updateMany({ where: { clientId: sourceId }, data: { clientId: targetId } })
+
+      // Пересчитываем статус основной карточки по итоговому числу визитов после объединения
+      const totalVisits = await tx.clientVisit.count({ where: { clientId: targetId } })
+      await tx.client.update({ where: { id: targetId }, data: { status: computeStatusFromVisitCount(totalVisits) } })
+
+      // Архивируем объединённую карточку (мягкое удаление, не насовсем)
+      await tx.client.update({ where: { id: sourceId }, data: { deletedAt: new Date() } })
+    })
+
+    await writeAuditLog({
+      userId,
+      action: 'CLIENT_MERGED',
+      entityId: targetId,
+      metadata: { mergedFromId: sourceId, mergedFromName: source.name, targetName: target.name },
+    })
+
+    revalidatePath('/admin/clients')
+    revalidatePath(`/admin/clients/${sourceId}`)
+    revalidatePath(`/admin/clients/${targetId}`)
+    return { ok: true as const }
+  } catch (e) {
+    console.error('[mergeClients]', e)
+    return { ok: false as const, error: 'Не удалось объединить клиентов' }
   }
 }
 

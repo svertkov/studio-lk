@@ -2,11 +2,25 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { ShoppingBag, Film, DollarSign, FileText, HardDrive, Upload, Send, Calendar } from 'lucide-react'
+import { ShoppingBag, Film, DollarSign, FileText, HardDrive, Upload, Send, Calendar, Clock, Wallet, Receipt } from 'lucide-react'
 import {
   CLIENT_TYPE_LABELS, CLIENT_STATUS_LABELS, CLIENT_SOURCE_LABELS,
 } from '@/lib/client-model'
 import { addClientNote } from '@/lib/actions/clients'
+import { computeVisitStats } from '@/lib/visit-stats'
+import DonutChart from '@/components/ui/donut-chart'
+
+const CHART_COLORS = ['#00c26b', '#3b82f6', '#f59e0b', '#a855f7', '#ef4444', '#14b8a6']
+
+function formatMoney(v: number | null) {
+  if (v == null) return '—'
+  return new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB', maximumFractionDigits: 0 }).format(v)
+}
+
+function formatDate(v: string | Date | null) {
+  if (!v) return '—'
+  return new Date(v).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' })
+}
 
 interface ClientNote {
   id: string
@@ -33,6 +47,17 @@ interface ClientDoc {
   createdAt: string | Date
 }
 
+interface ClientVisitRow {
+  id: string
+  date: string | Date | null
+  room: string | null
+  format: string | null
+  durationHours: number | null
+  grossAmount: number | null
+  netAmount: number | null
+  comment: string | null
+}
+
 interface PrismaClient {
   id: string
   name: string
@@ -55,6 +80,7 @@ interface PrismaClient {
   clientNotes: ClientNote[]
   contacts: ClientContact[]
   documents: ClientDoc[]
+  visits: ClientVisitRow[]
 }
 
 interface Props {
@@ -82,6 +108,20 @@ function PlaceholderTab({ icon: Icon, title, description }: { icon: React.Elemen
   )
 }
 
+function StatCard({ icon: Icon, label, value }: { icon: React.ElementType; label: string; value: string }) {
+  return (
+    <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-zinc-400 text-xs uppercase tracking-wider">{label}</p>
+        <div className="w-8 h-8 bg-zinc-800 rounded-lg flex items-center justify-center flex-shrink-0">
+          <Icon className="w-4 h-4 text-zinc-300" />
+        </div>
+      </div>
+      <p className="text-2xl font-bold text-white truncate">{value}</p>
+    </div>
+  )
+}
+
 function InfoRow({ label, value }: { label: string; value?: string | null }) {
   if (!value) return null
   return (
@@ -100,6 +140,9 @@ export default function ClientTabs({ client }: Props) {
   const [noteError, setNoteError] = useState<string | null>(null)
 
   const isLegal = client.type !== 'INDIVIDUAL' && client.type !== 'SELF_EMPLOYED'
+  const visitStats = computeVisitStats(
+    client.visits.map(v => ({ ...v, date: v.date ? new Date(v.date) : null }))
+  )
 
   async function handleSaveNote() {
     if (!noteText.trim()) return
@@ -186,11 +229,75 @@ export default function ClientTabs({ client }: Props) {
 
         {/* Съёмки */}
         {activeTab === 'sessions' && (
-          <PlaceholderTab
-            icon={Calendar}
-            title="Съёмки клиента"
-            description="Здесь будет история и расписание съёмок этого клиента"
-          />
+          client.visits.length === 0 ? (
+            <PlaceholderTab
+              icon={Calendar}
+              title="История визитов пока не импортирована"
+              description="Импортируйте базу клиентов из Excel, PDF или Google-таблицы, чтобы увидеть визиты, часы и суммы"
+            />
+          ) : (
+            <div className="space-y-4">
+              {/* Метрики */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
+                <StatCard icon={Calendar} label="Визитов" value={String(visitStats.totalVisits)} />
+                <StatCard icon={Clock} label="Часов в студии" value={visitStats.totalHours.toFixed(1)} />
+                <StatCard icon={Wallet} label="Потрачено грязными" value={formatMoney(visitStats.grossTotal)} />
+                <StatCard icon={Receipt} label="Потрачено чистыми" value={formatMoney(visitStats.netTotal)} />
+                <StatCard icon={DollarSign} label="Средний чек" value={formatMoney(visitStats.avgCheck)} />
+              </div>
+
+              {/* Диаграммы */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6">
+                  <h3 className="text-white font-semibold text-sm mb-4">По залам</h3>
+                  <DonutChart
+                    emptyLabel="Нет данных о залах"
+                    data={visitStats.byRoom.map((r, i) => ({ label: r.label, value: r.percent, color: CHART_COLORS[i % CHART_COLORS.length] }))}
+                  />
+                </div>
+                <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6">
+                  <h3 className="text-white font-semibold text-sm mb-4">По форматам записи</h3>
+                  <DonutChart
+                    emptyLabel="Нет данных о форматах"
+                    data={visitStats.byFormat.map((f, i) => ({ label: f.label, value: f.percent, color: CHART_COLORS[i % CHART_COLORS.length] }))}
+                  />
+                </div>
+              </div>
+
+              {/* История визитов */}
+              <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
+                <div className="px-6 py-4 border-b border-zinc-800">
+                  <h3 className="text-white font-semibold text-sm">История визитов</h3>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-zinc-800 bg-zinc-800/40">
+                        <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium">Дата</th>
+                        <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium">Зал</th>
+                        <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium">Формат</th>
+                        <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium">Часы</th>
+                        <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium">Сумма</th>
+                        <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium">Комментарий</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {client.visits.map((v, i) => (
+                        <tr key={v.id} className={`border-b border-zinc-800/60 ${i === client.visits.length - 1 ? 'border-b-0' : ''}`}>
+                          <td className="px-4 py-2.5 text-zinc-300 text-sm">{formatDate(v.date)}</td>
+                          <td className="px-4 py-2.5 text-zinc-400 text-sm">{v.room ?? '—'}</td>
+                          <td className="px-4 py-2.5 text-zinc-400 text-sm">{v.format ?? '—'}</td>
+                          <td className="px-4 py-2.5 text-zinc-400 text-sm">{v.durationHours ?? '—'}</td>
+                          <td className="px-4 py-2.5 text-zinc-400 text-sm">{v.grossAmount != null ? formatMoney(v.grossAmount) : '—'}</td>
+                          <td className="px-4 py-2.5 text-zinc-500 text-xs max-w-xs truncate">{v.comment ?? '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )
         )}
 
         {/* Заказы */}

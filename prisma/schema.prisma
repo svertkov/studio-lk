@@ -33,6 +33,7 @@ enum ClientType {
 enum ClientStatus {
   NEW
   ACTIVE
+  REPEAT
   REGULAR
   SLEEPING
   PROBLEM
@@ -109,8 +110,32 @@ model Client {
   contacts         ClientContact[]
   clientNotes      ClientNote[]
   documents        Document[]
+  visits           ClientVisit[]
 
   @@map("cms_client")
+}
+
+// ============================================================
+// ИСТОРИЯ ВИЗИТОВ (импорт из таблиц студии)
+// ============================================================
+
+model ClientVisit {
+  id            String    @id @default(cuid())
+  clientId      String    @map("client_id")
+  date          DateTime?
+  room          String?
+  format        String?
+  durationHours Float?    @map("duration_hours")
+  grossAmount   Float?    @map("gross_amount")
+  netAmount     Float?    @map("net_amount")
+  comment       String?
+  importSource  String?   @map("import_source")
+  importedAt    DateTime  @default(now()) @map("imported_at")
+
+  client        Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@index([clientId])
+  @@map("cms_client_visit")
 }
 
 // ============================================================

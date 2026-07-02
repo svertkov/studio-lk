@@ -15,8 +15,9 @@ import {
   CLIENT_STATUS_LABELS, CLIENT_STATUS_COLORS,
 } from '@/lib/client-model'
 import AddClientModal from './AddClientModal'
+import ImportClientsModal from './ImportClientsModal'
 
-type SortKey = 'name' | 'createdAt'
+type SortKey = 'name' | 'createdAt' | 'visitsCount' | 'totalGross' | 'lastVisitDate' | 'type' | 'contact' | 'company' | 'status'
 
 interface ClientRow {
   id: string
@@ -29,6 +30,15 @@ interface ClientRow {
   companyName?: string | null
   contactPerson?: string | null
   createdAt: string | Date
+  visitsCount?: number
+  totalHours?: number
+  totalGross?: number | null
+  lastVisitDate?: string | Date | null
+}
+
+function formatMoney(v: number | null | undefined) {
+  if (v == null) return '—'
+  return new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB', maximumFractionDigits: 0 }).format(v)
 }
 
 interface Props {
@@ -72,6 +82,15 @@ export default function ClientsSection({ initialClients, stats, dbConnected }: P
       let cmp = 0
       if (sortKey === 'name') cmp = a.name.localeCompare(b.name, 'ru')
       if (sortKey === 'createdAt') cmp = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+      if (sortKey === 'visitsCount') cmp = (a.visitsCount ?? 0) - (b.visitsCount ?? 0)
+      if (sortKey === 'totalGross') cmp = (a.totalGross ?? 0) - (b.totalGross ?? 0)
+      if (sortKey === 'lastVisitDate') {
+        cmp = (a.lastVisitDate ? new Date(a.lastVisitDate).getTime() : 0) - (b.lastVisitDate ? new Date(b.lastVisitDate).getTime() : 0)
+      }
+      if (sortKey === 'type') cmp = CLIENT_TYPE_LABELS[a.type].localeCompare(CLIENT_TYPE_LABELS[b.type], 'ru')
+      if (sortKey === 'contact') cmp = (a.phone ?? a.telegram ?? '').localeCompare(b.phone ?? b.telegram ?? '', 'ru')
+      if (sortKey === 'company') cmp = (a.companyName ?? '').localeCompare(b.companyName ?? '', 'ru')
+      if (sortKey === 'status') cmp = CLIENT_STATUS_LABELS[a.status].localeCompare(CLIENT_STATUS_LABELS[b.status], 'ru')
       return sortDir === 'asc' ? cmp : -cmp
     })
   }, [filtered, sortKey, sortDir])
@@ -96,7 +115,10 @@ export default function ClientsSection({ initialClients, stats, dbConnected }: P
           <h1 className="text-2xl font-bold text-white">Клиенты</h1>
           <p className="text-zinc-400 text-sm mt-1">База клиентов студии</p>
         </div>
-        <AddClientModal onSuccess={() => router.refresh()} />
+        <div className="flex items-center gap-3">
+          <ImportClientsModal onSuccess={() => router.refresh()} />
+          <AddClientModal onSuccess={() => router.refresh()} />
+        </div>
       </div>
 
       {/* DB not connected banner */}
@@ -165,6 +187,7 @@ export default function ClientsSection({ initialClients, stats, dbConnected }: P
           <option value="ALL">Все статусы</option>
           <option value="NEW">Новый</option>
           <option value="ACTIVE">В работе</option>
+          <option value="REPEAT">Повторный</option>
           <option value="REGULAR">Постоянный</option>
           <option value="SLEEPING">Спящий</option>
           <option value="PROBLEM">Проблемный</option>
@@ -198,10 +221,28 @@ export default function ClientsSection({ initialClients, stats, dbConnected }: P
                   <th className="text-left px-4 py-3 text-zinc-400 text-xs uppercase tracking-wider font-medium">
                     <SortBtn k="name" label="Клиент" />
                   </th>
-                  <th className="text-left px-4 py-3 text-zinc-400 text-xs uppercase tracking-wider font-medium">Тип</th>
-                  <th className="text-left px-4 py-3 text-zinc-400 text-xs uppercase tracking-wider font-medium">Контакт</th>
-                  <th className="text-left px-4 py-3 text-zinc-400 text-xs uppercase tracking-wider font-medium">Компания</th>
-                  <th className="text-left px-4 py-3 text-zinc-400 text-xs uppercase tracking-wider font-medium">Статус</th>
+                  <th className="text-left px-4 py-3 text-zinc-400 text-xs uppercase tracking-wider font-medium">
+                    <SortBtn k="type" label="Тип" />
+                  </th>
+                  <th className="text-left px-4 py-3 text-zinc-400 text-xs uppercase tracking-wider font-medium">
+                    <SortBtn k="contact" label="Контакт" />
+                  </th>
+                  <th className="text-left px-4 py-3 text-zinc-400 text-xs uppercase tracking-wider font-medium">
+                    <SortBtn k="company" label="Компания" />
+                  </th>
+                  <th className="text-left px-4 py-3 text-zinc-400 text-xs uppercase tracking-wider font-medium">
+                    <SortBtn k="status" label="Статус" />
+                  </th>
+                  <th className="text-left px-4 py-3 text-zinc-400 text-xs uppercase tracking-wider font-medium">
+                    <SortBtn k="visitsCount" label="Визитов" />
+                  </th>
+                  <th className="text-left px-4 py-3 text-zinc-400 text-xs uppercase tracking-wider font-medium">Часов</th>
+                  <th className="text-left px-4 py-3 text-zinc-400 text-xs uppercase tracking-wider font-medium">
+                    <SortBtn k="totalGross" label="Потрачено" />
+                  </th>
+                  <th className="text-left px-4 py-3 text-zinc-400 text-xs uppercase tracking-wider font-medium">
+                    <SortBtn k="lastVisitDate" label="Последний визит" />
+                  </th>
                   <th className="text-left px-4 py-3 text-zinc-400 text-xs uppercase tracking-wider font-medium">
                     <SortBtn k="createdAt" label="Добавлен" />
                   </th>
@@ -242,6 +283,20 @@ export default function ClientsSection({ initialClients, stats, dbConnected }: P
                       <Badge variant="outline" className={`text-xs ${CLIENT_STATUS_COLORS[c.status]}`}>
                         {CLIENT_STATUS_LABELS[c.status]}
                       </Badge>
+                    </td>
+                    <td className="px-4 py-3">
+                      <p className="text-zinc-300 text-xs">{c.visitsCount ?? 0}</p>
+                    </td>
+                    <td className="px-4 py-3">
+                      <p className="text-zinc-400 text-xs">{c.totalHours ? c.totalHours.toFixed(1) : '—'}</p>
+                    </td>
+                    <td className="px-4 py-3">
+                      <p className="text-zinc-300 text-xs">{formatMoney(c.totalGross)}</p>
+                    </td>
+                    <td className="px-4 py-3">
+                      <p className="text-zinc-500 text-xs">
+                        {c.lastVisitDate ? new Date(c.lastVisitDate).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' }) : '—'}
+                      </p>
                     </td>
                     <td className="px-4 py-3">
                       <p className="text-zinc-500 text-xs">

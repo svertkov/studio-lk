@@ -10,6 +10,7 @@ import {
 import { getClientById } from '@/lib/actions/clients'
 import ClientTabs from './ClientTabs'
 import EditClientModal from './EditClientModal'
+import MergeClientModal from './MergeClientModal'
 
 export default async function ClientDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
@@ -78,6 +79,7 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
             </div>
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
+            <MergeClientModal clientId={client.id} clientName={client.name} />
             <EditClientModal client={client} />
           </div>
         </div>
