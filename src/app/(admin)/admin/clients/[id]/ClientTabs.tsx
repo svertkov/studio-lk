@@ -3,12 +3,18 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { ShoppingBag, Film, DollarSign, FileText, HardDrive, Upload, Send, Calendar, Clock, Wallet, Receipt } from 'lucide-react'
+import { Badge } from '@/components/ui/badge'
 import {
   CLIENT_TYPE_LABELS, CLIENT_STATUS_LABELS, CLIENT_SOURCE_LABELS,
 } from '@/lib/client-model'
 import { addClientNote } from '@/lib/actions/clients'
+import type { ClientSubscriptionDTO } from '@/lib/actions/subscriptions'
+import type { ClientBookingDTO } from '@/lib/actions/schedule'
+import { SUBSCRIPTION_STATUS_LABELS, SUBSCRIPTION_STATUS_COLORS } from '@/lib/subscription-model'
+import { PAYMENT_METHOD_LABELS } from '@/lib/schedule-model'
 import { computeVisitStats } from '@/lib/visit-stats'
 import DonutChart from '@/components/ui/donut-chart'
+import MetricCard from '@/components/ui/metric-card'
 
 const CHART_COLORS = ['#00c26b', '#3b82f6', '#f59e0b', '#a855f7', '#ef4444', '#14b8a6']
 
@@ -85,6 +91,8 @@ interface PrismaClient {
 
 interface Props {
   client: PrismaClient
+  subscriptions: ClientSubscriptionDTO[]
+  bookings: ClientBookingDTO[]
 }
 
 const TABS = [
@@ -108,20 +116,6 @@ function PlaceholderTab({ icon: Icon, title, description }: { icon: React.Elemen
   )
 }
 
-function StatCard({ icon: Icon, label, value }: { icon: React.ElementType; label: string; value: string }) {
-  return (
-    <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
-      <div className="flex items-center justify-between mb-3">
-        <p className="text-zinc-400 text-xs uppercase tracking-wider">{label}</p>
-        <div className="w-8 h-8 bg-zinc-800 rounded-lg flex items-center justify-center flex-shrink-0">
-          <Icon className="w-4 h-4 text-zinc-300" />
-        </div>
-      </div>
-      <p className="text-2xl font-bold text-white truncate">{value}</p>
-    </div>
-  )
-}
-
 function InfoRow({ label, value }: { label: string; value?: string | null }) {
   if (!value) return null
   return (
@@ -132,7 +126,7 @@ function InfoRow({ label, value }: { label: string; value?: string | null }) {
   )
 }
 
-export default function ClientTabs({ client }: Props) {
+export default function ClientTabs({ client, subscriptions, bookings }: Props) {
   const router = useRouter()
   const [activeTab, setActiveTab] = useState('overview')
   const [noteText, setNoteText] = useState('')
@@ -143,6 +137,9 @@ export default function ClientTabs({ client }: Props) {
   const visitStats = computeVisitStats(
     client.visits.map(v => ({ ...v, date: v.date ? new Date(v.date) : null }))
   )
+  // Записи, оплаченные по абонементу, уже показаны в истории списаний самого
+  // абонемента ниже — здесь показываем только те, что оплачивались отдельно.
+  const oneTimeBookings = bookings.filter(b => b.subscriptionUsedHours == null)
 
   async function handleSaveNote() {
     if (!noteText.trim()) return
@@ -239,11 +236,11 @@ export default function ClientTabs({ client }: Props) {
             <div className="space-y-4">
               {/* Метрики */}
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
-                <StatCard icon={Calendar} label="Визитов" value={String(visitStats.totalVisits)} />
-                <StatCard icon={Clock} label="Часов в студии" value={visitStats.totalHours.toFixed(1)} />
-                <StatCard icon={Wallet} label="Потрачено грязными" value={formatMoney(visitStats.grossTotal)} />
-                <StatCard icon={Receipt} label="Потрачено чистыми" value={formatMoney(visitStats.netTotal)} />
-                <StatCard icon={DollarSign} label="Средний чек" value={formatMoney(visitStats.avgCheck)} />
+                <MetricCard icon={Calendar} label="Визитов" value={String(visitStats.totalVisits)} />
+                <MetricCard icon={Clock} label="Часов в студии" value={visitStats.totalHours.toFixed(1)} />
+                <MetricCard icon={Wallet} label="Выручка" value={formatMoney(visitStats.grossTotal)} />
+                <MetricCard icon={Receipt} label="Чистая прибыль" value={formatMoney(visitStats.netTotal)} />
+                <MetricCard icon={DollarSign} label="Средний чек" value={formatMoney(visitStats.avgCheck)} />
               </div>
 
               {/* Диаграммы */}
@@ -320,11 +317,78 @@ export default function ClientTabs({ client }: Props) {
 
         {/* Финансы */}
         {activeTab === 'finance' && (
-          <PlaceholderTab
-            icon={DollarSign}
-            title="Финансы клиента"
-            description="История оплат, задолженности, счета и акты по этому клиенту"
-          />
+          subscriptions.length === 0 && oneTimeBookings.length === 0 ? (
+            <PlaceholderTab
+              icon={DollarSign}
+              title="Абонементов и оплат пока нет"
+              description="Абонемент или способ оплаты можно указать в карточке записи расписания"
+            />
+          ) : (
+            <div className="space-y-4">
+              {oneTimeBookings.length > 0 && (
+                <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
+                  <div className="px-6 py-4 border-b border-zinc-800">
+                    <h3 className="text-white font-semibold text-sm">Разовые оплаты по записям в расписании</h3>
+                  </div>
+                  <div className="divide-y divide-zinc-800/60">
+                    {oneTimeBookings.map(b => (
+                      <div key={b.id} className="flex items-center justify-between gap-4 px-6 py-3">
+                        <div className="min-w-0">
+                          <p className="text-zinc-200 text-sm truncate">{b.title ?? 'Запись'}</p>
+                          <p className="text-zinc-500 text-xs mt-0.5">
+                            {b.startAt ? formatDate(b.startAt) : '—'}
+                            {b.room && ` · ${b.room}`}
+                            {b.format && ` · ${b.format}`}
+                          </p>
+                        </div>
+                        <div className="text-right flex-shrink-0">
+                          <p className="text-white text-sm font-medium">{b.estimatedPrice != null ? formatMoney(b.estimatedPrice) : '—'}</p>
+                          <p className="text-zinc-500 text-xs mt-0.5">{b.paymentMethod ? PAYMENT_METHOD_LABELS[b.paymentMethod] : 'способ не указан'}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {subscriptions.map(sub => (
+                <div key={sub.id} className="bg-zinc-900 border border-zinc-800 rounded-xl p-6">
+                  <div className="flex items-start justify-between gap-4 flex-wrap">
+                    <div>
+                      <p className="text-white font-semibold">Абонемент от {formatDate(sub.purchasedAt)}</p>
+                      <p className="text-zinc-400 text-sm mt-0.5">
+                        {sub.packageHours} часов
+                        {sub.paidAmount != null && ` · оплачено ${formatMoney(sub.paidAmount)}`}
+                      </p>
+                    </div>
+                    <Badge variant="outline" className={`text-xs ${SUBSCRIPTION_STATUS_COLORS[sub.status]}`}>
+                      {SUBSCRIPTION_STATUS_LABELS[sub.status]}
+                    </Badge>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mt-4">
+                    <div>
+                      <p className="text-zinc-500 text-xs">Использовано</p>
+                      <p className="text-white font-semibold mt-0.5">{sub.usedHours} ч</p>
+                    </div>
+                    <div>
+                      <p className="text-zinc-500 text-xs">Осталось</p>
+                      <p className="text-white font-semibold mt-0.5">{sub.remainingHours} ч</p>
+                    </div>
+                  </div>
+                  {sub.usages.length > 0 && (
+                    <div className="mt-4 pt-4 border-t border-zinc-800 space-y-1.5">
+                      <p className="text-zinc-500 text-xs uppercase tracking-wider mb-2">История списаний</p>
+                      {sub.usages.map(u => (
+                        <div key={u.id} className="flex items-center justify-between text-sm">
+                          <span className="text-zinc-300">{formatDate(u.usedAt)} · {u.eventTitle ?? 'Запись'}</span>
+                          <span className="text-zinc-400">{u.usedHours} ч</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )
         )}
 
         {/* Документы */}

@@ -13,7 +13,7 @@ export interface CalendarEvent {
   allDay: boolean
   description: string
   location: string
-  calendar: string
+  calendar: 'studio' | 'smm'
   color: string
 }
 
@@ -75,7 +75,7 @@ export async function fetchCalendarEvents(
       allDay: !event.start?.dateTime,
       description: descriptionToPlainText(event.description ?? ''),
       location: event.location ?? '',
-      calendar: key,
+      calendar: key as 'studio' | 'smm',
       color: key === 'studio' ? '#00c26b' : '#3b82f6',
     })))
   }

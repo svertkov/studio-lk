@@ -6,7 +6,9 @@ import { ru } from 'date-fns/locale'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Users, Mic2, TrendingUp } from 'lucide-react'
 import { categorizeEvent, colorForCategory, isStudioBooking } from '@/lib/event-category'
+import MetricCard from '@/components/ui/metric-card'
 import HoursStatCard from './HoursStatCard'
+import BookingIssuesBlock from './BookingIssuesBlock'
 
 interface CalendarEvent {
   id: string
@@ -37,10 +39,16 @@ export default function DashboardBody({ clientsTotal, monthStart, monthEnd, nowI
   const now = new Date(nowIso)
 
   useEffect(() => {
-    fetch(`/api/calendar/events?calendar=studio&timeMin=${encodeURIComponent(monthStart)}&timeMax=${encodeURIComponent(monthEnd)}`)
-      .then(res => res.json())
-      .then(data => setEvents(data.events ?? []))
-      .catch(() => setEvents([]))
+    function loadEvents() {
+      fetch(`/api/calendar/events?calendar=studio&timeMin=${encodeURIComponent(monthStart)}&timeMax=${encodeURIComponent(monthEnd)}`)
+        .then(res => res.json())
+        .then(data => setEvents(data.events ?? []))
+        .catch(() => setEvents([]))
+    }
+    loadEvents()
+    // Автообновление раз в 5 минут, чтобы новые записи и статусы подтягивались сами
+    const interval = setInterval(loadEvents, 5 * 60 * 1000)
+    return () => clearInterval(interval)
   }, [monthStart, monthEnd])
 
   const monthlyStudioEvents = (events ?? []).filter(e => !e.allDay && isStudioBooking(e.title))
@@ -75,20 +83,19 @@ export default function DashboardBody({ clientsTotal, monthStart, monthEnd, nowI
         <p className="text-zinc-400 text-sm mt-1">Обзор студии</p>
       </div>
 
+      <BookingIssuesBlock />
+
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-        <Card className="bg-zinc-900 border-zinc-800">
-          <CardContent className="p-7">
-            <div className="flex items-start justify-between">
-              <div>
-                <p className="text-zinc-400 text-sm uppercase tracking-wider">Клиентов</p>
-                <p className="text-4xl font-bold text-white mt-3">{clientsTotal}</p>
-              </div>
-              <div className="w-14 h-14 bg-zinc-800 rounded-lg flex items-center justify-center">
-                <Users className="w-7 h-7 text-zinc-300" />
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+        <MetricCard
+          icon={Users}
+          label="Клиентов"
+          value={String(clientsTotal)}
+          padding="p-7"
+          valueClassName="text-4xl mt-3"
+          iconWrapperClassName="w-14 h-14"
+          iconClassName="w-7 h-7 text-zinc-300"
+          labelClassName="text-zinc-400 text-sm uppercase tracking-wider"
+        />
 
         {loading ? (
           <>
@@ -108,35 +115,31 @@ export default function DashboardBody({ clientsTotal, monthStart, monthEnd, nowI
               recordsCount={monthlyStudioEvents.length}
             />
 
-            <Card className="bg-zinc-900 border-zinc-800">
-              <CardContent className="p-7">
-                <div className="flex items-start justify-between">
-                  <div>
-                    <p className="text-zinc-400 text-sm uppercase tracking-wider">Сегодня</p>
-                    <p className="text-4xl font-bold text-white mt-3">{todayEvents.length}</p>
-                    <p className="text-zinc-400 text-xs mt-1">записей в расписании</p>
-                  </div>
-                  <div className="w-14 h-14 bg-zinc-800 rounded-lg flex items-center justify-center">
-                    <Mic2 className="w-7 h-7 text-zinc-300" />
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
+            <MetricCard
+              icon={Mic2}
+              label="Сегодня"
+              value={String(todayEvents.length)}
+              subtitle="записей в расписании"
+              padding="p-7"
+              valueClassName="text-4xl mt-3"
+              iconWrapperClassName="w-14 h-14"
+              iconClassName="w-7 h-7 text-zinc-300"
+              labelClassName="text-zinc-400 text-sm uppercase tracking-wider"
+              subtitleClassName="text-zinc-400 text-xs"
+            />
 
-            <Card className="bg-zinc-900 border-zinc-800">
-              <CardContent className="p-7">
-                <div className="flex items-start justify-between">
-                  <div>
-                    <p className="text-zinc-400 text-sm uppercase tracking-wider">За месяц</p>
-                    <p className="text-4xl font-bold text-white mt-3">{monthlyStudioEvents.length}</p>
-                    <p className="text-zinc-400 text-xs mt-1">записей в студии</p>
-                  </div>
-                  <div className="w-14 h-14 bg-zinc-800 rounded-lg flex items-center justify-center">
-                    <TrendingUp className="w-7 h-7 text-zinc-300" />
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
+            <MetricCard
+              icon={TrendingUp}
+              label="За месяц"
+              value={String(monthlyStudioEvents.length)}
+              subtitle="записей в студии"
+              padding="p-7"
+              valueClassName="text-4xl mt-3"
+              iconWrapperClassName="w-14 h-14"
+              iconClassName="w-7 h-7 text-zinc-300"
+              labelClassName="text-zinc-400 text-sm uppercase tracking-wider"
+              subtitleClassName="text-zinc-400 text-xs"
+            />
           </>
         )}
       </div>

@@ -1,5 +1,15 @@
 // Нормализация "грязных" значений из реальных таблиц студии в единый вид
 
+import { createHash } from 'crypto'
+
+// Стабильный отпечаток исходной строки таблицы (до любой нормализации/маппинга
+// колонок) — ключ для безопасной досинхронизации: одна и та же строка таблицы
+// всегда даёт один и тот же хэш, поэтому повторный запуск синхронизации не
+// создаёт визит повторно, даже если раскладка колонок или их порядок не менялись.
+export function hashSheetRow(row: string[]): string {
+  return createHash('sha256').update(row.join('')).digest('hex')
+}
+
 export interface NormalizedPhone {
   value: string
   valid: boolean
@@ -117,12 +127,12 @@ export function normalizeRoom(raw: string): string {
 // Расширяемый словарь форматов съёмки — добавляйте новые варианты сюда
 export const FORMAT_DICTIONARY: AliasEntry[] = [
   { canonical: 'Подкаст', aliases: ['подкаст', 'podcast'] },
+  { canonical: 'Выездная съёмка', aliases: ['выездн'] },
+  { canonical: 'Говорящая голова', aliases: ['говорящ', 'гг', 'голова'] },
   { canonical: 'Интервью', aliases: ['интервью', 'interview'] },
-  { canonical: 'Reels', aliases: ['reels', 'рилс', 'рилз'] },
-  { canonical: 'Shorts', aliases: ['shorts', 'шортс'] },
-  { canonical: 'Курс', aliases: ['курс', 'course'] },
-  { canonical: 'Онлайн-трансляция', aliases: ['трансляц', 'stream', 'эфир'] },
-  { canonical: 'Вебинар', aliases: ['вебинар', 'webinar'] },
+  { canonical: 'Короткие ролики', aliases: ['reels', 'рилс', 'рилз', 'shorts', 'шортс'] },
+  { canonical: 'Курс', aliases: ['курс', 'course', 'урок'] },
+  { canonical: 'Онлайн-трансляция', aliases: ['трансляц', 'транляц', 'stream', 'эфир', 'вебинар', 'webinar'] },
   { canonical: 'Корпоративное видео', aliases: ['корпоратив', 'corporate'] },
 ]
 

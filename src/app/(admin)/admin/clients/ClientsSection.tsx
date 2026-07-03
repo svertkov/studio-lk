@@ -14,8 +14,11 @@ import {
   CLIENT_TYPE_LABELS, CLIENT_TYPE_COLORS,
   CLIENT_STATUS_LABELS, CLIENT_STATUS_COLORS,
 } from '@/lib/client-model'
+import MetricCard from '@/components/ui/metric-card'
 import AddClientModal from './AddClientModal'
 import ImportClientsModal from './ImportClientsModal'
+import PendingScheduleClients from './PendingScheduleClients'
+import type { PendingScheduleEventDTO } from '@/lib/actions/schedule'
 
 type SortKey = 'name' | 'createdAt' | 'visitsCount' | 'totalGross' | 'lastVisitDate' | 'type' | 'contact' | 'company' | 'status'
 
@@ -51,9 +54,10 @@ interface Props {
     ok: boolean
   }
   dbConnected: boolean
+  pendingScheduleEvents?: PendingScheduleEventDTO[]
 }
 
-export default function ClientsSection({ initialClients, stats, dbConnected }: Props) {
+export default function ClientsSection({ initialClients, stats, dbConnected, pendingScheduleEvents = [] }: Props) {
   const router = useRouter()
   const [search, setSearch] = useState('')
   const [typeFilter, setTypeFilter] = useState<ClientType | 'ALL'>('ALL')
@@ -141,18 +145,13 @@ export default function ClientsSection({ initialClients, stats, dbConnected }: P
           { label: 'Долги',      value: stats.debt,   icon: AlertCircle, hint: 'требуют внимания' },
           { label: 'Постоянные', value: initialClients.filter(c => c.status === 'REGULAR').length, icon: Star, hint: 'повторные обращения' },
         ].map(({ label, value, icon: Icon, hint }) => (
-          <div key={label} className="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
-            <div className="flex items-center justify-between mb-3">
-              <p className="text-zinc-400 text-xs uppercase tracking-wider">{label}</p>
-              <div className="w-8 h-8 bg-zinc-800 rounded-lg flex items-center justify-center">
-                <Icon className="w-4 h-4 text-zinc-300" />
-              </div>
-            </div>
-            <p className="text-3xl font-bold text-white">{value}</p>
-            <p className="text-zinc-500 text-xs mt-1">{hint}</p>
-          </div>
+          <MetricCard key={label} icon={Icon} label={label} value={String(value)} subtitle={hint} valueClassName="text-3xl" />
         ))}
       </div>
+
+      {pendingScheduleEvents.length > 0 && (
+        <PendingScheduleClients events={pendingScheduleEvents} onChanged={() => router.refresh()} />
+      )}
 
       {/* Filters */}
       <div className="flex flex-wrap items-center gap-3">

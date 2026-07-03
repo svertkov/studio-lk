@@ -8,6 +8,8 @@ import {
   CLIENT_SOURCE_LABELS,
 } from '@/lib/client-model'
 import { getClientById } from '@/lib/actions/clients'
+import { getClientSubscriptions } from '@/lib/actions/subscriptions'
+import { getClientScheduleBookings } from '@/lib/actions/schedule'
 import ClientTabs from './ClientTabs'
 import EditClientModal from './EditClientModal'
 import MergeClientModal from './MergeClientModal'
@@ -15,7 +17,11 @@ import MergeClientModal from './MergeClientModal'
 export default async function ClientDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
 
-  const result = await getClientById(id)
+  const [result, subscriptionsResult, bookingsResult] = await Promise.all([
+    getClientById(id),
+    getClientSubscriptions(id),
+    getClientScheduleBookings(id),
+  ])
   if (!result.ok || !result.data) redirect('/admin/clients')
 
   const client = result.data
@@ -108,7 +114,7 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
       </div>
 
       {/* Tabs */}
-      <ClientTabs client={client} />
+      <ClientTabs client={client} subscriptions={subscriptionsResult.data} bookings={bookingsResult.data} />
     </div>
   )
 }

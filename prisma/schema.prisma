@@ -55,6 +55,46 @@ enum ClientSource {
   OTHER
 }
 
+enum MaterialsStatus {
+  NO_LINKS
+  YANDEX_ACTIVE
+  YANDEX_EXPIRED
+  BACKUP_EXISTS
+  NEEDS_ATTENTION
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  USED_UP
+  CANCELLED
+}
+
+enum EventType {
+  STUDIO_BOOKING
+  MEETING
+  STAFF_UNAVAILABILITY
+  SERVICE_NOTE
+  OTHER
+}
+
+enum ClientConfirmationStatus {
+  NOT_REQUIRED
+  PENDING
+  CONFIRMED
+  IGNORED
+}
+
+// Способ оплаты разовой (не по абонементу) записи в расписании
+enum PaymentMethod {
+  CASH
+  CARD
+  TRANSFER
+  INVOICE
+  UNPAID
+  FREE
+  OTHER
+}
+
 // ============================================================
 // ПОЛЬЗОВАТЕЛИ (CMS)
 // ============================================================
@@ -111,6 +151,8 @@ model Client {
   clientNotes      ClientNote[]
   documents        Document[]
   visits           ClientVisit[]
+  scheduleEvents   ScheduleEvent[]
+  subscriptions    ClientSubscription[]
 
   @@map("cms_client")
 }
@@ -131,6 +173,10 @@ model ClientVisit {
   comment       String?
   importSource  String?   @map("import_source")
   importedAt    DateTime  @default(now()) @map("imported_at")
+  // Хэш исходной строки Google-таблицы (дата+зал+формат+часы+суммы+комментарий) —
+  // ключ для безопасной автосинхронизации: позволяет отличить уже загруженную
+  // строку от новой без риска задвоить визит при повторном запуске.
+  sourceRowHash String?   @unique @map("source_row_hash")
 
   client        Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
 
@@ -213,4 +259,161 @@ model Document {
   client       Client?  @relation(fields: [clientId], references: [id])
 
   @@map("cms_document")
+}
+
+// ============================================================
+// РАСПИСАНИЕ — АННОТАЦИИ К СОБЫТИЯМ GOOGLE КАЛЕНДАРЯ
+// Google Calendar остаётся источником правды по названию/времени
+// (сервис-аккаунт только на чтение). Здесь хранится только то, чего
+// в календаре нет: зал, формат, камеры, цена, ссылки на материалы,
+// статусы, привязка к клиенту.
+// ============================================================
+
+model ScheduleEvent {
+  id                       String                    @id @default(cuid())
+  calendarEventId          String?                   @unique @map("calendar_event_id")
+  // Снэпшот для страницы Клиентов (блок неподтверждённых) — НЕ источник правды.
+  // На странице Расписания эти поля всегда берутся из живого Google Calendar.
+  title                    String?
+  description              String?
+  startAt                  DateTime?                 @map("start_at")
+  endAt                    DateTime?                 @map("end_at")
+  // Тип события: студийная запись / встреча / отсутствие сотрудника / служебная
+  // пометка / прочее. Проверки материалов и оплаты применяются только к
+  // STUDIO_BOOKING. Пока аннотации нет — тип определяется на лету по названию
+  // события (classifyEventType), сюда он попадает только после первого
+  // сохранения карточки (авто или вручную выбранный).
+  eventType                EventType                 @default(STUDIO_BOOKING) @map("event_type")
+  clientId                 String?                   @map("client_id")
+  clientNameRaw            String?                   @map("client_name_raw")
+  contactRaw               String?                   @map("contact_raw")
+  companyRaw               String?                   @map("company_raw")
+  room                     String?
+  format                   String?
+  camerasCount             Int?                      @map("cameras_count")
+  estimatedPrice           Float?                    @map("estimated_price")
+  paymentMethod            PaymentMethod?            @map("payment_method")
+  notes                    String?
+  yandexDiskUrl            String?                   @map("yandex_disk_url")
+  yandexDiskUrlAddedAt     DateTime?                  @map("yandex_disk_url_added_at")
+  yandexDiskUrlExpiresAt   DateTime?                  @map("yandex_disk_url_expires_at")
+  nasBackupUrl             String?                   @map("nas_backup_url")
+  materialsComment         String?                   @map("materials_comment")
+  materialsStatus          MaterialsStatus           @default(NO_LINKS) @map("materials_status")
+  clientConfirmationStatus ClientConfirmationStatus  @default(NOT_REQUIRED) @map("client_confirmation_status")
+  createdAt                DateTime                  @default(now()) @map("created_at")
+  updatedAt                DateTime                  @updatedAt      @map("updated_at")
+
+  client                   Client?                   @relation(fields: [clientId], references: [id])
+  subscriptionUsage        SubscriptionUsage?
+
+  @@index([clientId])
+  @@index([clientConfirmationStatus])
+  @@index([startAt])
+  @@index([eventType])
+  @@map("cms_schedule_event")
+}
+
+// ============================================================
+// АБОНЕМЕНТЫ КЛИЕНТОВ — покупка пакета часов записи (6/10/20),
+// списываемых по отдельным записям расписания (ScheduleEvent).
+// Оплата абонемента (paidAmount) фиксируется один раз при покупке —
+// отдельные записи, списывающие из него часы, не создают повторную выручку.
+// ============================================================
+
+model ClientSubscription {
+  id           String             @id @default(cuid())
+  clientId     String             @map("client_id")
+  packageHours Float              @map("package_hours")
+  // Часы, использованные ДО того, как эту запись начали привязывать к событиям
+  // расписания (например, реконструированные из старых заметок в Google-таблице,
+  // где известен только текущий остаток, а не список сессий). Реальный расход
+  // считается как openingUsedHours + сумма SubscriptionUsage.usedHours — так
+  // packageHours всегда остаётся исходным размером пакета, а не "тем, что осталось".
+  openingUsedHours Float          @default(0) @map("opening_used_hours")
+  paidAmount   Float?             @map("paid_amount")
+  purchasedAt  DateTime           @default(now()) @map("purchased_at")
+  status       SubscriptionStatus @default(ACTIVE)
+  notes        String?
+  createdAt    DateTime           @default(now()) @map("created_at")
+  updatedAt    DateTime           @updatedAt      @map("updated_at")
+
+  client       Client              @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  usages       SubscriptionUsage[]
+
+  @@index([clientId])
+  @@index([status])
+  @@map("cms_client_subscription")
+}
+
+// Списание часов по одной записи расписания. У события может быть максимум
+// одно списание (@@unique) — при смене абонемента/пересохранении старая
+// строка заменяется, а не накапливается.
+model SubscriptionUsage {
+  id              String   @id @default(cuid())
+  subscriptionId  String   @map("subscription_id")
+  scheduleEventId String   @unique @map("schedule_event_id")
+  usedHours       Float    @map("used_hours")
+  usedAt          DateTime @default(now()) @map("used_at")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt      @map("updated_at")
+
+  subscription    ClientSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  scheduleEvent   ScheduleEvent      @relation(fields: [scheduleEventId], references: [id], onDelete: Cascade)
+
+  @@index([subscriptionId])
+  @@map("cms_subscription_usage")
+}
+
+// ============================================================
+// РАСХОДЫ СТУДИИ (импорт из Google-таблицы "Расходы" + ручное добавление в будущем)
+// ============================================================
+
+model ExpenseCategory {
+  id        String    @id @default(cuid())
+  name      String    @unique
+  color     String
+  sortOrder Int       @default(0) @map("sort_order")
+  isActive  Boolean   @default(true) @map("is_active")
+  expenses  Expense[]
+
+  @@map("cms_expense_category")
+}
+
+// Один расход/обязательство. plannedAmount — полная стоимость покупки/услуги,
+// actualAmount — сколько из неё реально оплачено на сегодня (может расти со
+// временем по мере частичных оплат одного и того же обязательства). Остаток,
+// процент оплаты и статус план/факт считаются на лету в actions-слое, а не
+// хранятся здесь — так же, как остаток часов абонемента не хранится в БД,
+// чтобы не рассинхронизироваться при пересчёте.
+model Expense {
+  id             String           @id @default(cuid())
+  externalSource String           @default("google_sheets") @map("external_source")
+  // Стабильный идентификатор строки таблицы — хэш от даты+названия+категории+
+  // плановой суммы (полей, которые НЕ меняются при частичной оплате). Позволяет
+  // при повторной синхронизации ОБНОВИТЬ существующий расход (если увеличилась
+  // фактическая оплата), а не создать дубликат. Ручные расходы (без импорта) —
+  // без внешнего идентификатора.
+  externalId     String?          @unique @map("external_id")
+  date           DateTime?
+  title          String
+  categoryId     String?          @map("category_id")
+  plannedAmount  Float?           @map("planned_amount")
+  actualAmount   Float?           @map("actual_amount")
+  // Статус как он записан в таблице ("Получен"/"Заказан" и т.д.) — хранится как
+  // свободный текст, без строгого enum, потому что реальные данные содержат
+  // нестандартные значения (например, для позиций-пожеланий на оборудование).
+  rawStatus      String?          @map("raw_status")
+  orderedBy      String?          @map("ordered_by")
+  paidBy         String?          @map("paid_by")
+  receivedBy     String?          @map("received_by")
+  comment        String?
+  createdAt      DateTime         @default(now()) @map("created_at")
+  updatedAt      DateTime         @updatedAt      @map("updated_at")
+
+  category       ExpenseCategory? @relation(fields: [categoryId], references: [id])
+
+  @@index([categoryId])
+  @@index([date])
+  @@map("cms_expense")
 }

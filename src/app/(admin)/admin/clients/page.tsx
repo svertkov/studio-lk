@@ -1,10 +1,12 @@
 import { getClients, getClientsStats } from '@/lib/actions/clients'
+import { getPendingScheduleClients } from '@/lib/actions/schedule'
 import ClientsSection from './ClientsSection'
 
 export default async function ClientsPage() {
-  const [clientsResult, statsResult] = await Promise.all([
+  const [clientsResult, statsResult, pendingResult] = await Promise.all([
     getClients(),
     getClientsStats(),
+    getPendingScheduleClients(),
   ])
 
   return (
@@ -12,6 +14,7 @@ export default async function ClientsPage() {
       initialClients={clientsResult.data}
       stats={statsResult}
       dbConnected={clientsResult.ok}
+      pendingScheduleEvents={pendingResult.data}
     />
   )
 }

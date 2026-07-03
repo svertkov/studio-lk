@@ -1,5 +1,7 @@
 'use client'
 
+import Link from 'next/link'
+
 interface DonutSegment {
   label: string
   value: number
@@ -9,6 +11,14 @@ interface DonutSegment {
 interface Props {
   data: DonutSegment[]
   emptyLabel?: string
+  // Если передано — легенда становится кликабельной ссылкой на расшифровку по
+  // этому сегменту (например, отчёт по визитам с фильтром по залу/формату):
+  // итоговая ссылка = hrefBase + encodeURIComponent(label). Обязательно строка,
+  // а не функция — эта карточка рендерится и из серверных компонентов
+  // (страница "Финансы"), а функции нельзя передавать через границу RSC.
+  // Без этого пропа существующие места использования (карточка клиента)
+  // продолжают рендериться как обычный нередактируемый список.
+  hrefBase?: string
 }
 
 const SIZE = 140
@@ -16,7 +26,7 @@ const STROKE = 18
 const RADIUS = (SIZE - STROKE) / 2
 const CIRCUMFERENCE = 2 * Math.PI * RADIUS
 
-export default function DonutChart({ data, emptyLabel = 'Нет данных' }: Props) {
+export default function DonutChart({ data, emptyLabel = 'Нет данных', hrefBase }: Props) {
   const total = data.reduce((s, d) => s + d.value, 0)
 
   if (total <= 0) {
@@ -44,13 +54,24 @@ export default function DonutChart({ data, emptyLabel = 'Нет данных' }:
         ))}
       </svg>
       <div className="space-y-1.5 min-w-0">
-        {data.map((d, i) => (
-          <div key={i} className="flex items-center gap-2 text-xs">
-            <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: d.color }} />
-            <span className="text-zinc-300 truncate">{d.label}</span>
-            <span className="text-zinc-500 flex-shrink-0">{Math.round((d.value / total) * 100)}%</span>
-          </div>
-        ))}
+        {data.map((d, i) => {
+          const content = (
+            <>
+              <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: d.color }} />
+              <span className="text-zinc-300 truncate">{d.label}</span>
+              <span className="text-zinc-500 flex-shrink-0">{Math.round((d.value / total) * 100)}%</span>
+            </>
+          )
+          return hrefBase ? (
+            <Link key={i} href={`${hrefBase}${encodeURIComponent(d.label)}`} className="flex items-center gap-2 text-xs hover:text-white transition-colors group">
+              {content}
+            </Link>
+          ) : (
+            <div key={i} className="flex items-center gap-2 text-xs">
+              {content}
+            </div>
+          )
+        })}
       </div>
     </div>
   )

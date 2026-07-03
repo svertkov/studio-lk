@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import { ChevronRight } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 
 interface CategoryDTO {
@@ -32,8 +33,8 @@ export default function HoursStatCard({
   const topCategories = categories.slice(0, 3)
 
   return (
-    <Link href="/admin/reports/hours" className="block h-full">
-      <Card className="bg-zinc-900 border-zinc-800 hover:border-zinc-600 transition-colors cursor-pointer h-full">
+    <Link href="/admin/reports/hours" className="block h-full group">
+      <Card className="bg-zinc-900 border-zinc-800 group-hover:border-zinc-600 group-hover:bg-zinc-800/40 transition-colors duration-150 cursor-pointer h-full">
         <CardContent className="p-7">
           <div className="flex items-start justify-between gap-4">
             <div>
@@ -60,7 +61,7 @@ export default function HoursStatCard({
             </div>
           </div>
           <div className="mt-5 pt-4 border-t border-zinc-800 flex items-center justify-end">
-            <span className="text-sm text-zinc-300 font-medium">Открыть полный отчёт →</span>
+            <ChevronRight className="w-4 h-4 text-zinc-600 group-hover:text-zinc-300 transition-colors flex-shrink-0" />
           </div>
         </CardContent>
       </Card>

@@ -13,6 +13,7 @@ import {
 import { normalizePhone, normalizeTelegram, normalizeEmail, splitFullName } from '@/lib/import/normalize'
 import { classifyHeadersWithAI } from '@/lib/import/ai-classify'
 import { computeStatusFromVisitCount } from '@/lib/client-model'
+import { fetchGoogleSheetTable } from '@/lib/import/fetch-sheet'
 
 // ============================================================
 // АВТОРИЗАЦИЯ
@@ -95,41 +96,7 @@ export async function parseGoogleSheetUrl(url: string): Promise<RawTableResult> 
   const authResult = await requireStaffSession()
   if (!authResult.ok) return { ok: false, table: [], error: authResult.error }
 
-  try {
-    const match = url.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/)
-    if (!match) return { ok: false, table: [], error: 'Не похоже на ссылку на Google Таблицу' }
-
-    const gidMatch = url.match(/[#&?]gid=(\d+)/)
-    const gid = gidMatch ? gidMatch[1] : '0'
-    const csvUrl = `https://docs.google.com/spreadsheets/d/${match[1]}/export?format=csv&gid=${gid}`
-
-    const res = await fetch(csvUrl)
-    if (!res.ok) {
-      return {
-        ok: false, table: [],
-        error: 'Не удалось открыть таблицу. Убедитесь, что доступ настроен как "Все, у кого есть ссылка — Читатель"',
-      }
-    }
-    const csvText = await res.text()
-    if (csvText.trim().startsWith('<')) {
-      return {
-        ok: false, table: [],
-        error: 'Таблица недоступна по ссылке. Откройте доступ: Настройки доступа → "Все, у кого есть ссылка"',
-      }
-    }
-
-    const workbook = new ExcelJS.Workbook()
-    await workbook.csv.read(Readable.from(Buffer.from(csvText, 'utf-8')))
-    const worksheet = workbook.worksheets[0]
-    if (!worksheet) return { ok: false, table: [], error: 'Таблица пуста' }
-
-    const table = worksheetToTable(worksheet)
-    if (table.length === 0) return { ok: false, table: [], error: 'Таблица пуста' }
-    return { ok: true, table }
-  } catch (e) {
-    console.error('[parseGoogleSheetUrl]', e)
-    return { ok: false, table: [], error: 'Не удалось загрузить таблицу по ссылке' }
-  }
+  return fetchGoogleSheetTable(url)
 }
 
 // ============================================================
@@ -164,7 +131,7 @@ export interface AnalyzeResult {
 
 interface ExistingRef { id: string; name: string }
 
-async function buildPreview(groups: GroupedClientDraft[]): Promise<PreviewClient[]> {
+export async function buildPreview(groups: GroupedClientDraft[]): Promise<PreviewClient[]> {
   if (groups.length === 0) return []
 
   const existing = await prisma.client.findMany({
@@ -359,7 +326,18 @@ export async function confirmImport(clients: PreviewClient[], importSource: 'GOO
   if (!authResult.ok) {
     return { ok: false as const, error: authResult.error, createdClients: 0, updatedClients: 0, createdVisits: 0 }
   }
+  return runConfirmImport(clients, importSource, authResult.userId)
+}
 
+// Общее ядро импорта — используется и здесь (после проверки сессии сотрудника),
+// и автоматической синхронизацией выручки (src/lib/revenue-sync.ts), у которой
+// нет пользовательской сессии (её защищённость обеспечивает секрет на API-роуте,
+// не эта проверка).
+export async function runConfirmImport(
+  clients: PreviewClient[],
+  importSource: 'GOOGLE_SHEET' | 'EXCEL' | 'PDF',
+  userId: string | null,
+) {
   try {
     let createdClients = 0
     let updatedClients = 0
@@ -405,6 +383,7 @@ export async function confirmImport(clients: PreviewClient[], importSource: 'GOO
               netAmount: v.netAmount ?? null,
               comment: v.comment || null,
               importSource,
+              sourceRowHash: v.sourceRowHash ?? null,
             },
           })
           createdVisits++
@@ -422,7 +401,7 @@ export async function confirmImport(clients: PreviewClient[], importSource: 'GOO
 
     await prisma.auditLog.create({
       data: {
-        userId: authResult.userId,
+        userId,
         action: 'CLIENTS_IMPORTED',
         entityType: 'Client',
         entityId: 'bulk',
@@ -433,7 +412,7 @@ export async function confirmImport(clients: PreviewClient[], importSource: 'GOO
     revalidatePath('/admin/clients')
     return { ok: true as const, createdClients, updatedClients, createdVisits }
   } catch (e) {
-    console.error('[confirmImport]', e)
+    console.error('[runConfirmImport]', e)
     return { ok: false as const, error: 'Не удалось импортировать клиентов', createdClients: 0, updatedClients: 0, createdVisits: 0 }
   }
 }

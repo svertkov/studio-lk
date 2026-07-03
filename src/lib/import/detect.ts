@@ -4,6 +4,7 @@
 import {
   normalizePhone, normalizeTelegram, normalizeEmail, splitFullName,
   parseAmount, parseDurationHours, parseFlexibleDate, normalizeRoom, normalizeFormat,
+  hashSheetRow,
 } from './normalize'
 
 export type ClientField =
@@ -140,6 +141,9 @@ export interface VisitRecord {
   grossAmount?: number
   netAmount?: number
   comment?: string
+  // Отпечаток исходной строки таблицы — для безопасной досинхронизации
+  // (отличить уже загруженную строку от новой), см. hashSheetRow()
+  sourceRowHash?: string
 }
 
 export interface ParsedImportRow {
@@ -238,6 +242,7 @@ export function applyMapping(table: string[][], columns: DetectedColumn[]): { ro
       comment: commentRaw || undefined,
     }
     const hasVisitData = Object.values(visit).some(v => v !== undefined)
+    if (hasVisitData) visit.sourceRowHash = hashSheetRow(r)
 
     rows.push({
       firstName,

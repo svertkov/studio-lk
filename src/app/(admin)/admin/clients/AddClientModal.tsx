@@ -11,6 +11,10 @@ import {
 
 interface Props {
   onSuccess: () => void
+  initialValues?: Partial<CreateClientInput>
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
+  onCreated?: (client: { id: string; name: string }) => void
 }
 
 const EMPTY: CreateClientInput = {
@@ -26,9 +30,13 @@ const SELECT = 'w-full bg-zinc-800 border border-zinc-700 text-zinc-200 rounded-
 const LABEL = 'block text-zinc-400 text-xs mb-1.5'
 const SECTION = 'text-zinc-500 text-[11px] font-semibold uppercase tracking-wider mb-3 mt-5 first:mt-0 pt-4 border-t border-zinc-800/80 first:border-0 first:pt-0'
 
-export default function AddClientModal({ onSuccess }: Props) {
-  const [open, setOpen] = useState(false)
-  const [form, setForm] = useState<CreateClientInput>({ ...EMPTY })
+export default function AddClientModal({ onSuccess, initialValues, open: openProp, onOpenChange: onOpenChangeProp, onCreated }: Props) {
+  const isControlled = openProp !== undefined
+  const [internalOpen, setInternalOpen] = useState(false)
+  const open = isControlled ? openProp : internalOpen
+  const setOpen = isControlled ? (onOpenChangeProp ?? (() => {})) : setInternalOpen
+
+  const [form, setForm] = useState<CreateClientInput>({ ...EMPTY, ...initialValues })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -45,8 +53,9 @@ export default function AddClientModal({ onSuccess }: Props) {
     setLoading(false)
     if (result.ok) {
       setOpen(false)
-      setForm({ ...EMPTY })
+      setForm({ ...EMPTY, ...initialValues })
       onSuccess()
+      onCreated?.(result.data)
     } else {
       setError(result.error ?? 'Ошибка сохранения')
     }
@@ -56,10 +65,12 @@ export default function AddClientModal({ onSuccess }: Props) {
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger className="flex items-center gap-2 bg-[#00c26b] hover:bg-[#00b360] text-white font-semibold text-sm px-4 py-2.5 rounded-lg transition-colors shadow-sm">
-        <Plus className="w-4 h-4" />
-        Добавить клиента
-      </DialogTrigger>
+      {!isControlled && (
+        <DialogTrigger className="flex items-center gap-2 bg-[#00c26b] hover:bg-[#00b360] text-white font-semibold text-sm px-4 py-2.5 rounded-lg transition-colors shadow-sm">
+          <Plus className="w-4 h-4" />
+          Добавить клиента
+        </DialogTrigger>
+      )}
 
       <DialogContent className="bg-zinc-900 border-zinc-800 text-white max-w-lg max-h-[88vh] flex flex-col p-0">
         <DialogHeader className="px-6 pt-6 pb-4 border-b border-zinc-800 flex-shrink-0">
