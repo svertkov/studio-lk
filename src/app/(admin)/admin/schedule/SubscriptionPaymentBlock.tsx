@@ -59,13 +59,16 @@ const SubscriptionPaymentBlock = forwardRef<SubscriptionPaymentHandle, Props>(fu
     getClientSubscriptions(clientId).then(res => {
       if (cancelled) return
       setSubscriptions(res.data)
+      // Если активных абонементов нет, НЕ переключаем форму в "создать новый"
+      // автоматически — иначе достаточно нажать "Сохранить", ничего не меняя,
+      // чтобы случайно купить клиенту новый абонемент по умолчанию (реальный
+      // случай: старый абонемент закончился, форма молча создала лишний новый
+      // на 6ч). Пользователь должен сам нажать "Создать абонемент".
       const active = res.data.filter(s => s.status === 'ACTIVE' && s.remainingHours > 0)
       if (initialUsage && active.some(s => s.id === initialUsage.subscriptionId)) {
         setSelectedId(initialUsage.subscriptionId)
       } else if (active.length > 0) {
         setSelectedId(active[0].id)
-      } else {
-        setCreatingNew(true)
       }
     })
     return () => { cancelled = true }
@@ -133,9 +136,9 @@ const SubscriptionPaymentBlock = forwardRef<SubscriptionPaymentHandle, Props>(fu
                 <div>
                   <label className={LABEL}>Абонемент</label>
                   <select className={SELECT} value={selectedId ?? ''} onChange={e => setSelectedId(e.target.value)}>
-                    {activeSubscriptions.map(s => (
+                    {activeSubscriptions.map((s, idx) => (
                       <option key={s.id} value={s.id}>
-                        {format(parseISO(s.purchasedAt), 'dd.MM.yyyy')} · {s.packageHours} ч, осталось {s.remainingHours} ч
+                        №{idx + 1} · от {format(parseISO(s.purchasedAt), 'dd.MM.yyyy')} · {s.packageHours} ч, осталось {s.remainingHours} ч
                       </option>
                     ))}
                   </select>
@@ -145,7 +148,17 @@ const SubscriptionPaymentBlock = forwardRef<SubscriptionPaymentHandle, Props>(fu
                 </div>
               )}
 
-              {(creatingNew || activeSubscriptions.length === 0) && (
+              {!creatingNew && activeSubscriptions.length === 0 && (
+                <div className="text-center py-1">
+                  <p className="text-zinc-400 text-xs mb-2">У клиента нет активных абонементов.</p>
+                  <button type="button" onClick={() => setCreatingNew(true)}
+                    className="text-xs text-[#00c26b] hover:underline font-medium">
+                    + Создать абонемент
+                  </button>
+                </div>
+              )}
+
+              {creatingNew && (
                 <div className="space-y-3">
                   {activeSubscriptions.length > 0 && (
                     <button type="button" onClick={() => setCreatingNew(false)} className="text-xs text-zinc-400 hover:text-white underline">
@@ -172,19 +185,29 @@ const SubscriptionPaymentBlock = forwardRef<SubscriptionPaymentHandle, Props>(fu
                 </div>
               )}
 
-              <div>
-                <label className={LABEL}>Списать часов за эту запись</label>
-                <input className={INPUT} type="number" min="0" step="0.25" value={usedHours} onChange={e => setUsedHours(e.target.value)} />
-              </div>
+              {(creatingNew || activeSubscriptions.length > 0) && (
+                <>
+                  <div>
+                    <label className={LABEL}>Списать часов за эту запись</label>
+                    <input className={INPUT} type="number" min="0" step="0.25" value={usedHours} onChange={e => setUsedHours(e.target.value)} />
+                  </div>
 
-              {overspend && selected && (
-                <div className="flex items-start gap-2 rounded-lg px-3 py-2.5 text-xs bg-red-950/40 border border-red-900 text-red-300">
-                  <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                  <p>
-                    В абонементе осталось только {selected.remainingHours} ч. Для этой записи нужно списать {usedHours} ч —
-                    уменьшите часы или выберите другой абонемент.
-                  </p>
-                </div>
+                  {overspend && selected ? (
+                    <div className="flex items-start gap-2 rounded-lg px-3 py-2.5 text-xs bg-red-950/40 border border-red-900 text-red-300">
+                      <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                      <p>
+                        В абонементе осталось только {selected.remainingHours} ч. Для этой записи нужно списать {usedHours} ч —
+                        уменьшите часы или выберите другой абонемент.
+                      </p>
+                    </div>
+                  ) : (
+                    !creatingNew && selected && Number.isFinite(usedHoursNum) && usedHoursNum > 0 && (
+                      <p className="text-zinc-400 text-xs px-1">
+                        Будет списано {usedHours} ч, после записи останется {Math.round((selected.remainingHours - usedHoursNum) * 100) / 100} ч.
+                      </p>
+                    )
+                  )}
+                </>
               )}
             </>
           )}

@@ -84,7 +84,9 @@ enum ClientConfirmationStatus {
   IGNORED
 }
 
-// Способ оплаты разовой (не по абонементу) записи в расписании
+// Способ оплаты разовой (не по абонементу) записи в расписании — SUBSCRIPTION
+// используется только заказами (Order), для ScheduleEvent оплата абонементом
+// определяется через отдельную связь SubscriptionUsage, не через это поле.
 enum PaymentMethod {
   CASH
   CARD
@@ -93,6 +95,31 @@ enum PaymentMethod {
   UNPAID
   FREE
   OTHER
+  SUBSCRIPTION
+}
+
+enum OrderStatus {
+  LEAD
+  BOOKED
+  EDITING
+  REVISIONS
+  COMPLETED
+  CANCELLED
+  ARCHIVED
+}
+
+enum OrderSource {
+  MANUAL
+  GOOGLE_CALENDAR
+  OTHER
+}
+
+enum OrderPaymentStatus {
+  NOT_SPECIFIED
+  UNPAID
+  PARTIALLY_PAID
+  PAID
+  SUBSCRIPTION
 }
 
 // ============================================================
@@ -153,6 +180,7 @@ model Client {
   visits           ClientVisit[]
   scheduleEvents   ScheduleEvent[]
   subscriptions    ClientSubscription[]
+  orders           Order[]
 
   @@map("cms_client")
 }
@@ -304,7 +332,14 @@ model ScheduleEvent {
   createdAt                DateTime                  @default(now()) @map("created_at")
   updatedAt                DateTime                  @updatedAt      @map("updated_at")
 
+  // Заказ (Order), из которого эта запись создана — только для записей,
+  // созданных вручную через раздел "Заказы" без события Google Calendar
+  // (calendarEventId в этом случае null). Записи, импортированные из живого
+  // календаря, тоже могут иметь orderId — см. Order.googleEventId.
+  orderId                  String?                   @unique @map("order_id")
+
   client                   Client?                   @relation(fields: [clientId], references: [id])
+  order                    Order?                    @relation(fields: [orderId], references: [id])
   subscriptionUsage        SubscriptionUsage?
 
   @@index([clientId])
@@ -312,6 +347,54 @@ model ScheduleEvent {
   @@index([startAt])
   @@index([eventType])
   @@map("cms_schedule_event")
+}
+
+// ============================================================
+// ЗАКАЗЫ (CRM-воронка): Заявка → Записан в студию → Монтаж → Правки → Готово.
+// Order — карточка воронки; при заполнении даты/времени записи к ней
+// привязывается ScheduleEvent (см. ScheduleEvent.orderId) — та же модель,
+// что используется для записей из Google Calendar ("Booking" из ТЗ).
+// Google Calendar НЕ обновляется этой моделью ни при каких условиях — только
+// импорт (googleEventId) в одну сторону, платформа в календарь не пишет.
+// ============================================================
+
+model Order {
+  id                String             @id @default(cuid())
+  status            OrderStatus        @default(LEAD)
+  source            OrderSource        @default(MANUAL)
+  title             String?
+  clientId          String?            @map("client_id")
+  // Снэпшот контактных данных на момент создания заказа — не источник правды,
+  // если клиент привязан (clientId): тогда актуальные данные берутся из Client.
+  // Хранится и для непривязанных заявок, и как история для привязанных.
+  clientName        String?            @map("client_name")
+  clientPhone       String?            @map("client_phone")
+  clientTelegram    String?            @map("client_telegram")
+  clientEmail       String?            @map("client_email")
+  clientType        ClientType?        @map("client_type")
+  companyName       String?            @map("company_name")
+  serviceType       String?            @map("service_type")
+  room              String?
+  plannedStartTime  DateTime?          @map("planned_start_time")
+  plannedEndTime    DateTime?          @map("planned_end_time")
+  durationMinutes   Int?               @map("duration_minutes")
+  preliminaryAmount Float?             @map("preliminary_amount")
+  paymentStatus     OrderPaymentStatus @default(NOT_SPECIFIED) @map("payment_status")
+  paymentMethod     PaymentMethod?     @map("payment_method")
+  comment           String?
+  // Событие Google Calendar, из которого создан заказ (только source=GOOGLE_CALENDAR).
+  // Используется для защиты от дублей при повторном импорте/сохранении события.
+  googleEventId     String?            @unique @map("google_event_id")
+  createdAt         DateTime           @default(now()) @map("created_at")
+  updatedAt         DateTime           @updatedAt      @map("updated_at")
+  completedAt       DateTime?          @map("completed_at")
+
+  client            Client?            @relation(fields: [clientId], references: [id])
+  scheduleEvent      ScheduleEvent?
+
+  @@index([clientId])
+  @@index([status])
+  @@map("cms_order")
 }
 
 // ============================================================

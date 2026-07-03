@@ -1,13 +1,14 @@
 'use client'
 
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { format, parseISO } from 'date-fns'
 import { ru } from 'date-fns/locale'
 import { Copy, Check, ExternalLink, AlertTriangle } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { upsertScheduleEvent } from '@/lib/actions/schedule'
+import { upsertScheduleEvent, findSimilarClientsForEvent, confirmScheduleClient, type SimilarClientMatch } from '@/lib/actions/schedule'
 import { chargeEventToSubscription, createSubscription, removeEventSubscriptionCharge } from '@/lib/actions/subscriptions'
+import { parseEventTitle } from '@/lib/event-category'
 import type { ScheduleEventVM } from '@/lib/schedule-model'
 import {
   computeYandexLinkStatus, YANDEX_LINK_STATUS_LABELS, MATERIALS_WARNING_TEXT,
@@ -15,10 +16,11 @@ import {
   type ClientConfirmationStatus,
 } from '@/lib/schedule-model'
 import { EVENT_TYPE_LABELS, type EventType } from '@/lib/event-type'
-import { PAYMENT_METHOD_LABELS, type PaymentMethod } from '@/lib/schedule-model'
+import { PAYMENT_METHOD_LABELS, ONE_TIME_PAYMENT_METHODS, type PaymentMethod } from '@/lib/schedule-model'
 import { ROOM_DICTIONARY, FORMAT_DICTIONARY } from '@/lib/import/normalize'
 import MaterialsStatusBadge from './MaterialsStatusBadge'
 import SubscriptionPaymentBlock, { type SubscriptionPaymentHandle } from './SubscriptionPaymentBlock'
+import AddClientModal from '../clients/AddClientModal'
 
 const ROOM_OPTIONS = ROOM_DICTIONARY.map(e => e.canonical)
 const FORMAT_OPTIONS = FORMAT_DICTIONARY.map(e => e.canonical)
@@ -65,16 +67,93 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
   const [error, setError] = useState<string | null>(null)
   const [copiedField, setCopiedField] = useState<'yandex' | 'nas' | null>(null)
 
+  const [clientId, setClientId] = useState<string | null>(annotation?.clientId ?? null)
+  const [clientName, setClientName] = useState<string | null>(annotation?.clientName ?? null)
+  const [similarMatches, setSimilarMatches] = useState<SimilarClientMatch[] | null>(null)
+  const [searchingClient, setSearchingClient] = useState(false)
+  const [selectedMatchId, setSelectedMatchId] = useState('')
+  const [linking, setLinking] = useState(false)
+  const [linkError, setLinkError] = useState<string | null>(null)
+  const [addClientOpen, setAddClientOpen] = useState(false)
+
   const materialsStatus = annotation?.materialsStatus ?? 'NO_LINKS'
   const yandexAddedAt = annotation?.yandexDiskUrlAddedAt ? parseISO(annotation.yandexDiskUrlAddedAt) : null
   const yandexExpiresAt = annotation?.yandexDiskUrlExpiresAt ? parseISO(annotation.yandexDiskUrlExpiresAt) : null
   const yandexLinkStatus = computeYandexLinkStatus(annotation?.yandexDiskUrl ?? null, yandexAddedAt)
   const warningText = MATERIALS_WARNING_TEXT[materialsStatus]
-  const hasClient = !!annotation?.clientId
+  const hasClient = !!clientId
   const eventDurationHours = Math.max(0, (new Date(calendarEvent.end).getTime() - new Date(calendarEvent.start).getTime()) / 3600000)
   const isBookingPast = isPastBooking(vm)
-  const noMaterialsNow = !yandexDiskUrl && !nasBackupUrl
+  // NAS и Яндекс.Диск проверяются раздельно (NAS важнее) — см. Материалы ниже
+  const hasYandexNow = !!yandexDiskUrl
+  const hasNasNow = !!nasBackupUrl
   const paymentMissingNow = paymentMode === 'ONE_TIME' && !estimatedPrice
+
+  // Лучшая догадка об имени клиента: то, что вручную ввели в "Имя из
+  // календаря", иначе — разбор названия/описания события Google Calendar
+  // (например «Подкаст, тз, 3к, Соломатин» → «Соломатин»).
+  const guessedClientName = clientNameRaw.trim() || parseEventTitle(calendarEvent.title, calendarEvent.description).client || ''
+
+  // Пытаемся сами найти клиента по имени из названия/описания события в Google
+  // Calendar — та же функция поиска, что и в блоке "Клиенты из расписания" на
+  // странице Клиентов, просто вызванная прямо в карточке, чтобы не заставлять
+  // администратора переключаться на другую страницу ради привязки клиента.
+  async function runClientSearch() {
+    if (!guessedClientName && !contactRaw.trim() && !companyRaw.trim()) { setSimilarMatches([]); return }
+    setSearchingClient(true)
+    setLinkError(null)
+    const result = await findSimilarClientsForEvent({
+      name: guessedClientName || undefined,
+      contact: contactRaw.trim() || undefined,
+      company: companyRaw.trim() || undefined,
+    })
+    setSearchingClient(false)
+    setSimilarMatches(result.ok ? result.data : [])
+    setSelectedMatchId('')
+  }
+
+  // Автопоиск при открытии карточки — без runClientSearch(), чтобы не задавать
+  // состояние синхронно в теле эффекта (setSearchingClient обновляется только
+  // из клика "Искать"/"Изменить"; здесь достаточно того, что similarMatches
+  // остаётся null, пока запрос не завершится).
+  useEffect(() => {
+    if (hasClient || eventType !== 'STUDIO_BOOKING') return
+    if (!guessedClientName && !contactRaw.trim() && !companyRaw.trim()) return
+    let cancelled = false
+    findSimilarClientsForEvent({
+      name: guessedClientName || undefined,
+      contact: contactRaw.trim() || undefined,
+      company: companyRaw.trim() || undefined,
+    }).then(result => {
+      if (!cancelled) setSimilarMatches(result.ok ? result.data : [])
+    })
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Привязка клиента сохраняется сразу (не дожидаясь общей кнопки "Сохранить"),
+  // чтобы блок абонементов клиента тут же подтянулся и предупреждение "оплата
+  // доступна после привязки" исчезло без перезагрузки формы.
+  async function handleLinkClient(id: string, name: string) {
+    setLinking(true)
+    setLinkError(null)
+    const result = annotation?.id
+      ? await confirmScheduleClient(annotation.id, id)
+      : await upsertScheduleEvent({
+          calendarEventId: calendarEvent.id,
+          title: calendarEvent.title,
+          description: calendarEvent.description,
+          startAt: calendarEvent.start,
+          endAt: calendarEvent.end,
+          clientId: id,
+          clientConfirmationStatus: 'CONFIRMED',
+        })
+    setLinking(false)
+    if (!result.ok) { setLinkError(result.error); return }
+    setClientId(id)
+    setClientName(name)
+    setSimilarMatches(null)
+  }
 
   async function copyLink(url: string, field: 'yandex' | 'nas') {
     try {
@@ -118,7 +197,6 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
       return
     }
 
-    const clientId = annotation?.clientId
     if (eventType === 'STUDIO_BOOKING' && clientId) {
       if (paymentMode === 'ONE_TIME') {
         if (annotation?.subscriptionUsage) {
@@ -151,8 +229,9 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
   }
 
   return (
+    <>
     <Dialog open onOpenChange={onOpenChange}>
-      <DialogContent className="bg-zinc-900 border-zinc-800 text-white max-w-lg max-h-[88vh] flex flex-col p-0">
+      <DialogContent className="bg-zinc-900 border-zinc-800 text-white max-w-xl max-h-[88vh] flex flex-col p-0">
         <DialogHeader className="px-6 pt-6 pb-4 border-b border-zinc-800 flex-shrink-0">
           <div className="flex items-center gap-2">
             <span
@@ -222,18 +301,71 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
 
           <p className={SECTION}>Клиент</p>
           {hasClient ? (
-            <div className="bg-zinc-800/50 rounded-lg p-3 flex items-center justify-between">
-              <p className="text-zinc-200 text-sm">{annotation?.clientName}</p>
-              <Link href={`/admin/clients/${annotation?.clientId}`} className="text-xs text-[#00c26b] hover:underline">
-                Открыть карточку
-              </Link>
+            <div className="bg-zinc-800/50 rounded-lg p-3 flex items-center justify-between gap-3">
+              <p className="text-zinc-200 text-sm truncate">{clientName}</p>
+              <div className="flex items-center gap-3 flex-shrink-0">
+                <Link href={`/admin/clients/${clientId}`} className="text-xs text-[#00c26b] hover:underline">
+                  Открыть карточку
+                </Link>
+                {!annotation?.subscriptionUsage && (
+                  <button type="button" onClick={() => { setClientId(null); setClientName(null); runClientSearch() }}
+                    className="text-xs text-zinc-400 hover:text-white underline">
+                    Изменить
+                  </button>
+                )}
+              </div>
             </div>
           ) : (
             <>
+              {searchingClient && <p className="text-zinc-500 text-xs">Ищем клиента по названию записи...</p>}
+
+              {!searchingClient && similarMatches && similarMatches.length > 0 && (
+                <div className="bg-zinc-800/50 border border-zinc-700 rounded-lg p-3 space-y-2">
+                  {similarMatches.length === 1 ? (
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-zinc-300 text-xs">
+                        Возможный клиент: <span className="text-zinc-100 font-medium">{similarMatches[0].name}</span>
+                      </p>
+                      <button type="button" onClick={() => handleLinkClient(similarMatches[0].id, similarMatches[0].name)} disabled={linking}
+                        className="text-xs text-[#00c26b] hover:underline disabled:opacity-50 flex-shrink-0 whitespace-nowrap">
+                        Привязать
+                      </button>
+                    </div>
+                  ) : (
+                    <div>
+                      <label className={LABEL}>Похожие клиенты — выберите</label>
+                      <div className="flex items-center gap-2">
+                        <select className={SELECT} value={selectedMatchId} onChange={e => setSelectedMatchId(e.target.value)}>
+                          <option value="">Выберите клиента</option>
+                          {similarMatches.map(m => (
+                            <option key={m.id} value={m.id}>{m.name}{m.phone ? ` · ${m.phone}` : ''}</option>
+                          ))}
+                        </select>
+                        <button type="button" disabled={linking || !selectedMatchId} className="text-xs text-[#00c26b] hover:underline disabled:opacity-50 flex-shrink-0 whitespace-nowrap"
+                          onClick={() => {
+                            const m = similarMatches.find(x => x.id === selectedMatchId)
+                            if (m) handleLinkClient(m.id, m.name)
+                          }}>
+                          Привязать
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {linkError && <p className="text-red-400 text-xs">{linkError}</p>}
+
               <div>
                 <label className={LABEL}>Имя из календаря</label>
-                <input className={INPUT} placeholder="Как записано в календаре" value={clientNameRaw}
-                  onChange={e => setClientNameRaw(e.target.value)} />
+                <div className="flex items-center gap-2">
+                  <input className={INPUT} placeholder="Как записано в календаре" value={clientNameRaw}
+                    onChange={e => setClientNameRaw(e.target.value)} />
+                  <button type="button" onClick={runClientSearch} disabled={searchingClient}
+                    className="flex-shrink-0 text-xs text-zinc-400 hover:text-white underline whitespace-nowrap disabled:opacity-50">
+                    Искать
+                  </button>
+                </div>
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
@@ -247,24 +379,30 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
                     onChange={e => setCompanyRaw(e.target.value)} />
                 </div>
               </div>
-              {annotation?.clientConfirmationStatus === 'PENDING' ? (
-                <p className="text-amber-400 text-xs">Ожидает подтверждения в разделе «Клиенты»</p>
-              ) : (
-                <button type="button" onClick={() => handleSave('PENDING')} disabled={saving || !clientNameRaw.trim()}
-                  className="text-xs text-[#00c26b] hover:underline disabled:opacity-40 disabled:no-underline">
-                  Отметить как ожидает подтверждения
+              <div className="flex items-center gap-4">
+                <button type="button" onClick={() => setAddClientOpen(true)}
+                  className="text-xs text-zinc-400 hover:text-white underline">
+                  Создать нового клиента
                 </button>
-              )}
+                {annotation?.clientConfirmationStatus === 'PENDING' ? (
+                  <p className="text-amber-400 text-xs">Ожидает подтверждения в разделе «Клиенты»</p>
+                ) : (
+                  <button type="button" onClick={() => handleSave('PENDING')} disabled={saving || !clientNameRaw.trim()}
+                    className="text-xs text-[#00c26b] hover:underline disabled:opacity-40 disabled:no-underline">
+                    Отметить как ожидает подтверждения
+                  </button>
+                )}
+              </div>
             </>
           )}
 
           <p className={SECTION}>Оплата</p>
-          {hasClient && annotation?.clientId ? (
+          {hasClient && clientId ? (
             <SubscriptionPaymentBlock
               ref={subscriptionRef}
-              clientId={annotation.clientId}
+              clientId={clientId}
               eventDurationHours={eventDurationHours}
-              initialUsage={annotation.subscriptionUsage}
+              initialUsage={annotation?.subscriptionUsage ?? null}
               onModeChange={setPaymentMode}
               onValidityChange={setSubscriptionValid}
             />
@@ -272,9 +410,9 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
             <p className="text-zinc-500 text-xs">Оплата через абонемент доступна после привязки клиента к записи.</p>
           )}
           {(!hasClient || paymentMode === 'ONE_TIME') && (
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-2 gap-3 items-end">
               <div>
-                <label className={LABEL}>Предварительная стоимость, ₽</label>
+                <label className={LABEL}>Стоимость, ₽</label>
                 <input className={INPUT} type="number" min="0" placeholder="напр. 15000" value={estimatedPrice}
                   onChange={e => setEstimatedPrice(e.target.value)} />
               </div>
@@ -282,7 +420,7 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
                 <label className={LABEL}>Способ оплаты</label>
                 <select className={SELECT} value={paymentMethod} onChange={e => setPaymentMethod(e.target.value as PaymentMethod | '')}>
                   <option value="">Не указан</option>
-                  {(Object.keys(PAYMENT_METHOD_LABELS) as PaymentMethod[]).map(m => (
+                  {ONE_TIME_PAYMENT_METHODS.map(m => (
                     <option key={m} value={m}>{PAYMENT_METHOD_LABELS[m]}</option>
                   ))}
                 </select>
@@ -311,16 +449,26 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
             <p className="text-zinc-500 text-xs">Материалы ещё не добавлены — проверка начнётся после завершения записи.</p>
           ) : (
             <>
-              {noMaterialsNow && (
+              {!hasNasNow && !hasYandexNow && (
                 <div className="flex items-start gap-2 rounded-lg px-3 py-2.5 text-xs bg-red-950/40 border border-red-900 text-red-300">
                   <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
                   <p>Съёмка уже прошла, но ссылка на Яндекс.Диск и бэкап на NAS не указаны.</p>
                 </div>
               )}
-              {warningText && (
-                <div className={`flex items-start gap-2 rounded-lg px-3 py-2.5 text-xs ${
-                  materialsStatus === 'NEEDS_ATTENTION' ? 'bg-red-950/40 border border-red-900 text-red-300' : 'bg-amber-950/40 border border-amber-900 text-amber-300'
-                }`}>
+              {!hasNasNow && hasYandexNow && (
+                <div className="flex items-start gap-2 rounded-lg px-3 py-2.5 text-xs bg-red-950/40 border border-red-900 text-red-300">
+                  <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                  <p>Съёмка уже прошла, но бэкап на NAS не указан. Это критично для сохранности материалов.</p>
+                </div>
+              )}
+              {hasNasNow && !hasYandexNow && (
+                <div className="flex items-start gap-2 rounded-lg px-3 py-2.5 text-xs bg-amber-950/40 border border-amber-900 text-amber-300">
+                  <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                  <p>Бэкап на NAS указан, но ссылка на Яндекс.Диск для клиента не добавлена.</p>
+                </div>
+              )}
+              {hasNasNow && hasYandexNow && warningText && (
+                <div className="flex items-start gap-2 rounded-lg px-3 py-2.5 text-xs bg-amber-950/40 border border-amber-900 text-amber-300">
                   <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
                   <p>{warningText}</p>
                 </div>
@@ -367,6 +515,9 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
                 </button>
               )}
             </div>
+            <div className="flex items-center justify-end mt-1.5">
+              <span className="text-xs text-zinc-400">{hasNasNow ? 'Бэкап указан' : 'Нет NAS-бэкапа'}</span>
+            </div>
           </div>
 
           <div>
@@ -394,5 +545,22 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
         </div>
       </DialogContent>
     </Dialog>
+    {addClientOpen && (
+      <AddClientModal
+        open={addClientOpen}
+        onOpenChange={setAddClientOpen}
+        onSuccess={() => {}}
+        initialValues={{
+          firstName: guessedClientName,
+          contactPerson: clientNameRaw.trim(),
+          phone: contactRaw.trim(),
+          companyName: companyRaw.trim(),
+          source: 'OTHER',
+          customSource: 'Google Calendar',
+        }}
+        onCreated={client => { setAddClientOpen(false); handleLinkClient(client.id, client.name) }}
+      />
+    )}
+    </>
   )
 }

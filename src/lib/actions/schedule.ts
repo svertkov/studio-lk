@@ -14,6 +14,8 @@ import {
 } from '@/lib/schedule-model'
 import { classifyEventType } from '@/lib/event-type'
 import { normalizePhone, normalizeEmail, normalizeTelegram } from '@/lib/import/normalize'
+import { ensureOrderForNewBooking } from '@/lib/actions/orders'
+import { ORDERS_AUTO_IMPORT_LAUNCH_DATE } from '@/lib/order-model'
 
 // ============================================================
 // АВТОРИЗАЦИЯ
@@ -190,6 +192,30 @@ export async function upsertScheduleEvent(
     })
     const yandexDiskUrlExpiresAt = yandexDiskUrlAddedAt ? computeYandexLinkExpiry(yandexDiskUrlAddedAt) : null
 
+    const effectiveEventType = input.eventType ?? classifyEventType(input.title ?? '')
+
+    // Заказ (раздел "Заказы") создаётся только в момент ПЕРВОГО сохранения
+    // студийной записи из живого Google Calendar — не при последующих
+    // пересохранениях уже существующей аннотации, чтобы не перезаписывать
+    // статус заказа, который могли уже вручную продвинуть по канбану. Плюс
+    // не раньше ORDERS_AUTO_IMPORT_LAUNCH_DATE — раздел "Заказы" начинается с
+    // чистого листа, старые записи не должны задним числом становиться
+    // заказами только из-за того, что кто-то открыл и сохранил их карточку.
+    // Google Calendar здесь только читается (через уже переданные input),
+    // ничего не пишется обратно.
+    const startsAfterOrdersLaunch = !!input.startAt && new Date(input.startAt) >= ORDERS_AUTO_IMPORT_LAUNCH_DATE
+    let orderIdForCreate: string | null = null
+    if (!existing && effectiveEventType === 'STUDIO_BOOKING' && startsAfterOrdersLaunch) {
+      orderIdForCreate = await ensureOrderForNewBooking({
+        calendarEventId: input.calendarEventId,
+        title: input.title ?? '',
+        description: input.description ?? null,
+        startAt: input.startAt ? new Date(input.startAt) : null,
+        endAt: input.endAt ? new Date(input.endAt) : null,
+        clientId: input.clientId ?? null,
+      })
+    }
+
     const row = await prisma.scheduleEvent.upsert({
       where: { calendarEventId: input.calendarEventId },
       create: {
@@ -215,7 +241,8 @@ export async function upsertScheduleEvent(
         materialsComment: input.materialsComment?.trim() || null,
         materialsStatus,
         clientConfirmationStatus: input.clientConfirmationStatus ?? 'NOT_REQUIRED',
-        eventType: input.eventType ?? classifyEventType(input.title ?? ''),
+        eventType: effectiveEventType,
+        orderId: orderIdForCreate,
       },
       update: {
         ...(input.title !== undefined && { title: input.title || null }),

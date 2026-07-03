@@ -14,14 +14,21 @@ import { type EventType, classifyEventType } from '@/lib/event-type'
 export type { MaterialsStatus, ClientConfirmationStatus, EventType, PaymentMethod }
 
 export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
-  CASH:     'Наличными',
-  CARD:     'Картой',
-  TRANSFER: 'Переводом',
-  INVOICE:  'По счёту',
-  UNPAID:   'Не оплачено',
-  FREE:     'Бесплатно / бартер',
-  OTHER:    'Другое',
+  CASH:         'Наличными',
+  CARD:         'Картой',
+  TRANSFER:     'Переводом',
+  INVOICE:      'По счёту',
+  UNPAID:       'Не оплачено',
+  FREE:         'Бесплатно / бартер',
+  OTHER:        'Другое',
+  // Оплата по абонементу у записи расписания выбирается отдельным переключателем
+  // (SubscriptionPaymentBlock), а не этим полем — см. ONE_TIME_PAYMENT_METHODS.
+  SUBSCRIPTION: 'Абонемент',
 }
+
+// Варианты разовой оплаты для select в карточке события — без SUBSCRIPTION,
+// это самостоятельный "Абонемент"-переключатель, а не значение этого поля.
+export const ONE_TIME_PAYMENT_METHODS: PaymentMethod[] = ['CASH', 'CARD', 'TRANSFER', 'INVOICE', 'UNPAID', 'FREE', 'OTHER']
 
 export const MATERIALS_STATUS_LABELS: Record<MaterialsStatus, string> = {
   NO_LINKS:        'Нет ссылок',
@@ -102,10 +109,11 @@ export const YANDEX_LINK_STATUS_LABELS: Record<YandexLinkStatus, string> = {
   expired: 'Истекла',
 }
 
-// Тексты предупреждений — точные формулировки из ТЗ
+// Мягкая информационная подсказка — показывается, только когда обе ссылки
+// заполнены (NAS есть), но срок Яндекс.Диска истёк. Не влияет на статус
+// "требует внимания" (NAS уже есть — критичной проблемы нет).
 export const MATERIALS_WARNING_TEXT: Partial<Record<MaterialsStatus, string>> = {
-  YANDEX_EXPIRED:  'Срок действия ссылки на Яндекс.Диск истёк. Проверьте, можно ли удалить материалы с Яндекс.Диска, если бэкап на NAS сохранён.',
-  NEEDS_ATTENTION: 'Ссылка на Яндекс.Диск истекла, но бэкап на NAS не указан. Не удаляйте материалы, пока не проверите резервную копию.',
+  YANDEX_EXPIRED: 'Срок действия ссылки на Яндекс.Диск истёк. Проверьте, можно ли удалить материалы с Яндекс.Диска, если бэкап на NAS сохранён.',
 }
 
 // ============================================================
@@ -120,21 +128,25 @@ export interface MaterialsDisplay {
   severity: MaterialsSeverity
 }
 
-// В БД YANDEX_ACTIVE не отличает "есть оба линка" от "есть только Яндекс.Диск" —
-// здесь это разделяем по факту наличия nasBackupUrl, не трогая сам enum.
+// NAS-бэкап важнее Яндекс.Диска: пока его нет, статус всегда danger, даже если
+// Яндекс.Диск заполнен (или когда-то был заполнен и истёк). В БД YANDEX_ACTIVE
+// не отличает "есть оба линка" от "есть только Яндекс.Диск" — здесь это
+// разделяем по факту наличия nasBackupUrl, не трогая сам enum.
 export function getMaterialsDisplay(input: {
   materialsStatus: MaterialsStatus
   nasBackupUrl?: string | null
 }): MaterialsDisplay {
   switch (input.materialsStatus) {
     case 'NO_LINKS':        return { label: 'Нет материалов', severity: 'danger' }
-    case 'BACKUP_EXISTS':   return { label: 'Есть бэкап', severity: 'neutral' }
+    case 'BACKUP_EXISTS':   return { label: 'Нет Яндекс.Диска', severity: 'warning' }
+    case 'NEEDS_ATTENTION': return { label: 'Нет NAS-бэкапа', severity: 'danger' }
+    // Оба поля когда-то были заполнены, NAS уже есть — не критично, просто
+    // ссылка на Яндекс.Диск устарела (её можно перевыпустить или удалить).
     case 'YANDEX_EXPIRED':  return { label: 'Ссылка истекла', severity: 'warning' }
-    case 'NEEDS_ATTENTION': return { label: 'Истекла, нет бэкапа', severity: 'danger' }
     case 'YANDEX_ACTIVE':
       return input.nasBackupUrl
         ? { label: 'Материалы сохранены', severity: 'success' }
-        : { label: 'Только Яндекс.Диск', severity: 'info' }
+        : { label: 'Нет NAS-бэкапа', severity: 'danger' }
   }
 }
 
@@ -166,7 +178,7 @@ export const MATERIALS_TRACKING_LAUNCH_DATE = new Date('2026-07-03T00:00:00')
 // для уже прошедших записей — будущая запись без материалов/оплаты это норма.
 // ============================================================
 
-export type BookingIssueType = 'materials_missing' | 'expired_no_backup' | 'payment_missing'
+export type BookingIssueType = 'materials_missing' | 'payment_missing'
 export type IssueSeverity = 'danger' | 'warning'
 
 export interface BookingIssue {
@@ -209,12 +221,17 @@ export function getBookingIssues(vm: ScheduleEventVM, now: Date = new Date()): B
   const issues: BookingIssue[] = []
   const hasYandex = !!a?.yandexDiskUrl
   const hasNas = !!a?.nasBackupUrl
-  const materialsStatus = a?.materialsStatus ?? 'NO_LINKS'
 
-  if (!hasYandex && !hasNas) {
+  // NAS и Яндекс.Диск проверяются раздельно — заполнение только одной из двух
+  // ссылок никогда не считается "материалы готовы". NAS-бэкап важнее: без
+  // него запись всегда красная (danger), даже если Яндекс.Диск заполнен.
+  // Если NAS есть, а Яндекс.Диска нет — это уже не критично, а предупреждение.
+  if (!hasNas && !hasYandex) {
     issues.push({ type: 'materials_missing', label: 'Нет материалов', severity: 'danger' })
-  } else if (materialsStatus === 'NEEDS_ATTENTION') {
-    issues.push({ type: 'expired_no_backup', label: 'Ссылка истекла, нет бэкапа', severity: 'danger' })
+  } else if (!hasNas) {
+    issues.push({ type: 'materials_missing', label: 'Нет NAS-бэкапа', severity: 'danger' })
+  } else if (!hasYandex) {
+    issues.push({ type: 'materials_missing', label: 'Нет Яндекс.Диска', severity: 'warning' })
   }
 
   const hasPayment = a?.estimatedPrice != null || !!a?.subscriptionUsage
