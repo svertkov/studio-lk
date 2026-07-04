@@ -7,7 +7,7 @@ import { format, parseISO, isSameDay } from 'date-fns'
 import { ru } from 'date-fns/locale'
 import {
   ArrowLeft, Pin, Archive, ArchiveRestore, UserPlus, Users, ShoppingBag,
-  Send, RotateCcw, AlertTriangle, ShieldOff, ExternalLink,
+  Send, RotateCcw, AlertTriangle, ShieldOff, ExternalLink, FileText, Paperclip, X,
 } from 'lucide-react'
 import {
   sendConversationMessage, retryFailedMessage, claimConversation, pinConversation, archiveConversation,
@@ -29,6 +29,74 @@ interface ClientOption {
   id: string
   name: string
   phone?: string | null
+}
+
+// Совпадает с ATTACHMENT_FALLBACK_LABEL в src/app/api/telegram/webhook/route.ts
+// — если text равен одной из этих подписей, значит у сообщения не было
+// собственной подписи (caption), и повторно показывать её под вложением не нужно.
+const ATTACHMENT_PLACEHOLDER_TEXTS = ['📷 Фото', '📄 Документ', '🎤 Голосовое сообщение', '🎬 Видео', '🎭 Стикер']
+
+function formatFileSize(bytes: number | null): string {
+  if (!bytes) return ''
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} КБ`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} МБ`
+}
+
+function formatDuration(seconds: number | null): string {
+  if (!seconds) return ''
+  const m = Math.floor(seconds / 60)
+  const s = seconds % 60
+  return `${m}:${String(s).padStart(2, '0')}`
+}
+
+function MessageAttachment({ message, onOpenLightbox }: { message: TelegramMessageDTO; onOpenLightbox: (url: string) => void }) {
+  const a = message.attachment
+  if (!a) return null
+
+  if (message.messageType === 'PHOTO') {
+    return (
+      <button type="button" onClick={() => onOpenLightbox(a.fileUrl)} className="block max-w-[220px] rounded-lg overflow-hidden">
+        {/* eslint-disable-next-line @next/next/no-img-element -- прокси-роут, не статичный ассет */}
+        <img src={a.fileUrl} alt="Фото" className="w-full h-auto" />
+      </button>
+    )
+  }
+  if (message.messageType === 'DOCUMENT') {
+    return (
+      <a href={a.downloadUrl} className="flex items-center gap-2 bg-black/20 rounded-lg px-3 py-2 hover:bg-black/30 transition-colors">
+        <FileText className="w-5 h-5 text-zinc-400 flex-shrink-0" />
+        <div className="min-w-0">
+          <p className="text-xs truncate">{a.fileName || 'Документ'}</p>
+          <p className="text-zinc-500 text-[11px]">{formatFileSize(a.fileSize)}{a.mimeType ? ` · ${a.mimeType}` : ''}</p>
+        </div>
+      </a>
+    )
+  }
+  if (message.messageType === 'VOICE') {
+    return (
+      <div className="flex items-center gap-2">
+        <audio controls src={a.fileUrl} className="max-w-[220px] h-8" />
+        {a.duration != null && <span className="text-zinc-500 text-[11px] flex-shrink-0">{formatDuration(a.duration)}</span>}
+      </div>
+    )
+  }
+  if (message.messageType === 'VIDEO') {
+    return (
+      <div className="space-y-1">
+        <video controls src={a.fileUrl} className="max-w-[240px] rounded-lg" />
+        <a href={a.downloadUrl} className="text-[11px] text-zinc-400 hover:text-zinc-200 underline">Скачать</a>
+      </div>
+    )
+  }
+  if (message.messageType === 'STICKER') {
+    return a.isAnimatedSticker ? (
+      <div className="w-20 h-20 flex items-center justify-center text-3xl bg-black/20 rounded-lg">🎭</div>
+    ) : (
+      // eslint-disable-next-line @next/next/no-img-element -- прокси-роут, не статичный ассет
+      <img src={a.fileUrl} alt="Стикер" className="w-24 h-24 object-contain" />
+    )
+  }
+  return null
 }
 
 function groupByDate(messages: TelegramMessageDTO[]) {
@@ -61,6 +129,7 @@ export default function ConversationView({ initialData, currentUserId, currentUs
   const [duplicateClient, setDuplicateClient] = useState<{ id: string; name: string } | null>(null)
   const [orderFormOpen, setOrderFormOpen] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
+  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null)
 
   const bottomRef = useRef<HTMLDivElement>(null)
 
@@ -256,7 +325,14 @@ export default function ConversationView({ initialData, currentUserId, currentUs
                       }`}>
                         {m.senderType === 'BOT' && <p className="text-[10px] text-zinc-500 mb-0.5">Автоматически</p>}
                         {m.senderType === 'ADMIN' && m.senderName && <p className="text-[10px] text-zinc-500 mb-0.5">{m.senderName}</p>}
-                        <p className="whitespace-pre-wrap break-words">{m.text || '(без текста)'}</p>
+                        {m.attachment && (
+                          <div className="mb-1.5">
+                            <MessageAttachment message={m} onOpenLightbox={setLightboxUrl} />
+                          </div>
+                        )}
+                        {(!m.attachment || (m.text && !ATTACHMENT_PLACEHOLDER_TEXTS.includes(m.text))) && (
+                          <p className="whitespace-pre-wrap break-words">{m.text || '(без текста)'}</p>
+                        )}
                         <div className="flex items-center gap-1.5 mt-1">
                           <p className="text-zinc-500 text-[11px]">{format(parseISO(m.createdAt), 'HH:mm')}</p>
                           {isOutbound && (
@@ -287,8 +363,18 @@ export default function ConversationView({ initialData, currentUserId, currentUs
           <p className="mx-6 text-red-400 text-xs bg-red-950/30 border border-red-800/40 rounded-lg px-3 py-2">{actionError}</p>
         )}
 
-        {/* Нижняя панель ввода — только текст на этом этапе (вложения/emoji — следующий этап) */}
+        {/* Нижняя панель ввода — принимаем вложения от клиента, но отправка своих
+            файлов админом — задел на следующий этап (emoji/reply/forward), кнопка
+            неактивна, чтобы не обещать функциональность, которой ещё нет. */}
         <div className="px-6 py-4 border-t border-zinc-800 flex items-end gap-3 flex-shrink-0">
+          <button
+            type="button"
+            disabled
+            title="Отправка файлов — в следующем обновлении"
+            className="text-zinc-600 p-2.5 rounded-lg flex-shrink-0 cursor-not-allowed"
+          >
+            <Paperclip className="w-4 h-4" />
+          </button>
           <textarea
             value={messageText}
             onChange={e => setMessageText(e.target.value)}
@@ -433,6 +519,23 @@ export default function ConversationView({ initialData, currentUserId, currentUs
             comment: `Из Telegram-диалога: ${conversation.lastMessageText ?? ''} (id: ${conversation.id})`,
           }}
         />
+      )}
+
+      {lightboxUrl && (
+        <div
+          className="fixed inset-0 z-[70] bg-black/90 flex items-center justify-center p-8"
+          onClick={() => setLightboxUrl(null)}
+        >
+          <button
+            type="button"
+            onClick={() => setLightboxUrl(null)}
+            className="absolute top-4 right-4 text-white/70 hover:text-white"
+          >
+            <X className="w-6 h-6" />
+          </button>
+          {/* eslint-disable-next-line @next/next/no-img-element -- прокси-роут, не статичный ассет */}
+          <img src={lightboxUrl} alt="Фото" className="max-w-full max-h-full object-contain" onClick={e => e.stopPropagation()} />
+        </div>
       )}
     </div>
   )

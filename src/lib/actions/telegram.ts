@@ -7,8 +7,8 @@ import { sendTelegramMessage, getTelegramWebhookInfo, getTelegramBotInfo, isTele
 import { revokeConsent } from '@/lib/telegram-consent'
 import { createClient, type CreateClientInput } from '@/lib/actions/clients'
 import type {
-  TelegramConversation, TelegramMessage, TelegramSettings, Client, User,
-  TelegramConversationStatus, TelegramConsentStatus, TelegramMessageDirection, TelegramMessageStatus, TelegramSenderType,
+  TelegramConversation, TelegramMessage, TelegramMessageAttachment, TelegramSettings, Client, User,
+  TelegramConversationStatus, TelegramConsentStatus, TelegramMessageDirection, TelegramMessageStatus, TelegramMessageType, TelegramSenderType,
 } from '@prisma/client'
 
 // ============================================================
@@ -69,16 +69,31 @@ type ConversationWithRelations = TelegramConversation & {
   messages: TelegramMessage[]
 }
 
+export interface TelegramMessageAttachmentDTO {
+  id: string
+  fileName: string | null
+  mimeType: string | null
+  fileSize: number | null
+  duration: number | null
+  width: number | null
+  height: number | null
+  isAnimatedSticker: boolean
+  fileUrl: string
+  downloadUrl: string
+}
+
 export interface TelegramMessageDTO {
   id: string
   direction: TelegramMessageDirection
   senderType: TelegramSenderType
+  messageType: TelegramMessageType
   text: string | null
   senderName: string | null
   status: TelegramMessageStatus
   errorMessage: string | null
   createdAt: string
   sentAt: string | null
+  attachment: TelegramMessageAttachmentDTO | null
 }
 
 export interface TelegramConversationListItemDTO {
@@ -130,15 +145,30 @@ export interface TelegramConversationDetailDTO extends TelegramConversationListI
   internalNotes: TelegramInternalNoteDTO[]
 }
 
-function toMessageDTO(m: TelegramMessage): TelegramMessageDTO {
+function toMessageDTO(m: TelegramMessage & { attachment: TelegramMessageAttachment | null }): TelegramMessageDTO {
   return {
     id: m.id,
     direction: m.direction,
     senderType: m.senderType,
+    messageType: m.messageType,
     text: m.text,
     senderName: m.senderName,
     status: m.status,
     errorMessage: m.errorMessage,
+    attachment: m.attachment
+      ? {
+          id: m.attachment.id,
+          fileName: m.attachment.fileName,
+          mimeType: m.attachment.mimeType,
+          fileSize: m.attachment.fileSize,
+          duration: m.attachment.duration,
+          width: m.attachment.width,
+          height: m.attachment.height,
+          isAnimatedSticker: m.attachment.isAnimatedSticker,
+          fileUrl: `/api/telegram/file/${m.attachment.id}`,
+          downloadUrl: `/api/telegram/file/${m.attachment.id}?download=1`,
+        }
+      : null,
     createdAt: m.createdAt.toISOString(),
     sentAt: m.sentAt ? m.sentAt.toISOString() : null,
   }
@@ -233,7 +263,7 @@ export async function getConversationDetail(
         linkedClient: { select: { id: true, name: true } },
         assignedAdmin: { select: { id: true, name: true, email: true } },
         order: { select: { id: true } },
-        messages: { orderBy: { createdAt: 'asc' } },
+        messages: { orderBy: { createdAt: 'asc' }, include: { attachment: true } },
         consents: { orderBy: { createdAt: 'desc' } },
         internalNotes: { orderBy: { createdAt: 'desc' }, include: { author: { select: { id: true, name: true, email: true } } } },
       },

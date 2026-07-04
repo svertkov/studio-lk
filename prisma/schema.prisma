@@ -173,6 +173,11 @@ enum TelegramConsentStatus {
 enum TelegramMessageType {
   TEXT
   SYSTEM
+  PHOTO
+  DOCUMENT
+  VOICE
+  VIDEO
+  STICKER
 }
 
 enum TelegramMessageStatus {
@@ -555,11 +560,39 @@ model TelegramMessage {
 
   conversation      TelegramConversation @relation(fields: [conversationId], references: [id])
   senderAdmin       User?                @relation(fields: [senderAdminId], references: [id])
+  attachment        TelegramMessageAttachment?
 
   // Защита от дублей при повторной доставке update от Telegram.
   @@unique([conversationId, telegramMessageId])
   @@index([conversationId])
   @@map("cms_telegram_message")
+}
+
+// Файл не хранится у нас — только telegramFileId, сам файл при каждом
+// просмотре запрашивается у Telegram заново через getFile и проксируется
+// через src/app/api/telegram/file/[attachmentId]/route.ts (в проекте нет
+// S3/Object Storage, решение принято сознательно, см. память проекта).
+// 1:1 с TelegramMessage — Telegram-альбомы (несколько фото одним сообщением)
+// вне MVP.
+model TelegramMessageAttachment {
+  id                   String   @id @default(cuid())
+  messageId            String   @unique @map("message_id")
+  telegramFileId       String   @map("telegram_file_id")
+  telegramFileUniqueId String?  @map("telegram_file_unique_id")
+  fileName             String?  @map("file_name")
+  mimeType             String?  @map("mime_type")
+  fileSize             Int?     @map("file_size")
+  duration             Int?     // voice/video, секунды
+  width                Int?
+  height               Int?
+  // Статичный стикер (обычный webp) рендерится картинкой; анимированный
+  // (tgs/webm) — просто плашкой в UI, без Lottie/webm-плеера.
+  isAnimatedSticker    Boolean  @default(false) @map("is_animated_sticker")
+  createdAt            DateTime @default(now()) @map("created_at")
+
+  message TelegramMessage @relation(fields: [messageId], references: [id])
+
+  @@map("cms_telegram_message_attachment")
 }
 
 // Факт согласия/отзыва — отдельная таблица (не просто поле на диалоге),

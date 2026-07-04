@@ -1,8 +1,76 @@
 import { NextRequest, NextResponse } from 'next/server'
+import type { TelegramMessageType, TelegramSettings } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
-import { sendTelegramMessage, sendTelegramMessageWithButtons, answerCallbackQuery, type TelegramUpdate } from '@/lib/telegram'
+import { sendTelegramMessage, sendTelegramMessageWithButtons, answerCallbackQuery, type TelegramUpdate, type TelegramMessagePayload } from '@/lib/telegram'
 import { REVOKE_CONSENT_PHRASES } from '@/lib/telegram-model'
 import { revokeConsent } from '@/lib/telegram-consent'
+
+interface DetectedAttachment {
+  messageType: TelegramMessageType
+  telegramFileId: string
+  telegramFileUniqueId: string
+  fileName: string | null
+  mimeType: string | null
+  fileSize: number | null
+  duration: number | null
+  width: number | null
+  height: number | null
+  isAnimatedSticker: boolean
+}
+
+// Определяет тип вложения по составу полей входящего сообщения Telegram —
+// у сообщения заполнено ровно одно из photo/document/voice/video/sticker,
+// либо ничего (текст/системное). Фото приходит массивом размеров одного и
+// того же изображения — берём наибольший (последний в массиве по ширине).
+function detectAttachment(message: TelegramMessagePayload): DetectedAttachment | null {
+  if (message.photo && message.photo.length > 0) {
+    const largest = message.photo.reduce((a, b) => (b.width > a.width ? b : a))
+    return {
+      messageType: 'PHOTO', telegramFileId: largest.file_id, telegramFileUniqueId: largest.file_unique_id,
+      fileName: null, mimeType: null, fileSize: largest.file_size ?? null,
+      duration: null, width: largest.width, height: largest.height, isAnimatedSticker: false,
+    }
+  }
+  if (message.document) {
+    const d = message.document
+    return {
+      messageType: 'DOCUMENT', telegramFileId: d.file_id, telegramFileUniqueId: d.file_unique_id,
+      fileName: d.file_name ?? null, mimeType: d.mime_type ?? null, fileSize: d.file_size ?? null,
+      duration: null, width: null, height: null, isAnimatedSticker: false,
+    }
+  }
+  if (message.voice) {
+    const v = message.voice
+    return {
+      messageType: 'VOICE', telegramFileId: v.file_id, telegramFileUniqueId: v.file_unique_id,
+      fileName: null, mimeType: v.mime_type ?? null, fileSize: v.file_size ?? null,
+      duration: v.duration, width: null, height: null, isAnimatedSticker: false,
+    }
+  }
+  if (message.video) {
+    const v = message.video
+    return {
+      messageType: 'VIDEO', telegramFileId: v.file_id, telegramFileUniqueId: v.file_unique_id,
+      fileName: null, mimeType: v.mime_type ?? null, fileSize: v.file_size ?? null,
+      duration: v.duration, width: v.width, height: v.height, isAnimatedSticker: false,
+    }
+  }
+  if (message.sticker) {
+    const s = message.sticker
+    return {
+      messageType: 'STICKER', telegramFileId: s.file_id, telegramFileUniqueId: s.file_unique_id,
+      fileName: null, mimeType: null, fileSize: s.file_size ?? null,
+      duration: null, width: s.width, height: s.height, isAnimatedSticker: s.is_animated || s.is_video,
+    }
+  }
+  return null
+}
+
+function isAttachmentTypeAllowed(settings: TelegramSettings, type: TelegramMessageType): boolean {
+  const allowed = settings.allowedAttachmentTypes
+  if (!Array.isArray(allowed) || allowed.length === 0) return true // [] по умолчанию = без ограничений
+  return allowed.includes(type)
+}
 
 // Приём входящих сообщений и нажатий inline-кнопок от Telegram.
 //
@@ -69,6 +137,13 @@ function renderConsentText(template: string, policyUrl: string | null): string {
   return template.replace('{{privacy_policy_url}}', policyUrl || '(уточните у менеджера)')
 }
 
+// Подпись для сообщений без собственного текста (просто фото/голосовое и
+// т.п.) — видна в превью списка диалогов и как fallback в ленте сообщений.
+const ATTACHMENT_FALLBACK_LABEL: Record<TelegramMessageType, string> = {
+  TEXT: '', SYSTEM: '',
+  PHOTO: '📷 Фото', DOCUMENT: '📄 Документ', VOICE: '🎤 Голосовое сообщение', VIDEO: '🎬 Видео', STICKER: '🎭 Стикер',
+}
+
 async function handleMessage(update: TelegramUpdate) {
   const message = update.message!
   if (message.chat.type !== 'private') {
@@ -78,6 +153,8 @@ async function handleMessage(update: TelegramUpdate) {
 
   const telegramChatId = String(message.chat.id)
   const from = message.from
+  const attachment = detectAttachment(message)
+  const text = message.text ?? message.caption ?? (attachment ? ATTACHMENT_FALLBACK_LABEL[attachment.messageType] : null)
 
   const conversation = await prisma.telegramConversation.upsert({
     where: { telegramChatId },
@@ -88,7 +165,7 @@ async function handleMessage(update: TelegramUpdate) {
       telegramUsername: from?.username ?? null,
       clientNameGuess: from ? [from.first_name, from.last_name].filter(Boolean).join(' ') || null : null,
       lastMessageAt: new Date(message.date * 1000),
-      firstMessageText: message.text ?? null,
+      firstMessageText: text,
     },
     update: {
       telegramUsername: from?.username ?? undefined,
@@ -104,10 +181,11 @@ async function handleMessage(update: TelegramUpdate) {
   })
   if (recentCount >= 10) return
 
-  const text = message.text ?? null
-  const isRevokePhrase = !!text && REVOKE_CONSENT_PHRASES.includes(text.trim().toLowerCase())
+  const settings = await getSettings()
+  const isRevokePhrase = !!message.text && REVOKE_CONSENT_PHRASES.includes(message.text.trim().toLowerCase())
+  const attachmentAllowed = attachment ? isAttachmentTypeAllowed(settings, attachment.messageType) : true
 
-  await prisma.telegramMessage.upsert({
+  const savedMessage = await prisma.telegramMessage.upsert({
     where: { conversationId_telegramMessageId: { conversationId: conversation.id, telegramMessageId: String(message.message_id) } },
     create: {
       conversationId: conversation.id,
@@ -119,12 +197,31 @@ async function handleMessage(update: TelegramUpdate) {
       senderUsername: from?.username ?? null,
       senderName: from ? [from.first_name, from.last_name].filter(Boolean).join(' ') || null : null,
       text,
-      messageType: 'TEXT',
+      messageType: attachment && attachmentAllowed ? attachment.messageType : 'TEXT',
       status: 'RECEIVED',
       rawPayload: update as object,
     },
     update: {},
   })
+
+  if (attachment && attachmentAllowed) {
+    await prisma.telegramMessageAttachment.upsert({
+      where: { messageId: savedMessage.id },
+      create: {
+        messageId: savedMessage.id,
+        telegramFileId: attachment.telegramFileId,
+        telegramFileUniqueId: attachment.telegramFileUniqueId,
+        fileName: attachment.fileName,
+        mimeType: attachment.mimeType,
+        fileSize: attachment.fileSize,
+        duration: attachment.duration,
+        width: attachment.width,
+        height: attachment.height,
+        isAnimatedSticker: attachment.isAnimatedSticker,
+      },
+      update: {},
+    })
+  }
 
   await prisma.telegramConversation.update({
     where: { id: conversation.id },
@@ -137,7 +234,7 @@ async function handleMessage(update: TelegramUpdate) {
   }
 
   if (conversation.consentStatus !== 'GIVEN') {
-    await ensureConsentRequested(conversation.id, telegramChatId)
+    await ensureConsentRequested(conversation.id, telegramChatId, settings)
     return
   }
 
@@ -152,11 +249,8 @@ async function handleMessage(update: TelegramUpdate) {
   }
 }
 
-async function ensureConsentRequested(conversationId: string, telegramChatId: string) {
-  const [conversation, settings] = await Promise.all([
-    prisma.telegramConversation.findUniqueOrThrow({ where: { id: conversationId } }),
-    getSettings(),
-  ])
+async function ensureConsentRequested(conversationId: string, telegramChatId: string, settings: TelegramSettings) {
+  const conversation = await prisma.telegramConversation.findUniqueOrThrow({ where: { id: conversationId } })
 
   await prisma.telegramConversation.update({
     where: { id: conversationId },

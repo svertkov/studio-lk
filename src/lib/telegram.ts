@@ -37,12 +37,64 @@ export interface TelegramUser {
   last_name?: string
 }
 
+export interface TelegramPhotoSize {
+  file_id: string
+  file_unique_id: string
+  width: number
+  height: number
+  file_size?: number
+}
+
+export interface TelegramDocument {
+  file_id: string
+  file_unique_id: string
+  file_name?: string
+  mime_type?: string
+  file_size?: number
+}
+
+export interface TelegramVoice {
+  file_id: string
+  file_unique_id: string
+  duration: number
+  mime_type?: string
+  file_size?: number
+}
+
+export interface TelegramVideo {
+  file_id: string
+  file_unique_id: string
+  width: number
+  height: number
+  duration: number
+  mime_type?: string
+  file_size?: number
+}
+
+export interface TelegramSticker {
+  file_id: string
+  file_unique_id: string
+  width: number
+  height: number
+  is_animated: boolean
+  is_video: boolean
+  file_size?: number
+}
+
 export interface TelegramMessagePayload {
   message_id: number
   date: number
   chat: TelegramChat
   from?: TelegramUser
   text?: string
+  // Подпись к фото/документу/видео — Telegram присылает её в отдельном
+  // поле, а не в text, даже когда сообщение состоит только из вложения.
+  caption?: string
+  photo?: TelegramPhotoSize[] // несколько размеров одного фото — берём наибольший
+  document?: TelegramDocument
+  voice?: TelegramVoice
+  video?: TelegramVideo
+  sticker?: TelegramSticker
 }
 
 // callback_query приходит при нажатии inline-кнопки (Согласен / Позвать
@@ -167,4 +219,36 @@ export async function getTelegramBotInfo(): Promise<TelegramBotInfo | null> {
 // Используется страницей настроек, чтобы отличить "не настроено" от "настроено".
 export function isTelegramBotTokenConfigured(): boolean {
   return !!process.env.TELEGRAM_BOT_TOKEN
+}
+
+// ============================================================
+// ФАЙЛЫ ВЛОЖЕНИЙ — файлы не хранятся у нас (нет S3/Object Storage в проекте),
+// при каждом просмотре запрашиваем у Telegram свежий file_path и проксируем
+// байты через src/app/api/telegram/file/[attachmentId]/route.ts. file_path
+// может со временем истекать/меняться — поэтому getTelegramFileInfo
+// вызывается заново на каждый запрос, а не кешируется.
+// ============================================================
+
+export interface TelegramFileInfo {
+  file_id: string
+  file_unique_id: string
+  file_size?: number
+  file_path?: string
+}
+
+export async function getTelegramFileInfo(fileId: string): Promise<TelegramFileInfo | null> {
+  try {
+    const res = await fetch(`${TELEGRAM_API_BASE}/bot${getBotToken()}/getFile?file_id=${encodeURIComponent(fileId)}`)
+    const data = await res.json()
+    return data.ok ? (data.result as TelegramFileInfo) : null
+  } catch (e) {
+    console.error('[getTelegramFileInfo]', e)
+    return null
+  }
+}
+
+// Содержит токен в URL — используется только на сервере (внутри API-роута),
+// никогда не передаётся в браузер напрямую.
+export function getTelegramFileDownloadUrl(filePath: string): string {
+  return `${TELEGRAM_API_BASE}/file/bot${getBotToken()}/${filePath}`
 }
