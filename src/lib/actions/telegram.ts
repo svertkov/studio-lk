@@ -3,7 +3,10 @@
 import { revalidatePath } from 'next/cache'
 import { prisma } from '@/lib/prisma'
 import { auth } from '@/auth'
-import { sendTelegramMessage, getTelegramWebhookInfo, getTelegramBotInfo, isTelegramBotTokenConfigured } from '@/lib/telegram'
+import {
+  sendTelegramMessage, sendTelegramPhoto, sendTelegramDocument, sendTelegramVideo,
+  getTelegramWebhookInfo, getTelegramBotInfo, isTelegramBotTokenConfigured,
+} from '@/lib/telegram'
 import { revokeConsent } from '@/lib/telegram-consent'
 import { createClient, type CreateClientInput } from '@/lib/actions/clients'
 import type {
@@ -410,12 +413,92 @@ export async function sendConversationMessage(conversationId: string, text: stri
   return result.ok ? { ok: true as const } : { ok: false as const, error: result.error }
 }
 
+const TELEGRAM_BOT_UPLOAD_LIMIT_MB = 50 // лимит самого Telegram на загрузку файла ботом через multipart
+
+// Next.js Server Actions умеют принимать FormData/File как аргумент при
+// прямом вызове из клиентского компонента — отдельный API-роут для загрузки
+// не нужен. Тип отправки определяется по MIME: image/* → sendPhoto, video/*
+// → sendVideo, всё остальное (в т.ч. аудио — отправку voice/audio от имени
+// администратора спецификация не требовала) → sendDocument.
+export async function sendConversationAttachment(conversationId: string, formData: FormData) {
+  const access = await requireTelegramAccess()
+  if (!access.ok) return { ok: false as const, error: access.error }
+
+  const file = formData.get('file')
+  if (!(file instanceof File)) return { ok: false as const, error: 'Файл не выбран' }
+  if (file.size > TELEGRAM_BOT_UPLOAD_LIMIT_MB * 1024 * 1024) {
+    return { ok: false as const, error: `Файл больше ${TELEGRAM_BOT_UPLOAD_LIMIT_MB} МБ — Telegram не примет его от бота` }
+  }
+  const caption = (formData.get('caption') as string | null)?.trim() || undefined
+
+  const conversation = await prisma.telegramConversation.findUnique({ where: { id: conversationId } })
+  if (!conversation) return { ok: false as const, error: 'Диалог не найден' }
+
+  const messageType: TelegramMessageType = file.type.startsWith('image/')
+    ? 'PHOTO'
+    : file.type.startsWith('video/')
+      ? 'VIDEO'
+      : 'DOCUMENT'
+
+  const pending = await prisma.telegramMessage.create({
+    data: {
+      conversationId,
+      telegramMessageId: `pending-${Date.now()}`,
+      direction: 'OUTBOUND',
+      senderType: 'ADMIN',
+      senderAdminId: access.userId,
+      text: caption ?? null,
+      messageType,
+      status: 'PENDING',
+      rawPayload: {},
+    },
+  })
+
+  const buffer = Buffer.from(await file.arrayBuffer())
+  const sendFn = messageType === 'PHOTO' ? sendTelegramPhoto : messageType === 'VIDEO' ? sendTelegramVideo : sendTelegramDocument
+  const result = await sendFn(conversation.telegramChatId, buffer, file.name || 'file', caption)
+
+  if (result.ok) {
+    await prisma.telegramMessage.update({
+      where: { id: pending.id },
+      data: { status: 'SENT', telegramMessageId: result.telegramMessageId, sentAt: new Date() },
+    })
+    await prisma.telegramMessageAttachment.create({
+      data: {
+        messageId: pending.id,
+        telegramFileId: result.fileId,
+        fileName: file.name || null,
+        mimeType: file.type || null,
+        fileSize: file.size,
+      },
+    })
+    await prisma.telegramConversation.update({
+      where: { id: conversationId },
+      data: { lastMessageAt: new Date(), ...(conversation.status === 'WAITING_MANAGER' ? { status: 'IN_PROGRESS' as const } : {}) },
+    })
+    await writeAuditLog({ userId: access.userId, action: 'TELEGRAM_ATTACHMENT_SENT', entityId: conversationId, metadata: { messageType } })
+  } else {
+    await prisma.telegramMessage.update({ where: { id: pending.id }, data: { status: 'FAILED', errorMessage: result.error } })
+    await writeAuditLog({ userId: access.userId, action: 'TELEGRAM_ATTACHMENT_SEND_FAILED', entityId: conversationId, metadata: { error: result.error } })
+  }
+
+  revalidatePath(`/admin/telegram/${conversationId}`)
+  return result.ok ? { ok: true as const } : { ok: false as const, error: result.error }
+}
+
 export async function retryFailedMessage(messageId: string) {
   const access = await requireTelegramAccess()
   if (!access.ok) return { ok: false as const, error: access.error }
 
   const message = await prisma.telegramMessage.findUnique({ where: { id: messageId }, include: { conversation: true } })
   if (!message || message.status !== 'FAILED') return { ok: false as const, error: 'Сообщение недоступно для повтора' }
+  if (message.messageType !== 'TEXT') {
+    // Файл не хранится у нас после первой попытки отправки (архитектурное
+    // решение — не держим байты вложений на своей стороне), повторно
+    // отправить его без участия администратора нечем — только заново
+    // прикрепить файл и отправить как новое сообщение.
+    return { ok: false as const, error: 'Файл нужно прикрепить и отправить заново — повтор для вложений недоступен' }
+  }
 
   await prisma.telegramMessage.update({ where: { id: messageId }, data: { status: 'PENDING', errorMessage: null } })
   const result = await sendTelegramMessage(message.conversation.telegramChatId, message.text ?? '')

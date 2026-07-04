@@ -10,7 +10,7 @@ import {
   Send, RotateCcw, AlertTriangle, ShieldOff, ExternalLink, FileText, Paperclip, X,
 } from 'lucide-react'
 import {
-  sendConversationMessage, retryFailedMessage, claimConversation, pinConversation, archiveConversation,
+  sendConversationMessage, sendConversationAttachment, retryFailedMessage, claimConversation, pinConversation, archiveConversation,
   unarchiveConversation, revokeConsentManually, createClientFromConversation, linkConversationToClient,
   addInternalNote, markConversationOrderCreated,
   type TelegramConversationDetailDTO, type TelegramMessageDTO,
@@ -130,8 +130,11 @@ export default function ConversationView({ initialData, currentUserId, currentUs
   const [orderFormOpen, setOrderFormOpen] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null)
+  const [stagedFile, setStagedFile] = useState<File | null>(null)
+  const [isDraggingOver, setIsDraggingOver] = useState(false)
 
   const bottomRef = useRef<HTMLDivElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -153,8 +156,24 @@ export default function ConversationView({ initialData, currentUserId, currentUs
   const consentGiven = conversation.consentStatus === 'GIVEN'
 
   async function handleSend() {
+    if (sending) return
     const text = messageText.trim()
-    if (!text || sending) return
+
+    if (stagedFile) {
+      setSending(true)
+      const formData = new FormData()
+      formData.append('file', stagedFile)
+      if (text) formData.append('caption', text)
+      const result = await sendConversationAttachment(conversation.id, formData)
+      setSending(false)
+      setStagedFile(null)
+      setMessageText('')
+      if (!result.ok) setActionError(result.error)
+      router.refresh()
+      return
+    }
+
+    if (!text) return
     setSending(true)
     setMessageText('')
     const result = await sendConversationMessage(conversation.id, text)
@@ -168,6 +187,40 @@ export default function ConversationView({ initialData, currentUserId, currentUs
       e.preventDefault()
       handleSend()
     }
+  }
+
+  const MAX_UPLOAD_MB = 50
+
+  function stageFile(file: File) {
+    if (file.size > MAX_UPLOAD_MB * 1024 * 1024) {
+      setActionError(`Файл больше ${MAX_UPLOAD_MB} МБ — Telegram не примет его от бота`)
+      return
+    }
+    setActionError(null)
+    setStagedFile(file)
+  }
+
+  function handleFileInputChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (file) stageFile(file)
+    e.target.value = '' // чтобы повторный выбор того же файла тоже сработал
+  }
+
+  function handleDragOver(e: React.DragEvent) {
+    e.preventDefault()
+    setIsDraggingOver(true)
+  }
+
+  function handleDragLeave(e: React.DragEvent) {
+    e.preventDefault()
+    setIsDraggingOver(false)
+  }
+
+  function handleDrop(e: React.DragEvent) {
+    e.preventDefault()
+    setIsDraggingOver(false)
+    const file = e.dataTransfer.files?.[0]
+    if (file) stageFile(file)
   }
 
   async function handleRetry(messageId: string) {
@@ -242,7 +295,17 @@ export default function ConversationView({ initialData, currentUserId, currentUs
 
   return (
     <div className="flex h-full">
-      <div className="flex-1 flex flex-col min-w-0">
+      <div
+        className="flex-1 flex flex-col min-w-0 relative"
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
+        {isDraggingOver && (
+          <div className="absolute inset-0 z-50 bg-[#00c26b]/10 border-2 border-dashed border-[#00c26b]/60 rounded-lg flex items-center justify-center pointer-events-none">
+            <p className="text-[#00c26b] font-medium">Отпустите файл, чтобы прикрепить</p>
+          </div>
+        )}
         {/* Верхняя панель */}
         <div className="px-6 py-4 border-b border-zinc-800 flex items-center justify-between gap-3 flex-wrap flex-shrink-0">
           <div className="flex items-center gap-3 min-w-0">
@@ -363,15 +426,25 @@ export default function ConversationView({ initialData, currentUserId, currentUs
           <p className="mx-6 text-red-400 text-xs bg-red-950/30 border border-red-800/40 rounded-lg px-3 py-2">{actionError}</p>
         )}
 
-        {/* Нижняя панель ввода — принимаем вложения от клиента, но отправка своих
-            файлов админом — задел на следующий этап (emoji/reply/forward), кнопка
-            неактивна, чтобы не обещать функциональность, которой ещё нет. */}
+        {/* Нижняя панель ввода — фото/документ/видео через скрепку или drag-and-drop
+            (текст рядом с файлом становится подписью); emoji/reply/forward — Этап C2. */}
+        {stagedFile && (
+          <div className="mx-6 mt-3 flex items-center gap-2 bg-zinc-800/60 border border-zinc-700 rounded-lg px-3 py-2">
+            <FileText className="w-4 h-4 text-zinc-400 flex-shrink-0" />
+            <p className="text-zinc-200 text-xs truncate flex-1">{stagedFile.name}</p>
+            <p className="text-zinc-500 text-[11px] flex-shrink-0">{formatFileSize(stagedFile.size)}</p>
+            <button type="button" onClick={() => setStagedFile(null)} className="text-zinc-500 hover:text-zinc-200 flex-shrink-0">
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
         <div className="px-6 py-4 border-t border-zinc-800 flex items-end gap-3 flex-shrink-0">
+          <input ref={fileInputRef} type="file" hidden onChange={handleFileInputChange} />
           <button
             type="button"
-            disabled
-            title="Отправка файлов — в следующем обновлении"
-            className="text-zinc-600 p-2.5 rounded-lg flex-shrink-0 cursor-not-allowed"
+            onClick={() => fileInputRef.current?.click()}
+            title="Прикрепить файл"
+            className="text-zinc-400 hover:text-zinc-200 p-2.5 rounded-lg flex-shrink-0 transition-colors"
           >
             <Paperclip className="w-4 h-4" />
           </button>
@@ -379,14 +452,14 @@ export default function ConversationView({ initialData, currentUserId, currentUs
             value={messageText}
             onChange={e => setMessageText(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Написать сообщение..."
+            placeholder={stagedFile ? 'Подпись к файлу (необязательно)...' : 'Написать сообщение...'}
             rows={2}
             className="flex-1 bg-zinc-800 border border-zinc-700 text-zinc-100 placeholder-zinc-600 rounded-lg px-3 py-2 text-sm outline-none focus:border-[#00c26b] transition-colors resize-none"
           />
           <button
             type="button"
             onClick={handleSend}
-            disabled={sending || !messageText.trim()}
+            disabled={sending || (!messageText.trim() && !stagedFile)}
             className="bg-[#00c26b] hover:bg-[#00b360] disabled:opacity-50 text-white p-2.5 rounded-lg transition-colors flex-shrink-0"
           >
             <Send className="w-4 h-4" />

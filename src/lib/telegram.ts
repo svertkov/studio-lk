@@ -252,3 +252,58 @@ export async function getTelegramFileInfo(fileId: string): Promise<TelegramFileI
 export function getTelegramFileDownloadUrl(filePath: string): string {
   return `${TELEGRAM_API_BASE}/file/bot${getBotToken()}/${filePath}`
 }
+
+// ============================================================
+// ОТПРАВКА ВЛОЖЕНИЙ АДМИНИСТРАТОРОМ — multipart/form-data напрямую через
+// fetch (FormData + Blob), без новой зависимости. Каждый метод возвращает
+// file_id отправленного файла — сохраняем его же в TelegramMessageAttachment,
+// чтобы отправленный админом файл открывался через тот же прокси-роут, что
+// и присланный клиентом.
+// ============================================================
+
+export type SendAttachmentResult =
+  | { ok: true; telegramMessageId: string; fileId: string }
+  | { ok: false; error: string }
+
+async function sendTelegramFile(
+  method: 'sendPhoto' | 'sendDocument' | 'sendVideo',
+  field: 'photo' | 'document' | 'video',
+  chatId: string, fileBuffer: Buffer, filename: string, caption?: string,
+): Promise<SendAttachmentResult> {
+  try {
+    const form = new FormData()
+    form.append('chat_id', chatId)
+    if (caption) form.append('caption', caption)
+    form.append(field, new Blob([new Uint8Array(fileBuffer)]), filename)
+
+    const res = await fetch(`${TELEGRAM_API_BASE}/bot${getBotToken()}/${method}`, { method: 'POST', body: form })
+    const data = await res.json()
+    if (!res.ok || !data.ok) {
+      return { ok: false, error: data.description || `Telegram API вернул ${res.status}` }
+    }
+
+    const result = data.result
+    const fileId: string | undefined =
+      field === 'photo'
+        ? (result.photo as { file_id: string; width: number }[]).reduce((a, b) => (b.width > a.width ? b : a)).file_id
+        : result[field]?.file_id
+    if (!fileId) return { ok: false, error: 'Telegram не вернул file_id отправленного файла' }
+
+    return { ok: true, telegramMessageId: String(result.message_id), fileId }
+  } catch (e) {
+    console.error(`[${method}]`, e)
+    return { ok: false, error: 'Не удалось отправить файл в Telegram' }
+  }
+}
+
+export function sendTelegramPhoto(chatId: string, fileBuffer: Buffer, filename: string, caption?: string) {
+  return sendTelegramFile('sendPhoto', 'photo', chatId, fileBuffer, filename, caption)
+}
+
+export function sendTelegramDocument(chatId: string, fileBuffer: Buffer, filename: string, caption?: string) {
+  return sendTelegramFile('sendDocument', 'document', chatId, fileBuffer, filename, caption)
+}
+
+export function sendTelegramVideo(chatId: string, fileBuffer: Buffer, filename: string, caption?: string) {
+  return sendTelegramFile('sendVideo', 'video', chatId, fileBuffer, filename, caption)
+}
