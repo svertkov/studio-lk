@@ -122,6 +122,38 @@ enum OrderPaymentStatus {
   SUBSCRIPTION
 }
 
+enum TelegramChatType {
+  PRIVATE
+  GROUP
+  SUPERGROUP
+}
+
+enum TelegramConversationStatus {
+  NEW
+  IN_PROGRESS
+  CONVERTED_TO_ORDER
+  ARCHIVED
+}
+
+enum TelegramMessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+// Используется только для групповых рабочих чатов (пока не в MVP — там
+// пишет один клиент, роль отправителя однозначна и без этого поля).
+enum TelegramSenderRole {
+  CLIENT
+  STUDIO
+  UNKNOWN
+}
+
+enum AiOrderDraftStatus {
+  DRAFT
+  CONFIRMED
+  DISMISSED
+}
+
 // ============================================================
 // ПОЛЬЗОВАТЕЛИ (CMS)
 // ============================================================
@@ -181,6 +213,7 @@ model Client {
   scheduleEvents   ScheduleEvent[]
   subscriptions    ClientSubscription[]
   orders           Order[]
+  telegramConversations TelegramConversation[]
 
   @@map("cms_client")
 }
@@ -388,13 +421,104 @@ model Order {
   createdAt         DateTime           @default(now()) @map("created_at")
   updatedAt         DateTime           @updatedAt      @map("updated_at")
   completedAt       DateTime?          @map("completed_at")
+  // Момент последней смены status (не путать с updatedAt — тот меняется при
+  // любом редактировании заказа). Используется для сортировки карточек внутри
+  // колонок канбана "по недавности изменения статуса". Обновляется явно в
+  // updateOrderStatus/updateOrder — см. src/lib/actions/orders.ts.
+  statusUpdatedAt   DateTime           @default(now()) @map("status_updated_at")
+  // Telegram-диалог, из переписки которого создан заказ (кнопка "Создать
+  // заказ из переписки") — тот же принцип, что и googleEventId выше: поле,
+  // отслеживающее источник, живёт на Order, а не на самом источнике.
+  telegramConversationId String?       @unique @map("telegram_conversation_id")
 
   client            Client?            @relation(fields: [clientId], references: [id])
   scheduleEvent      ScheduleEvent?
+  telegramConversation TelegramConversation? @relation(fields: [telegramConversationId], references: [id])
 
   @@index([clientId])
   @@index([status])
   @@map("cms_order")
+}
+
+// ============================================================
+// TELEGRAM — входящие заявки клиентов через Telegram-бота студии.
+// MVP: только личные диалоги (chatType = PRIVATE). Групповые рабочие чаты
+// (chatType GROUP/SUPERGROUP) поддержаны на уровне схемы заранее, но логика
+// их чтения/различения клиент-vs-сотрудник добавится отдельным этапом позже.
+// ============================================================
+
+model TelegramConversation {
+  id               String                     @id @default(cuid())
+  // Строка, а не Int: chat_id супергрупп у Telegram выходит за пределы
+  // диапазона обычного 32-битного целого.
+  telegramChatId   String                     @unique @map("telegram_chat_id")
+  chatType         TelegramChatType           @map("chat_type")
+  telegramUserId   String?                    @map("telegram_user_id")   // только для private
+  telegramUsername String?                    @map("telegram_username") // только для private
+  groupTitle       String?                    @map("group_title")       // только для group/supergroup, не используется в MVP
+  // Имя/фамилия из профиля Telegram — подсказка для сопоставления с Client,
+  // не источник правды (в отличие от Client.name после ручной привязки).
+  clientNameGuess  String?                    @map("client_name_guess")
+  phone            String?                                              // если клиент сам написал номер в чат
+  linkedClientId   String?                    @map("linked_client_id")
+  status           TelegramConversationStatus @default(NEW)
+  lastMessageAt    DateTime?                  @map("last_message_at")
+  createdAt        DateTime @default(now())   @map("created_at")
+  updatedAt        DateTime @updatedAt        @map("updated_at")
+
+  linkedClient     Client?           @relation(fields: [linkedClientId], references: [id])
+  messages         TelegramMessage[]
+  aiDraft          AiOrderDraft?
+  order            Order?            // обратная связь от Order.telegramConversationId
+
+  @@index([linkedClientId])
+  @@index([status])
+  @@map("cms_telegram_conversation")
+}
+
+model TelegramMessage {
+  id                String   @id @default(cuid())
+  conversationId    String   @map("conversation_id")
+  // message_id у Telegram уникален только В РАМКАХ чата, не глобально —
+  // поэтому дедуп ниже строится по паре (conversationId, telegramMessageId).
+  telegramMessageId String   @map("telegram_message_id")
+  direction         TelegramMessageDirection
+  // Заполняются осмысленно только для групповых чатов (позже) — в private
+  // диалоге inbound всегда от клиента, а outbound от студии, senderRole
+  // там не нужен для однозначности.
+  senderTelegramId  String?  @map("sender_telegram_id")
+  senderUsername    String?  @map("sender_username")
+  senderName        String?  @map("sender_name")
+  senderRole        TelegramSenderRole @default(UNKNOWN) @map("sender_role")
+  text              String?
+  rawPayload        Json     @map("raw_payload")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  conversation      TelegramConversation @relation(fields: [conversationId], references: [id])
+
+  // Защита от дублей при повторной доставке update от Telegram.
+  @@unique([conversationId, telegramMessageId])
+  @@index([conversationId])
+  @@map("cms_telegram_message")
+}
+
+model AiOrderDraft {
+  id                String             @id @default(cuid())
+  // Один активный черновик на диалог — обновляется на месте при повторном
+  // AI-анализе, история версий в MVP не хранится.
+  conversationId    String             @unique @map("conversation_id")
+  status            AiOrderDraftStatus @default(DRAFT)
+  extractedData     Json               @map("extracted_data")
+  confidence        Json
+  missingFields     Json               @map("missing_fields")
+  shouldCreateOrder Boolean            @default(false) @map("should_create_order")
+  reason            String?
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt      @map("updated_at")
+
+  conversation      TelegramConversation @relation(fields: [conversationId], references: [id])
+
+  @@map("cms_ai_order_draft")
 }
 
 // ============================================================

@@ -72,7 +72,7 @@ export default function AddClientModal({ onSuccess, initialValues, open: openPro
         </DialogTrigger>
       )}
 
-      <DialogContent className="bg-zinc-900 border-zinc-800 text-white max-w-lg max-h-[88vh] flex flex-col p-0">
+      <DialogContent className="bg-zinc-900 border-zinc-800 text-white max-w-lg sm:max-w-[589px] max-h-[88vh] flex flex-col p-0">
         <DialogHeader className="px-6 pt-6 pb-4 border-b border-zinc-800 flex-shrink-0">
           <DialogTitle className="text-white text-lg font-semibold">Новый клиент</DialogTitle>
         </DialogHeader>

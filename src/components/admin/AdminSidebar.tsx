@@ -7,7 +7,7 @@ import { cn } from '@/lib/utils'
 import {
   LayoutDashboard, Users, ShoppingBag, Calendar, Film,
   DollarSign, FileText, HardDrive, BarChart3, UserCheck,
-  Settings, LogOut,
+  Settings, LogOut, MessageCircle,
 } from 'lucide-react'
 
 interface Props {
@@ -19,6 +19,7 @@ const navByRole: Record<string, { href: string; label: string; icon: React.Eleme
     { href: '/admin/dashboard',  label: 'Дашборд',    icon: LayoutDashboard },
     { href: '/admin/clients',    label: 'Клиенты',    icon: Users },
     { href: '/admin/orders',     label: 'Заказы',     icon: ShoppingBag },
+    { href: '/admin/telegram',   label: 'Telegram',   icon: MessageCircle },
     { href: '/admin/schedule',   label: 'Расписание', icon: Calendar },
     { href: '/admin/editing',    label: 'Монтаж',     icon: Film },
     { href: '/admin/finance',    label: 'Финансы',    icon: DollarSign },
@@ -32,6 +33,7 @@ const navByRole: Record<string, { href: string; label: string; icon: React.Eleme
     { href: '/admin/dashboard',  label: 'Дашборд',    icon: LayoutDashboard },
     { href: '/admin/clients',    label: 'Клиенты',    icon: Users },
     { href: '/admin/orders',     label: 'Заказы',     icon: ShoppingBag },
+    { href: '/admin/telegram',   label: 'Telegram',   icon: MessageCircle },
     { href: '/admin/schedule',   label: 'Расписание', icon: Calendar },
   ],
   OPERATOR: [

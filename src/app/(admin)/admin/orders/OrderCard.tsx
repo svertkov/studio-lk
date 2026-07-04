@@ -1,14 +1,24 @@
 'use client'
 
+import type { CSSProperties } from 'react'
 import { format, parseISO } from 'date-fns'
 import { ru } from 'date-fns/locale'
 import { CalendarClock, UserX } from 'lucide-react'
+import type { DraggableAttributes, DraggableSyntheticListeners } from '@dnd-kit/core'
 import type { OrderDTO } from '@/lib/actions/orders'
-import { ORDER_PAYMENT_STATUS_LABELS, ORDER_PAYMENT_STATUS_COLORS, ORDER_SOURCE_LABELS } from '@/lib/order-model'
+import { ORDER_PAYMENT_STATUS_LABELS, ORDER_PAYMENT_STATUS_COLORS, ORDER_SOURCE_LABELS, getOrderStatusVars } from '@/lib/order-model'
 
 interface Props {
   order: OrderDTO
   onClick: () => void
+  // Проп геттера drag-хендлера из dnd-kit useDraggable — необязательные,
+  // чтобы карточку можно было рендерить и вне контекста канбана (сейчас
+  // не используется где-то ещё, но так карточка не завязана жёстко на DnD).
+  dragAttributes?: DraggableAttributes
+  dragListeners?: DraggableSyntheticListeners
+  // true — карточка отрисована в DragOverlay (её "приподняли"): используем
+  // усиленный акцент вместо hover, т.к. настоящего hover там не бывает.
+  elevated?: boolean
 }
 
 function formatMoney(v: number | null) {
@@ -16,7 +26,14 @@ function formatMoney(v: number | null) {
   return new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB', maximumFractionDigits: 0 }).format(v)
 }
 
-export default function OrderCard({ order, onClick }: Props) {
+// Статичные Tailwind-классы, общие для всех статусов — конкретный цвет
+// приходит через CSS-переменные --status-* (см. getOrderStatusVars), которые
+// выставляются в style на самом элементе. Так JIT-компилятору не нужно видеть
+// шаблонные строки вида `border-blue-500` — сами классы неизменны.
+const CARD_REST = 'border-[color:var(--status-border)] shadow-[0_0_16px_-2px_var(--status-glow)] hover:border-[color:var(--status-border-strong)] hover:shadow-[0_0_26px_-2px_var(--status-glow-strong)] hover:bg-zinc-800/60'
+const CARD_ELEVATED = 'border-[color:var(--status-border-strong)] shadow-[0_0_36px_2px_var(--status-glow-strong)]'
+
+export default function OrderCard({ order, onClick, dragAttributes, dragListeners, elevated }: Props) {
   const name = order.clientName || order.title || 'Без имени'
   const subLine = [order.serviceType, order.room].filter(Boolean).join(' · ')
   const when = order.plannedStartTime && order.plannedEndTime
@@ -28,7 +45,10 @@ export default function OrderCard({ order, onClick }: Props) {
     <button
       type="button"
       onClick={onClick}
-      className="w-full text-left bg-zinc-900 border border-zinc-800 hover:border-zinc-700 rounded-lg p-3.5 space-y-1.5 transition-colors"
+      {...dragAttributes}
+      {...dragListeners}
+      style={getOrderStatusVars(order.status) as CSSProperties}
+      className={`w-full text-left bg-zinc-900 border border-l-[3px] border-l-[color:var(--status-color)] rounded-lg p-3.5 space-y-1.5 transition-all duration-150 ease-out touch-none ${elevated ? CARD_ELEVATED : CARD_REST}`}
     >
       <p className="text-zinc-100 text-sm font-medium truncate">{name}</p>
       {subLine && <p className="text-zinc-400 text-xs truncate">{subLine}</p>}

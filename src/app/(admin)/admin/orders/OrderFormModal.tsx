@@ -1,9 +1,9 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, type ReactNode, type SelectHTMLAttributes } from 'react'
 import Link from 'next/link'
 import { format, parseISO } from 'date-fns'
-import { Search, Link2, UserPlus } from 'lucide-react'
+import { Search, Link2, UserPlus, ChevronDown } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { createOrder, updateOrder, updateOrderStatus, type OrderDTO, type OrderInput } from '@/lib/actions/orders'
 import { getClients } from '@/lib/actions/clients'
@@ -26,10 +26,44 @@ interface ClientOption {
   companyName?: string | null
 }
 
-const INPUT = 'w-full bg-zinc-800 border border-zinc-700 text-zinc-100 placeholder-zinc-600 rounded-lg px-3 py-2 text-sm outline-none focus:border-[#00c26b] transition-colors'
-const SELECT = 'w-full bg-zinc-800 border border-zinc-700 text-zinc-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-[#00c26b] transition-colors cursor-pointer'
-const LABEL = 'block text-zinc-400 text-xs mb-1.5'
+// Общая геометрия для инпутов и селектов в одной сетке: одинаковая высота
+// (h-10), рамка и радиус — иначе нативный select рендерится не той же высоты,
+// что input, и ряд "съезжает" (см. FIELD_BASE/INPUT/SELECT ниже).
+const FIELD_BASE = 'w-full h-10 bg-zinc-800 border border-zinc-700 rounded-lg text-sm outline-none focus:border-[#00c26b] transition-colors'
+const INPUT = `${FIELD_BASE} px-3 text-zinc-100 placeholder-zinc-600`
+const SELECT = `${FIELD_BASE} pl-3 pr-9 text-zinc-200 cursor-pointer appearance-none`
+const TEXTAREA = 'w-full bg-zinc-800 border border-zinc-700 text-zinc-100 placeholder-zinc-600 rounded-lg px-3 py-2 text-sm outline-none focus:border-[#00c26b] transition-colors resize-none'
+const LABEL = 'block text-zinc-400 text-xs'
 const SECTION = 'text-zinc-500 text-[11px] font-semibold uppercase tracking-wider mb-3 mt-5 first:mt-0 pt-4 border-t border-zinc-800/80 first:border-0 first:pt-0'
+
+// Единая структура "поле": лейбл сверху, контрол снизу, фиксированный зазор
+// между ними — вместо margin на отдельных лейблах/инпутах по всей форме.
+function Field({ children }: { children: ReactNode }) {
+  return <div className="flex flex-col gap-1.5">{children}</div>
+}
+
+// Единая структура "строка из двух полей": на десктопе 2 колонки, на узких
+// экранах складывается в одну — без ручных отступов на отдельных полях.
+function Row({ children }: { children: ReactNode }) {
+  return <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">{children}</div>
+}
+
+function Label({ children }: { children: ReactNode }) {
+  return <label className={LABEL}>{children}</label>
+}
+
+// select с appearance-none + своя стрелка — чтобы высота и позиция control
+// всегда совпадали с input рядом (нативный select иначе рисует свою высоту).
+function SelectField({ children, ...props }: SelectHTMLAttributes<HTMLSelectElement>) {
+  return (
+    <div className="relative">
+      <select {...props} className={SELECT}>
+        {children}
+      </select>
+      <ChevronDown className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
+    </div>
+  )
+}
 
 function splitDateTime(iso: string | null): { date: string; time: string } {
   if (!iso) return { date: '', time: '' }
@@ -148,7 +182,7 @@ export default function OrderFormModal({ order, onOpenChange, onSaved }: Props) 
   return (
     <>
       <Dialog open onOpenChange={onOpenChange}>
-        <DialogContent className="bg-zinc-900 border-zinc-800 text-white max-w-xl max-h-[88vh] flex flex-col p-0">
+        <DialogContent className="bg-zinc-900 border-zinc-800 text-white max-w-xl sm:max-w-[662px] max-h-[88vh] flex flex-col p-0">
           <DialogHeader className="px-6 pt-6 pb-4 border-b border-zinc-800 flex-shrink-0">
             <DialogTitle className="text-white text-lg font-semibold">
               {isEdit ? 'Заказ' : 'Новый заказ'}
@@ -159,9 +193,9 @@ export default function OrderFormModal({ order, onOpenChange, onSaved }: Props) 
             {isEdit && (
               <>
                 <p className={SECTION}>Статус</p>
-                <select className={SELECT} value={status} onChange={e => setStatus(e.target.value as OrderStatus)}>
+                <SelectField value={status} onChange={e => setStatus(e.target.value as OrderStatus)}>
                   {ORDER_BOARD_COLUMNS.map(s => <option key={s} value={s}>{ORDER_STATUS_LABELS[s]}</option>)}
-                </select>
+                </SelectField>
               </>
             )}
 
@@ -180,52 +214,54 @@ export default function OrderFormModal({ order, onOpenChange, onSaved }: Props) 
               </div>
             ) : (
               <>
-                <div>
-                  <label className={LABEL}>Имя клиента или название заявки *</label>
+                <Field>
+                  <Label>Имя клиента или название заявки *</Label>
                   <input className={INPUT} placeholder="Например, Сергей Соломатин" value={clientName}
                     onChange={e => setClientName(e.target.value)} />
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className={LABEL}>Телефон</label>
+                </Field>
+                <Row>
+                  <Field>
+                    <Label>Телефон</Label>
                     <input className={INPUT} placeholder="+7..." value={clientPhone} onChange={e => setClientPhone(e.target.value)} />
-                  </div>
-                  <div>
-                    <label className={LABEL}>Telegram</label>
+                  </Field>
+                  <Field>
+                    <Label>Telegram</Label>
                     <input className={INPUT} placeholder="@username" value={clientTelegram} onChange={e => setClientTelegram(e.target.value)} />
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className={LABEL}>Email</label>
+                  </Field>
+                </Row>
+                <Row>
+                  <Field>
+                    <Label>Email</Label>
                     <input className={INPUT} placeholder="mail@example.com" value={clientEmail} onChange={e => setClientEmail(e.target.value)} />
-                  </div>
-                  <div>
-                    <label className={LABEL}>Тип клиента</label>
-                    <select className={SELECT} value={clientType} onChange={e => setClientType(e.target.value as ClientType | '')}>
+                  </Field>
+                  <Field>
+                    <Label>Тип клиента</Label>
+                    <SelectField value={clientType} onChange={e => setClientType(e.target.value as ClientType | '')}>
                       <option value="">Не указан</option>
                       {(Object.keys(CLIENT_TYPE_LABELS) as ClientType[]).map(t => (
                         <option key={t} value={t}>{CLIENT_TYPE_LABELS[t]}</option>
                       ))}
-                    </select>
-                  </div>
-                </div>
-                <div>
-                  <label className={LABEL}>Компания</label>
+                    </SelectField>
+                  </Field>
+                </Row>
+                <Field>
+                  <Label>Компания</Label>
                   <input className={INPUT} placeholder="Если известна" value={companyName} onChange={e => setCompanyName(e.target.value)} />
-                </div>
+                </Field>
 
                 <div>
-                  <label className={LABEL}>Найти существующего клиента</label>
-                  <div className="relative">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500 pointer-events-none" />
-                    <input
-                      value={searchQuery}
-                      onChange={e => handleClientSearch(e.target.value)}
-                      placeholder="Имя или телефон..."
-                      className={`${INPUT} pl-9`}
-                    />
-                  </div>
+                  <Field>
+                    <Label>Найти существующего клиента</Label>
+                    <div className="relative">
+                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500 pointer-events-none" />
+                      <input
+                        value={searchQuery}
+                        onChange={e => handleClientSearch(e.target.value)}
+                        placeholder="Имя или телефон..."
+                        className={`${INPUT} pl-9`}
+                      />
+                    </div>
+                  </Field>
                   {searching && <p className="text-zinc-500 text-xs mt-1.5">Ищу...</p>}
                   {!searching && searchResults.length > 0 && (
                     <div className="mt-1.5 border border-zinc-800 rounded-lg overflow-hidden divide-y divide-zinc-800">
@@ -251,43 +287,43 @@ export default function OrderFormModal({ order, onOpenChange, onSaved }: Props) 
             )}
 
             <p className={SECTION}>Услуга</p>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className={LABEL}>Формат</label>
-                <select className={SELECT} value={serviceType} onChange={e => setServiceType(e.target.value)}>
+            <Row>
+              <Field>
+                <Label>Формат</Label>
+                <SelectField value={serviceType} onChange={e => setServiceType(e.target.value)}>
                   <option value="">Не указан</option>
                   {FORMAT_DICTIONARY.map(e => <option key={e.canonical} value={e.canonical}>{e.canonical}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className={LABEL}>Зал</label>
-                <select className={SELECT} value={room} onChange={e => setRoom(e.target.value)}>
+                </SelectField>
+              </Field>
+              <Field>
+                <Label>Зал</Label>
+                <SelectField value={room} onChange={e => setRoom(e.target.value)}>
                   <option value="">Не указан</option>
                   {ROOM_DICTIONARY.map(e => <option key={e.canonical} value={e.canonical}>{e.canonical}</option>)}
-                </select>
-              </div>
-            </div>
-            <div>
-              <label className={LABEL}>Комментарий</label>
-              <textarea className={`${INPUT} resize-none`} rows={2} value={comment} onChange={e => setComment(e.target.value)} />
-            </div>
+                </SelectField>
+              </Field>
+            </Row>
+            <Field>
+              <Label>Комментарий</Label>
+              <textarea className={TEXTAREA} rows={2} value={comment} onChange={e => setComment(e.target.value)} />
+            </Field>
 
             <p className={SECTION}>Запись в студию</p>
             <p className="text-zinc-500 text-xs -mt-2 mb-1">Можно оставить пустым — заказ останется заявкой.</p>
-            <div>
-              <label className={LABEL}>Дата</label>
+            <Field>
+              <Label>Дата</Label>
               <input className={INPUT} type="date" value={date} onChange={e => setDate(e.target.value)} />
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className={LABEL}>Время начала</label>
+            </Field>
+            <Row>
+              <Field>
+                <Label>Время начала</Label>
                 <input className={INPUT} type="time" value={startTime} onChange={e => setStartTime(e.target.value)} />
-              </div>
-              <div>
-                <label className={LABEL}>Время окончания</label>
+              </Field>
+              <Field>
+                <Label>Время окончания</Label>
                 <input className={INPUT} type="time" value={endTime} onChange={e => setEndTime(e.target.value)} />
-              </div>
-            </div>
+              </Field>
+            </Row>
             {isEdit && order?.hasBooking && (
               <p className="text-zinc-500 text-xs">
                 У заказа уже есть запись в расписании платформы — при изменении даты/времени она обновится.
@@ -295,30 +331,30 @@ export default function OrderFormModal({ order, onOpenChange, onSaved }: Props) 
             )}
 
             <p className={SECTION}>Оплата</p>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className={LABEL}>Предварительная стоимость, ₽</label>
+            <Row>
+              <Field>
+                <Label>Предварительная стоимость, ₽</Label>
                 <input className={INPUT} type="number" min="0" placeholder="напр. 15000" value={preliminaryAmount}
                   onChange={e => setPreliminaryAmount(e.target.value)} />
-              </div>
-              <div>
-                <label className={LABEL}>Способ оплаты</label>
-                <select className={SELECT} value={paymentMethod} onChange={e => setPaymentMethod(e.target.value as PaymentMethod | '')}>
+              </Field>
+              <Field>
+                <Label>Способ оплаты</Label>
+                <SelectField value={paymentMethod} onChange={e => setPaymentMethod(e.target.value as PaymentMethod | '')}>
                   <option value="">Не указан</option>
                   {(Object.keys(ORDER_PAYMENT_METHOD_LABELS) as PaymentMethod[]).map(m => (
                     <option key={m} value={m}>{ORDER_PAYMENT_METHOD_LABELS[m]}</option>
                   ))}
-                </select>
-              </div>
-            </div>
-            <div>
-              <label className={LABEL}>Статус оплаты</label>
-              <select className={SELECT} value={paymentStatus} onChange={e => setPaymentStatus(e.target.value as OrderPaymentStatus)}>
+                </SelectField>
+              </Field>
+            </Row>
+            <Field>
+              <Label>Статус оплаты</Label>
+              <SelectField value={paymentStatus} onChange={e => setPaymentStatus(e.target.value as OrderPaymentStatus)}>
                 {(Object.keys(ORDER_PAYMENT_STATUS_LABELS) as OrderPaymentStatus[]).map(s => (
                   <option key={s} value={s}>{ORDER_PAYMENT_STATUS_LABELS[s]}</option>
                 ))}
-              </select>
-            </div>
+              </SelectField>
+            </Field>
 
             {error && (
               <p className="text-red-400 text-sm bg-red-950/30 border border-red-800/40 rounded-lg px-3 py-2">{error}</p>

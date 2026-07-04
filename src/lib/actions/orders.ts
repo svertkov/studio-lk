@@ -61,6 +61,7 @@ export interface OrderDTO {
   hasBooking: boolean
   createdAt: string
   updatedAt: string
+  statusUpdatedAt: string
   completedAt: string | null
 }
 
@@ -93,6 +94,7 @@ function toDTO(row: OrderWithRelations): OrderDTO {
     hasBooking: !!row.scheduleEvent,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
+    statusUpdatedAt: row.statusUpdatedAt.toISOString(),
     completedAt: row.completedAt ? row.completedAt.toISOString() : null,
   }
 }
@@ -105,8 +107,11 @@ export async function getOrders(): Promise<
   { ok: true; data: OrderDTO[] } | { ok: false; data: OrderDTO[]; error: string }
 > {
   try {
+    // CANCELLED теперь — видимая колонка канбана "Отказы" (см. order-model.ts),
+    // поэтому больше не исключается. ARCHIVED по-прежнему скрыт — это не
+    // колонка воронки, а отдельный будущий архивный статус.
     const rows = await prisma.order.findMany({
-      where: { status: { notIn: ['CANCELLED', 'ARCHIVED'] } },
+      where: { status: { not: 'ARCHIVED' } },
       orderBy: { createdAt: 'desc' },
       include: ORDER_INCLUDE,
     })
@@ -257,7 +262,9 @@ export async function updateOrder(
           // Заказ без своей записи в расписании при добавлении даты/времени
           // переходит в "Записан в студию" — но только из "Заявки", чтобы не
           // откатывать уже продвинутый вручную статус (монтаж/правки/готово).
-          ...(!hadBookingBefore && hasBookingTimeNow && existing.status === 'LEAD' ? { status: 'BOOKED' as const } : {}),
+          ...(!hadBookingBefore && hasBookingTimeNow && existing.status === 'LEAD'
+            ? { status: 'BOOKED' as const, statusUpdatedAt: new Date() }
+            : {}),
         },
         include: { scheduleEvent: true },
       })
@@ -325,7 +332,7 @@ export async function updateOrderStatus(
 
     const updated = await prisma.order.update({
       where: { id },
-      data: { status, completedAt },
+      data: { status, completedAt, statusUpdatedAt: new Date() },
       include: ORDER_INCLUDE,
     })
 
