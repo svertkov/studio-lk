@@ -111,6 +111,7 @@ enum OrderStatus {
 enum OrderSource {
   MANUAL
   GOOGLE_CALENDAR
+  TELEGRAM_BOT
   OTHER
 }
 
@@ -128,11 +129,20 @@ enum TelegramChatType {
   SUPERGROUP
 }
 
+// consent_required/consent_given/waiting_manager — этапы юридического
+// consent-first флоу до того, как в диалог включается администратор.
+// ORDER_CREATED — было CONVERTED_TO_ORDER: переименовано, т.к. в этом
+// проекте создание заказа — прямая одношаговая операция (createOrder),
+// без промежуточного черновика, так что отдельный "draft"-статус не нужен.
 enum TelegramConversationStatus {
   NEW
+  CONSENT_REQUIRED
+  CONSENT_GIVEN
+  WAITING_MANAGER
   IN_PROGRESS
-  CONVERTED_TO_ORDER
+  ORDER_CREATED
   ARCHIVED
+  CONSENT_REVOKED
 }
 
 enum TelegramMessageDirection {
@@ -140,18 +150,36 @@ enum TelegramMessageDirection {
   OUTBOUND
 }
 
-// Используется только для групповых рабочих чатов (пока не в MVP — там
-// пишет один клиент, роль отправителя однозначна и без этого поля).
-enum TelegramSenderRole {
+// Кто фактически является автором сообщения — заменяет прежний
+// TelegramSenderRole (CLIENT/STUDIO/UNKNOWN, был нужен только для будущих
+// групповых чатов). Теперь нужен для ЛЮБОГО сообщения, включая личные
+// диалоги: разграничивает автоматические сообщения бота (запрос согласия,
+// фраза про менеджера) от реальных сообщений администратора.
+enum TelegramSenderType {
   CLIENT
-  STUDIO
-  UNKNOWN
+  ADMIN
+  BOT
+  SYSTEM
 }
 
-enum AiOrderDraftStatus {
-  DRAFT
-  CONFIRMED
-  DISMISSED
+enum TelegramConsentStatus {
+  NONE
+  GIVEN
+  REVOKED
+}
+
+// PHOTO/DOCUMENT/VOICE/VIDEO/STICKER добавятся в Этапе B вместе с
+// TelegramMessageAttachment — пока в БД только то, что реально используется.
+enum TelegramMessageType {
+  TEXT
+  SYSTEM
+}
+
+enum TelegramMessageStatus {
+  RECEIVED
+  PENDING
+  SENT
+  FAILED
 }
 
 // ============================================================
@@ -170,6 +198,9 @@ model User {
   clients   Client[]     @relation("ResponsibleUser")
   notes     ClientNote[]
   auditLogs AuditLog[]
+  assignedTelegramConversations TelegramConversation[] @relation("AssignedAdmin")
+  sentTelegramMessages          TelegramMessage[]
+  telegramInternalNotes         TelegramInternalNote[]
 
   @@map("cms_user")
 }
@@ -466,35 +497,64 @@ model TelegramConversation {
   createdAt        DateTime @default(now())   @map("created_at")
   updatedAt        DateTime @updatedAt        @map("updated_at")
 
-  linkedClient     Client?           @relation(fields: [linkedClientId], references: [id])
-  messages         TelegramMessage[]
-  aiDraft          AiOrderDraft?
-  order            Order?            // обратная связь от Order.telegramConversationId
+  // ---- Consent-first (обязательно до подключения администратора) ----
+  consentStatus         TelegramConsentStatus @default(NONE) @map("consent_status")
+  // Момент отправки запроса согласия для consentRequestVersion — чтобы не
+  // слать его повторно на каждое новое сообщение клиента.
+  consentRequestSentAt   DateTime?            @map("consent_request_sent_at")
+  consentRequestVersion  String?              @map("consent_request_version")
+
+  // ---- Рабочие поля инбокса ----
+  assignedAdminId  String?   @map("assigned_admin_id") // информационная метка "кто ведёт", не ограничение видимости
+  unreadCount      Int       @default(0) @map("unread_count")
+  isPinned         Boolean   @default(false) @map("is_pinned")
+  archivedAt       DateTime? @map("archived_at")
+  // Первое сообщение клиента — подсказка для предзаполнения комментария заказа.
+  firstMessageText String?   @map("first_message_text")
+
+  linkedClient  Client?                @relation(fields: [linkedClientId], references: [id])
+  assignedAdmin User?                  @relation("AssignedAdmin", fields: [assignedAdminId], references: [id])
+  messages      TelegramMessage[]
+  consents      TelegramConsent[]
+  internalNotes TelegramInternalNote[]
+  order         Order? // обратная связь от Order.telegramConversationId
 
   @@index([linkedClientId])
   @@index([status])
+  @@index([assignedAdminId])
   @@map("cms_telegram_conversation")
 }
 
 model TelegramMessage {
   id                String   @id @default(cuid())
   conversationId    String   @map("conversation_id")
+  // update_id — для идемпотентности на уровне всего update (в т.ч.
+  // callback_query, у которого нет message_id в привычном смысле).
+  telegramUpdateId  String?  @map("telegram_update_id")
   // message_id у Telegram уникален только В РАМКАХ чата, не глобально —
   // поэтому дедуп ниже строится по паре (conversationId, telegramMessageId).
   telegramMessageId String   @map("telegram_message_id")
   direction         TelegramMessageDirection
-  // Заполняются осмысленно только для групповых чатов (позже) — в private
-  // диалоге inbound всегда от клиента, а outbound от студии, senderRole
-  // там не нужен для однозначности.
+  // Кто фактически автор — клиент / администратор / бот (авто-сообщения
+  // согласия) / системное событие. senderTelegramId/Username/Name заполнены
+  // только когда senderType = CLIENT.
+  // Дефолт CLIENT безопасен для миграции: все существующие строки на момент
+  // добавления этого поля — реальные входящие сообщения от клиента.
+  senderType        TelegramSenderType @default(CLIENT) @map("sender_type")
+  senderAdminId     String?  @map("sender_admin_id") // если senderType = ADMIN
   senderTelegramId  String?  @map("sender_telegram_id")
   senderUsername    String?  @map("sender_username")
   senderName        String?  @map("sender_name")
-  senderRole        TelegramSenderRole @default(UNKNOWN) @map("sender_role")
   text              String?
+  messageType       TelegramMessageType   @default(TEXT) @map("message_type")
+  status            TelegramMessageStatus @default(RECEIVED)
+  errorMessage      String?  @map("error_message")
+  sentAt            DateTime? @map("sent_at")
   rawPayload        Json     @map("raw_payload")
   createdAt         DateTime @default(now()) @map("created_at")
 
   conversation      TelegramConversation @relation(fields: [conversationId], references: [id])
+  senderAdmin       User?                @relation(fields: [senderAdminId], references: [id])
 
   // Защита от дублей при повторной доставке update от Telegram.
   @@unique([conversationId, telegramMessageId])
@@ -502,23 +562,75 @@ model TelegramMessage {
   @@map("cms_telegram_message")
 }
 
-model AiOrderDraft {
-  id                String             @id @default(cuid())
-  // Один активный черновик на диалог — обновляется на месте при повторном
-  // AI-анализе, история версий в MVP не хранится.
-  conversationId    String             @unique @map("conversation_id")
-  status            AiOrderDraftStatus @default(DRAFT)
-  extractedData     Json               @map("extracted_data")
-  confidence        Json
-  missingFields     Json               @map("missing_fields")
-  shouldCreateOrder Boolean            @default(false) @map("should_create_order")
-  reason            String?
-  createdAt         DateTime @default(now()) @map("created_at")
-  updatedAt         DateTime @updatedAt      @map("updated_at")
+// Факт согласия/отзыва — отдельная таблица (не просто поле на диалоге),
+// т.к. согласие юридически значимо и должно быть неизменяемой записью:
+// conversation.consentStatus — это "текущее состояние", а TelegramConsent —
+// история того, когда и на какой именно текст согласия клиент нажал.
+model TelegramConsent {
+  id                String    @id @default(cuid())
+  conversationId    String    @map("conversation_id")
+  telegramUserId    String?   @map("telegram_user_id")
+  telegramChatId    String    @map("telegram_chat_id")
+  username          String?
+  displayName       String?   @map("display_name")
+  consentVersion    String    @map("consent_version")
+  consentText       String    @map("consent_text")
+  policyUrl         String?   @map("policy_url")
+  // 'given' | 'revoked' — обычная строка, не enum: новая версия текста
+  // согласия не должна требовать миграции типа.
+  status            String
+  givenAt           DateTime? @map("given_at")
+  revokedAt         DateTime? @map("revoked_at")
+  source            String    @default("telegram_bot")
+  telegramMessageId String?   @map("telegram_message_id")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt      @map("updated_at")
 
-  conversation      TelegramConversation @relation(fields: [conversationId], references: [id])
+  conversation TelegramConversation @relation(fields: [conversationId], references: [id])
 
-  @@map("cms_ai_order_draft")
+  @@index([conversationId])
+  @@map("cms_telegram_consent")
+}
+
+// Внутренние заметки по диалогу — видны только сотрудникам, никогда не
+// уходят клиенту (в отличие от TelegramMessage, которая всегда про переписку).
+model TelegramInternalNote {
+  id             String   @id @default(cuid())
+  conversationId String   @map("conversation_id")
+  authorUserId   String   @map("author_user_id")
+  text           String
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt      @map("updated_at")
+
+  conversation TelegramConversation @relation(fields: [conversationId], references: [id])
+  author       User                 @relation(fields: [authorUserId], references: [id])
+
+  @@index([conversationId])
+  @@map("cms_telegram_internal_note")
+}
+
+// Единственная строка-синглтон настроек модуля (id всегда "singleton") —
+// одна конфигурация на всё приложение, не per-user. Токен бота НЕ хранится
+// здесь — только в TELEGRAM_BOT_TOKEN (env), чтобы никогда не попасть на
+// фронтенд даже случайно через сериализацию этой модели.
+model TelegramSettings {
+  id                               String   @id @default("singleton")
+  privacyPolicyUrl                 String?  @map("privacy_policy_url")
+  consentRequired                  Boolean  @default(true) @map("consent_required")
+  consentText                      String   @map("consent_text")
+  consentVersion                   String   @default("v1") @map("consent_version")
+  managerHandoffMessage            String   @default("Спасибо! Менеджер студии скоро подключится к диалогу.") @map("manager_handoff_message")
+  dataRetentionMode                String   @default("archive_forever") @map("data_retention_mode")
+  dataRetentionDays                Int?     @map("data_retention_days")
+  archiveWarningThresholdMessages  Int      @default(5000) @map("archive_warning_threshold_messages")
+  archiveWarningThresholdStorageMb Int      @default(1000) @map("archive_warning_threshold_storage_mb")
+  // Используется начиная с Этапа B (вложения) — задел на будущее, значение
+  // по умолчанию пустое, ни на что не влияет до появления вложений.
+  allowedAttachmentTypes           Json     @default("[]") @map("allowed_attachment_types")
+  maxAttachmentSizeMb              Int      @default(20) @map("max_attachment_size_mb")
+  updatedAt                        DateTime @updatedAt @map("updated_at")
+
+  @@map("cms_telegram_settings")
 }
 
 // ============================================================

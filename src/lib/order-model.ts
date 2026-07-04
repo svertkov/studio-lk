@@ -215,6 +215,7 @@ export function sortOrdersForColumn<T extends SortableOrder>(status: OrderStatus
 export const ORDER_SOURCE_LABELS: Record<OrderSource, string> = {
   MANUAL:          'Вручную',
   GOOGLE_CALENDAR: 'Google Calendar',
+  TELEGRAM_BOT:    'Telegram-бот',
   OTHER:           'Другое',
 }
 

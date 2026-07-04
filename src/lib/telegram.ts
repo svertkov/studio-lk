@@ -11,12 +11,13 @@ function getBotToken(): string {
   return token
 }
 
-// Минимальная форма Telegram Update/Message — только поля, которые реально
-// использует webhook (src/app/api/telegram/webhook/route.ts). Полный объект
-// всё равно сохраняется целиком в TelegramMessage.rawPayload.
+// Минимальная форма Telegram Update — только поля, которые реально использует
+// webhook (src/app/api/telegram/webhook/route.ts). Полный объект всё равно
+// сохраняется целиком в TelegramMessage.rawPayload.
 export interface TelegramUpdate {
   update_id: number
   message?: TelegramMessagePayload
+  callback_query?: TelegramCallbackQuery
 }
 
 export interface TelegramChat {
@@ -44,14 +45,47 @@ export interface TelegramMessagePayload {
   text?: string
 }
 
+// callback_query приходит при нажатии inline-кнопки (Согласен / Позвать
+// менеджера) — своя структура, у неё нет chat напрямую, только через message.
+export interface TelegramCallbackQuery {
+  id: string
+  from: TelegramUser
+  message?: TelegramMessagePayload
+  data?: string
+}
+
 export async function sendTelegramMessage(
   chatId: string, text: string
+): Promise<{ ok: true; telegramMessageId: string } | { ok: false; error: string }> {
+  return sendTelegramMessageRaw({ chat_id: chatId, text })
+}
+
+export interface InlineButton {
+  text: string
+  // Ровно одно из двух: callback_data (обрабатывается в webhook) или url
+  // (обычная ссылка, Telegram открывает её сам, без обращения к нам).
+  callback_data?: string
+  url?: string
+}
+
+export async function sendTelegramMessageWithButtons(
+  chatId: string, text: string, buttons: InlineButton[][]
+): Promise<{ ok: true; telegramMessageId: string } | { ok: false; error: string }> {
+  return sendTelegramMessageRaw({
+    chat_id: chatId,
+    text,
+    reply_markup: { inline_keyboard: buttons },
+  })
+}
+
+async function sendTelegramMessageRaw(
+  body: Record<string, unknown>
 ): Promise<{ ok: true; telegramMessageId: string } | { ok: false; error: string }> {
   try {
     const res = await fetch(`${TELEGRAM_API_BASE}/bot${getBotToken()}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text }),
+      body: JSON.stringify(body),
     })
     const data = await res.json()
     if (!res.ok || !data.ok) {
@@ -62,6 +96,20 @@ export async function sendTelegramMessage(
   } catch (e) {
     console.error('[sendTelegramMessage]', e)
     return { ok: false, error: 'Не удалось отправить сообщение в Telegram' }
+  }
+}
+
+// Обязательно вызывать после обработки callback_query — иначе кнопка в
+// Telegram-клиенте у клиента продолжает "крутиться" (visual loading state).
+export async function answerCallbackQuery(callbackQueryId: string, text?: string): Promise<void> {
+  try {
+    await fetch(`${TELEGRAM_API_BASE}/bot${getBotToken()}/answerCallbackQuery`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ callback_query_id: callbackQueryId, text }),
+    })
+  } catch (e) {
+    console.error('[answerCallbackQuery]', e)
   }
 }
 
@@ -77,4 +125,46 @@ export async function setTelegramWebhook(
   })
   const data = await res.json()
   return { ok: !!data.ok, description: data.description }
+}
+
+export interface TelegramWebhookInfo {
+  url: string
+  pending_update_count: number
+  last_error_date?: number
+  last_error_message?: string
+}
+
+// Для страницы настроек — показать реальный статус вебхука "вживую", не из
+// БД (в БД он не хранится, чтобы не рассинхронизироваться с Telegram).
+export async function getTelegramWebhookInfo(): Promise<TelegramWebhookInfo | null> {
+  try {
+    const res = await fetch(`${TELEGRAM_API_BASE}/bot${getBotToken()}/getWebhookInfo`)
+    const data = await res.json()
+    return data.ok ? (data.result as TelegramWebhookInfo) : null
+  } catch (e) {
+    console.error('[getTelegramWebhookInfo]', e)
+    return null
+  }
+}
+
+export interface TelegramBotInfo {
+  username: string
+  first_name: string
+}
+
+export async function getTelegramBotInfo(): Promise<TelegramBotInfo | null> {
+  try {
+    const res = await fetch(`${TELEGRAM_API_BASE}/bot${getBotToken()}/getMe`)
+    const data = await res.json()
+    return data.ok ? (data.result as TelegramBotInfo) : null
+  } catch (e) {
+    console.error('[getTelegramBotInfo]', e)
+    return null
+  }
+}
+
+// Токен настроен — но НЕ показываем его целиком нигде, даже в этом файле.
+// Используется страницей настроек, чтобы отличить "не настроено" от "настроено".
+export function isTelegramBotTokenConfigured(): boolean {
+  return !!process.env.TELEGRAM_BOT_TOKEN
 }

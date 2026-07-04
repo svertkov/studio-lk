@@ -143,6 +143,10 @@ export interface OrderInput {
   room?: string
   plannedStartTime?: string | null
   plannedEndTime?: string | null
+  // Заполняется только при создании заказа из кнопки "Создать заказ" на
+  // странице Telegram-диалога (см. src/lib/actions/telegram.ts) — источник
+  // заказа автоматически становится TELEGRAM_BOT, а не MANUAL.
+  telegramConversationId?: string | null
 }
 
 export async function createOrder(
@@ -164,7 +168,8 @@ export async function createOrder(
       const created = await tx.order.create({
         data: {
           status: hasBookingTime ? 'BOOKED' : 'LEAD',
-          source: 'MANUAL',
+          source: input.telegramConversationId ? 'TELEGRAM_BOT' : 'MANUAL',
+          telegramConversationId: input.telegramConversationId ?? null,
           title: titleTrim || clientNameTrim || null,
           clientId: input.clientId ?? null,
           clientName: clientNameTrim || null,

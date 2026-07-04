@@ -17,6 +17,13 @@ interface Props {
   order: OrderDTO | null
   onOpenChange: (open: boolean) => void
   onSaved: () => void
+  // Предзаполнение при создании нового заказа (например, из Telegram-диалога)
+  // — тот же аддитивный паттерн, что у AddClientModal.initialValues. Не имеет
+  // эффекта при редактировании существующего заказа (order уже не null).
+  initialValues?: Partial<OrderInput>
+  // Если задан — заказ при создании автоматически привязывается к этому
+  // Telegram-диалогу (см. src/lib/actions/telegram.ts).
+  telegramConversationId?: string
 }
 
 interface ClientOption {
@@ -77,24 +84,28 @@ function combineDateTime(date: string, time: string): string | null {
   return Number.isNaN(d.getTime()) ? null : d.toISOString()
 }
 
-export default function OrderFormModal({ order, onOpenChange, onSaved }: Props) {
+export default function OrderFormModal({ order, onOpenChange, onSaved, initialValues, telegramConversationId }: Props) {
   const isEdit = !!order
-  const startSplit = splitDateTime(order?.plannedStartTime ?? null)
-  const endSplit = splitDateTime(order?.plannedEndTime ?? null)
+  const startSplit = splitDateTime(order?.plannedStartTime ?? initialValues?.plannedStartTime ?? null)
+  const endSplit = splitDateTime(order?.plannedEndTime ?? initialValues?.plannedEndTime ?? null)
 
-  const [clientId, setClientId] = useState<string | null>(order?.clientId ?? null)
-  const [clientName, setClientName] = useState(order?.clientName ?? '')
-  const [clientPhone, setClientPhone] = useState(order?.clientPhone ?? '')
-  const [clientTelegram, setClientTelegram] = useState(order?.clientTelegram ?? '')
-  const [clientEmail, setClientEmail] = useState(order?.clientEmail ?? '')
-  const [clientType, setClientType] = useState<ClientType | ''>(order?.clientType ?? '')
-  const [companyName, setCompanyName] = useState(order?.companyName ?? '')
-  const [serviceType, setServiceType] = useState(order?.serviceType ?? '')
-  const [room, setRoom] = useState(order?.room ?? '')
-  const [comment, setComment] = useState(order?.comment ?? '')
-  const [preliminaryAmount, setPreliminaryAmount] = useState(order?.preliminaryAmount?.toString() ?? '')
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | ''>(order?.paymentMethod ?? '')
-  const [paymentStatus, setPaymentStatus] = useState<OrderPaymentStatus>(order?.paymentStatus ?? 'NOT_SPECIFIED')
+  const [clientId, setClientId] = useState<string | null>(order?.clientId ?? initialValues?.clientId ?? null)
+  const [clientName, setClientName] = useState(order?.clientName ?? initialValues?.clientName ?? '')
+  const [clientPhone, setClientPhone] = useState(order?.clientPhone ?? initialValues?.clientPhone ?? '')
+  const [clientTelegram, setClientTelegram] = useState(order?.clientTelegram ?? initialValues?.clientTelegram ?? '')
+  const [clientEmail, setClientEmail] = useState(order?.clientEmail ?? initialValues?.clientEmail ?? '')
+  const [clientType, setClientType] = useState<ClientType | ''>(order?.clientType ?? initialValues?.clientType ?? '')
+  const [companyName, setCompanyName] = useState(order?.companyName ?? initialValues?.companyName ?? '')
+  const [serviceType, setServiceType] = useState(order?.serviceType ?? initialValues?.serviceType ?? '')
+  const [room, setRoom] = useState(order?.room ?? initialValues?.room ?? '')
+  const [comment, setComment] = useState(order?.comment ?? initialValues?.comment ?? '')
+  const [preliminaryAmount, setPreliminaryAmount] = useState(
+    order?.preliminaryAmount?.toString() ?? initialValues?.preliminaryAmount?.toString() ?? ''
+  )
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | ''>(order?.paymentMethod ?? initialValues?.paymentMethod ?? '')
+  const [paymentStatus, setPaymentStatus] = useState<OrderPaymentStatus>(
+    order?.paymentStatus ?? initialValues?.paymentStatus ?? 'NOT_SPECIFIED'
+  )
   const [status, setStatus] = useState<OrderStatus>(order?.status ?? 'LEAD')
 
   const [date, setDate] = useState(startSplit.date)
@@ -156,6 +167,7 @@ export default function OrderFormModal({ order, onOpenChange, onSaved }: Props) 
       paymentStatus,
       plannedStartTime: combineDateTime(date, startTime),
       plannedEndTime: combineDateTime(date, endTime),
+      ...(telegramConversationId ? { telegramConversationId } : {}),
     }
 
     const result = isEdit ? await updateOrder(order!.id, input) : await createOrder(input)

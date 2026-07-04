@@ -1,31 +1,60 @@
 'use server'
 
+import { revalidatePath } from 'next/cache'
 import { prisma } from '@/lib/prisma'
 import { auth } from '@/auth'
+import { sendTelegramMessage, getTelegramWebhookInfo, getTelegramBotInfo, isTelegramBotTokenConfigured } from '@/lib/telegram'
+import { revokeConsent } from '@/lib/telegram-consent'
+import { createClient, type CreateClientInput } from '@/lib/actions/clients'
 import type {
-  TelegramConversation, TelegramMessage, Client,
-  TelegramConversationStatus, TelegramMessageDirection,
+  TelegramConversation, TelegramMessage, TelegramSettings, Client, User,
+  TelegramConversationStatus, TelegramConsentStatus, TelegramMessageDirection, TelegramMessageStatus, TelegramSenderType,
 } from '@prisma/client'
 
 // ============================================================
-// АВТОРИЗАЦИЯ — доступ к разделу "Telegram" только у Owner/Admin, так как
-// переписки с клиентами это персональные данные. Это первое место в проекте,
-// где серверное действие проверяет конкретную роль, а не только наличие
-// сессии (см. requireStaffSession в orders.ts — там проверяется только вход).
+// АВТОРИЗАЦИЯ — доступ к разделу "Telegram" только у Owner/Admin (как у
+// "Заказов"). Настройки/токен — только Owner. Это первое место в проекте,
+// где действие проверяет конкретную роль, а не только наличие сессии.
 // ============================================================
 
-const ALLOWED_ROLES = ['OWNER', 'ADMIN']
+const TELEGRAM_ACCESS_ROLES = ['OWNER', 'ADMIN']
 
-async function requireTelegramAccess(): Promise<{ ok: true } | { ok: false; error: string }> {
+async function requireTelegramAccess(): Promise<{ ok: true; userId: string } | { ok: false; error: string }> {
   try {
     const session = await auth()
     if (!session?.user) return { ok: false, error: 'Требуется авторизация' }
-    if (!ALLOWED_ROLES.includes(session.user.role)) {
+    if (!TELEGRAM_ACCESS_ROLES.includes(session.user.role)) {
       return { ok: false, error: 'Доступ к разделу Telegram есть только у владельца и администратора' }
     }
-    return { ok: true }
+    return { ok: true, userId: session.user.id }
   } catch {
     return { ok: false, error: 'Требуется авторизация' }
+  }
+}
+
+async function requireTelegramOwnerAccess(): Promise<{ ok: true; userId: string } | { ok: false; error: string }> {
+  const access = await requireTelegramAccess()
+  if (!access.ok) return access
+  const session = await auth()
+  if (session?.user.role !== 'OWNER') {
+    return { ok: false, error: 'Настройки Telegram-модуля может менять только владелец' }
+  }
+  return access
+}
+
+async function writeAuditLog(params: { userId: string | null; action: string; entityId: string; metadata?: Record<string, unknown> }) {
+  try {
+    await prisma.auditLog.create({
+      data: {
+        userId: params.userId,
+        action: params.action,
+        entityType: 'TelegramConversation',
+        entityId: params.entityId,
+        metadata: (params.metadata ?? {}) as object,
+      },
+    })
+  } catch {
+    // Не блокируем основную операцию, если лог не записался.
   }
 }
 
@@ -35,47 +64,83 @@ async function requireTelegramAccess(): Promise<{ ok: true } | { ok: false; erro
 
 type ConversationWithRelations = TelegramConversation & {
   linkedClient: Pick<Client, 'id' | 'name'> | null
+  assignedAdmin: Pick<User, 'id' | 'name' | 'email'> | null
   order: { id: string } | null
-  aiDraft: { id: string } | null
   messages: TelegramMessage[]
 }
 
 export interface TelegramMessageDTO {
   id: string
   direction: TelegramMessageDirection
+  senderType: TelegramSenderType
   text: string | null
   senderName: string | null
+  status: TelegramMessageStatus
+  errorMessage: string | null
   createdAt: string
+  sentAt: string | null
 }
 
 export interface TelegramConversationListItemDTO {
   id: string
   telegramUsername: string | null
+  telegramUserId: string | null
   clientNameGuess: string | null
   linkedClientId: string | null
   linkedClientName: string | null
+  orderId: string | null
+  assignedAdminId: string | null
+  assignedAdminName: string | null
   status: TelegramConversationStatus
+  consentStatus: TelegramConsentStatus
+  unreadCount: number
+  isPinned: boolean
+  archivedAt: string | null
   lastMessageAt: string | null
   lastMessageText: string | null
-  hasOrder: boolean
-  hasDraft: boolean
   createdAt: string
+  updatedAt: string
+}
+
+export interface TelegramConsentRecordDTO {
+  id: string
+  consentVersion: string
+  policyUrl: string | null
+  status: string
+  givenAt: string | null
+  revokedAt: string | null
+}
+
+export interface TelegramInternalNoteDTO {
+  id: string
+  authorUserId: string
+  authorName: string | null
+  text: string
+  createdAt: string
+  updatedAt: string
 }
 
 export interface TelegramConversationDetailDTO extends TelegramConversationListItemDTO {
-  telegramUserId: string | null
+  telegramChatId: string
   phone: string | null
-  orderId: string | null
+  consentRequestSentAt: string | null
+  consentRequestVersion: string | null
   messages: TelegramMessageDTO[]
+  consents: TelegramConsentRecordDTO[]
+  internalNotes: TelegramInternalNoteDTO[]
 }
 
 function toMessageDTO(m: TelegramMessage): TelegramMessageDTO {
   return {
     id: m.id,
     direction: m.direction,
+    senderType: m.senderType,
     text: m.text,
     senderName: m.senderName,
+    status: m.status,
+    errorMessage: m.errorMessage,
     createdAt: m.createdAt.toISOString(),
+    sentAt: m.sentAt ? m.sentAt.toISOString() : null,
   }
 }
 
@@ -84,48 +149,64 @@ function toListDTO(row: ConversationWithRelations): TelegramConversationListItem
   return {
     id: row.id,
     telegramUsername: row.telegramUsername,
+    telegramUserId: row.telegramUserId,
     clientNameGuess: row.clientNameGuess,
     linkedClientId: row.linkedClient?.id ?? null,
     linkedClientName: row.linkedClient?.name ?? null,
+    orderId: row.order?.id ?? null,
+    assignedAdminId: row.assignedAdmin?.id ?? null,
+    assignedAdminName: row.assignedAdmin?.name ?? row.assignedAdmin?.email ?? null,
     status: row.status,
+    consentStatus: row.consentStatus,
+    unreadCount: row.unreadCount,
+    isPinned: row.isPinned,
+    archivedAt: row.archivedAt ? row.archivedAt.toISOString() : null,
     lastMessageAt: row.lastMessageAt ? row.lastMessageAt.toISOString() : null,
     lastMessageText: lastMessage?.text ?? null,
-    hasOrder: !!row.order,
-    hasDraft: !!row.aiDraft,
     createdAt: row.createdAt.toISOString(),
-  }
-}
-
-function toDetailDTO(row: ConversationWithRelations): TelegramConversationDetailDTO {
-  return {
-    ...toListDTO(row),
-    telegramUserId: row.telegramUserId,
-    phone: row.phone,
-    orderId: row.order?.id ?? null,
-    messages: row.messages.map(toMessageDTO),
+    updatedAt: row.updatedAt.toISOString(),
   }
 }
 
 const CONVERSATION_INCLUDE_LIST = {
   linkedClient: { select: { id: true, name: true } },
+  assignedAdmin: { select: { id: true, name: true, email: true } },
   order: { select: { id: true } },
-  aiDraft: { select: { id: true } },
   messages: { orderBy: { createdAt: 'desc' as const }, take: 1 },
 }
 
 // ============================================================
-// СПИСОК ДИАЛОГОВ
+// СПИСОК ДИАЛОГОВ — фильтр по статусу + поиск
 // ============================================================
 
-export async function getConversations(): Promise<
+export type TelegramConversationFilter = TelegramConversationStatus | 'ALL'
+
+export async function getConversations(params: { filter?: TelegramConversationFilter; search?: string } = {}): Promise<
   { ok: true; data: TelegramConversationListItemDTO[] } | { ok: false; data: []; error: string }
 > {
   const access = await requireTelegramAccess()
   if (!access.ok) return { ok: false, data: [], error: access.error }
 
+  const q = params.search?.trim()
+
   try {
     const rows = await prisma.telegramConversation.findMany({
-      orderBy: { lastMessageAt: 'desc' },
+      where: {
+        ...(params.filter && params.filter !== 'ALL' ? { status: params.filter } : {}),
+        ...(q
+          ? {
+              OR: [
+                { clientNameGuess: { contains: q, mode: 'insensitive' as const } },
+                { telegramUsername: { contains: q, mode: 'insensitive' as const } },
+                { telegramUserId: { contains: q } },
+                { phone: { contains: q } },
+                { linkedClient: { name: { contains: q, mode: 'insensitive' as const } } },
+                { messages: { some: { text: { contains: q, mode: 'insensitive' as const } } } },
+              ],
+            }
+          : {}),
+      },
+      orderBy: [{ isPinned: 'desc' }, { lastMessageAt: 'desc' }],
       include: CONVERSATION_INCLUDE_LIST,
     })
     return { ok: true, data: rows.map(toListDTO) }
@@ -136,7 +217,7 @@ export async function getConversations(): Promise<
 }
 
 // ============================================================
-// ДИАЛОГ + ИСТОРИЯ СООБЩЕНИЙ
+// ДИАЛОГ + ИСТОРИЯ + СОГЛАСИЯ + ЗАМЕТКИ
 // ============================================================
 
 export async function getConversationDetail(
@@ -150,15 +231,432 @@ export async function getConversationDetail(
       where: { id },
       include: {
         linkedClient: { select: { id: true, name: true } },
+        assignedAdmin: { select: { id: true, name: true, email: true } },
         order: { select: { id: true } },
-        aiDraft: { select: { id: true } },
         messages: { orderBy: { createdAt: 'asc' } },
+        consents: { orderBy: { createdAt: 'desc' } },
+        internalNotes: { orderBy: { createdAt: 'desc' }, include: { author: { select: { id: true, name: true, email: true } } } },
       },
     })
     if (!row) return { ok: false, error: 'Диалог не найден' }
-    return { ok: true, data: toDetailDTO(row) }
+
+    await writeAuditLog({ userId: access.userId, action: 'TELEGRAM_CONVERSATION_VIEWED', entityId: id })
+
+    return {
+      ok: true,
+      data: {
+        ...toListDTO(row),
+        telegramChatId: row.telegramChatId,
+        phone: row.phone,
+        consentRequestSentAt: row.consentRequestSentAt ? row.consentRequestSentAt.toISOString() : null,
+        consentRequestVersion: row.consentRequestVersion,
+        messages: row.messages.map(toMessageDTO),
+        consents: row.consents.map(c => ({
+          id: c.id,
+          consentVersion: c.consentVersion,
+          policyUrl: c.policyUrl,
+          status: c.status,
+          givenAt: c.givenAt ? c.givenAt.toISOString() : null,
+          revokedAt: c.revokedAt ? c.revokedAt.toISOString() : null,
+        })),
+        internalNotes: row.internalNotes.map(n => ({
+          id: n.id,
+          authorUserId: n.authorUserId,
+          authorName: n.author.name ?? n.author.email,
+          text: n.text,
+          createdAt: n.createdAt.toISOString(),
+          updatedAt: n.updatedAt.toISOString(),
+        })),
+      },
+    }
   } catch (e) {
     console.error('[getConversationDetail]', e)
     return { ok: false, error: 'Не удалось загрузить диалог' }
   }
+}
+
+// ============================================================
+// РАБОЧИЕ ДЕЙСТВИЯ ИНБОКСА
+// ============================================================
+
+export async function markConversationRead(id: string) {
+  const access = await requireTelegramAccess()
+  if (!access.ok) return { ok: false as const, error: access.error }
+  await prisma.telegramConversation.update({ where: { id }, data: { unreadCount: 0 } })
+  revalidatePath('/admin/telegram')
+  return { ok: true as const }
+}
+
+export async function claimConversation(id: string) {
+  const access = await requireTelegramAccess()
+  if (!access.ok) return { ok: false as const, error: access.error }
+  const conversation = await prisma.telegramConversation.update({
+    where: { id },
+    data: { assignedAdminId: access.userId, status: 'IN_PROGRESS' },
+  })
+  await writeAuditLog({ userId: access.userId, action: 'TELEGRAM_CONVERSATION_CLAIMED', entityId: id })
+  revalidatePath('/admin/telegram')
+  revalidatePath(`/admin/telegram/${id}`)
+  return { ok: true as const, data: conversation.status }
+}
+
+export async function pinConversation(id: string, pinned: boolean) {
+  const access = await requireTelegramAccess()
+  if (!access.ok) return { ok: false as const, error: access.error }
+  await prisma.telegramConversation.update({ where: { id }, data: { isPinned: pinned } })
+  await writeAuditLog({ userId: access.userId, action: pinned ? 'TELEGRAM_CONVERSATION_PINNED' : 'TELEGRAM_CONVERSATION_UNPINNED', entityId: id })
+  revalidatePath('/admin/telegram')
+  return { ok: true as const }
+}
+
+export async function archiveConversation(id: string) {
+  const access = await requireTelegramAccess()
+  if (!access.ok) return { ok: false as const, error: access.error }
+  await prisma.telegramConversation.update({ where: { id }, data: { status: 'ARCHIVED', archivedAt: new Date() } })
+  await writeAuditLog({ userId: access.userId, action: 'TELEGRAM_CONVERSATION_ARCHIVED', entityId: id })
+  revalidatePath('/admin/telegram')
+  revalidatePath(`/admin/telegram/${id}`)
+  return { ok: true as const }
+}
+
+export async function unarchiveConversation(id: string) {
+  const access = await requireTelegramAccess()
+  if (!access.ok) return { ok: false as const, error: access.error }
+  const conversation = await prisma.telegramConversation.findUniqueOrThrow({ where: { id } })
+  const nextStatus: TelegramConversationStatus = conversation.consentStatus === 'GIVEN' ? 'WAITING_MANAGER' : 'CONSENT_REQUIRED'
+  await prisma.telegramConversation.update({ where: { id }, data: { status: nextStatus, archivedAt: null } })
+  await writeAuditLog({ userId: access.userId, action: 'TELEGRAM_CONVERSATION_UNARCHIVED', entityId: id })
+  revalidatePath('/admin/telegram')
+  revalidatePath(`/admin/telegram/${id}`)
+  return { ok: true as const }
+}
+
+// ============================================================
+// СООБЩЕНИЯ АДМИНИСТРАТОРА
+// ============================================================
+
+export async function sendConversationMessage(conversationId: string, text: string) {
+  const access = await requireTelegramAccess()
+  if (!access.ok) return { ok: false as const, error: access.error }
+
+  const trimmed = text.trim()
+  if (!trimmed) return { ok: false as const, error: 'Пустое сообщение' }
+
+  const conversation = await prisma.telegramConversation.findUnique({ where: { id: conversationId } })
+  if (!conversation) return { ok: false as const, error: 'Диалог не найден' }
+
+  const pending = await prisma.telegramMessage.create({
+    data: {
+      conversationId,
+      telegramMessageId: `pending-${Date.now()}`, // временный уникальный плейсхолдер, заменяется ниже после ответа Telegram
+      direction: 'OUTBOUND',
+      senderType: 'ADMIN',
+      senderAdminId: access.userId,
+      text: trimmed,
+      messageType: 'TEXT',
+      status: 'PENDING',
+      rawPayload: {},
+    },
+  })
+
+  const result = await sendTelegramMessage(conversation.telegramChatId, trimmed)
+
+  if (result.ok) {
+    await prisma.telegramMessage.update({
+      where: { id: pending.id },
+      data: { status: 'SENT', telegramMessageId: result.telegramMessageId, sentAt: new Date() },
+    })
+    await prisma.telegramConversation.update({
+      where: { id: conversationId },
+      data: { lastMessageAt: new Date(), ...(conversation.status === 'WAITING_MANAGER' ? { status: 'IN_PROGRESS' as const } : {}) },
+    })
+    await writeAuditLog({ userId: access.userId, action: 'TELEGRAM_MESSAGE_SENT', entityId: conversationId })
+  } else {
+    await prisma.telegramMessage.update({ where: { id: pending.id }, data: { status: 'FAILED', errorMessage: result.error } })
+    await writeAuditLog({ userId: access.userId, action: 'TELEGRAM_MESSAGE_SEND_FAILED', entityId: conversationId, metadata: { error: result.error } })
+  }
+
+  revalidatePath(`/admin/telegram/${conversationId}`)
+  return result.ok ? { ok: true as const } : { ok: false as const, error: result.error }
+}
+
+export async function retryFailedMessage(messageId: string) {
+  const access = await requireTelegramAccess()
+  if (!access.ok) return { ok: false as const, error: access.error }
+
+  const message = await prisma.telegramMessage.findUnique({ where: { id: messageId }, include: { conversation: true } })
+  if (!message || message.status !== 'FAILED') return { ok: false as const, error: 'Сообщение недоступно для повтора' }
+
+  await prisma.telegramMessage.update({ where: { id: messageId }, data: { status: 'PENDING', errorMessage: null } })
+  const result = await sendTelegramMessage(message.conversation.telegramChatId, message.text ?? '')
+
+  if (result.ok) {
+    await prisma.telegramMessage.update({
+      where: { id: messageId },
+      data: { status: 'SENT', telegramMessageId: result.telegramMessageId, sentAt: new Date() },
+    })
+  } else {
+    await prisma.telegramMessage.update({ where: { id: messageId }, data: { status: 'FAILED', errorMessage: result.error } })
+  }
+
+  revalidatePath(`/admin/telegram/${message.conversationId}`)
+  return result.ok ? { ok: true as const } : { ok: false as const, error: result.error }
+}
+
+// ============================================================
+// СОГЛАСИЕ — ручной отзыв администратором (страховка на случай, если клиент
+// не написал ровно одну из ожидаемых фраз).
+// ============================================================
+
+export async function revokeConsentManually(conversationId: string) {
+  const access = await requireTelegramAccess()
+  if (!access.ok) return { ok: false as const, error: access.error }
+
+  const conversation = await prisma.telegramConversation.findUnique({ where: { id: conversationId } })
+  if (!conversation) return { ok: false as const, error: 'Диалог не найден' }
+
+  await revokeConsent(conversationId, conversation.telegramChatId)
+  await writeAuditLog({ userId: access.userId, action: 'TELEGRAM_CONSENT_REVOKED_MANUALLY', entityId: conversationId })
+
+  revalidatePath(`/admin/telegram/${conversationId}`)
+  revalidatePath('/admin/telegram')
+  return { ok: true as const }
+}
+
+// ============================================================
+// СВЯЗЬ С КЛИЕНТОМ
+// ============================================================
+
+async function findPotentialClientMatch(telegramUsername: string | null, phone: string | null) {
+  if (!telegramUsername && !phone) return null
+  return prisma.client.findFirst({
+    where: {
+      deletedAt: null,
+      OR: [
+        ...(phone ? [{ phone }] : []),
+        ...(telegramUsername ? [{ telegram: { contains: telegramUsername, mode: 'insensitive' as const } }] : []),
+      ],
+    },
+    select: { id: true, name: true, phone: true, telegram: true },
+  })
+}
+
+export async function findClientMatchForConversation(conversationId: string) {
+  const access = await requireTelegramAccess()
+  if (!access.ok) return { ok: false as const, error: access.error }
+
+  const conversation = await prisma.telegramConversation.findUnique({ where: { id: conversationId } })
+  if (!conversation) return { ok: false as const, error: 'Диалог не найден' }
+
+  const match = await findPotentialClientMatch(conversation.telegramUsername, conversation.phone)
+  return { ok: true as const, data: match }
+}
+
+export async function createClientFromConversation(conversationId: string, forceCreate = false) {
+  const access = await requireTelegramAccess()
+  if (!access.ok) return { ok: false as const, error: access.error }
+
+  const conversation = await prisma.telegramConversation.findUnique({ where: { id: conversationId } })
+  if (!conversation) return { ok: false as const, error: 'Диалог не найден' }
+  if (conversation.linkedClientId) return { ok: false as const, error: 'К диалогу уже привязан клиент' }
+
+  if (!forceCreate) {
+    const match = await findPotentialClientMatch(conversation.telegramUsername, conversation.phone)
+    if (match) return { ok: false as const, error: 'duplicate' as const, duplicate: match }
+  }
+
+  const nameParts = (conversation.clientNameGuess || conversation.telegramUsername || 'Telegram клиент').split(' ')
+  const input: CreateClientInput = {
+    firstName: nameParts[0] || 'Telegram клиент',
+    lastName: nameParts.slice(1).join(' ') || undefined,
+    telegram: conversation.telegramUsername ? `@${conversation.telegramUsername}` : undefined,
+    phone: conversation.phone || undefined,
+    source: 'TELEGRAM',
+    notes: `Создан из Telegram-диалога (id: ${conversation.id})`,
+  }
+
+  const result = await createClient(input)
+  if (!result.ok) return { ok: false as const, error: result.error }
+
+  await prisma.telegramConversation.update({ where: { id: conversationId }, data: { linkedClientId: result.data.id } })
+  await writeAuditLog({ userId: access.userId, action: 'TELEGRAM_CLIENT_CREATED', entityId: conversationId, metadata: { clientId: result.data.id } })
+
+  revalidatePath(`/admin/telegram/${conversationId}`)
+  revalidatePath('/admin/telegram')
+  return { ok: true as const, data: result.data }
+}
+
+export async function linkConversationToClient(conversationId: string, clientId: string) {
+  const access = await requireTelegramAccess()
+  if (!access.ok) return { ok: false as const, error: access.error }
+
+  await prisma.telegramConversation.update({ where: { id: conversationId }, data: { linkedClientId: clientId } })
+  await writeAuditLog({ userId: access.userId, action: 'TELEGRAM_CLIENT_LINKED', entityId: conversationId, metadata: { clientId } })
+
+  revalidatePath(`/admin/telegram/${conversationId}`)
+  revalidatePath('/admin/telegram')
+  return { ok: true as const }
+}
+
+// ============================================================
+// СВЯЗЬ С ЗАКАЗОМ — сам заказ создаётся обычной формой (createOrder с
+// telegramConversationId, см. OrderFormModal); здесь только фиксируем это
+// в статусе диалога сразу после успешного сохранения формы.
+// ============================================================
+
+export async function markConversationOrderCreated(conversationId: string) {
+  const access = await requireTelegramAccess()
+  if (!access.ok) return { ok: false as const, error: access.error }
+
+  await prisma.telegramConversation.update({ where: { id: conversationId }, data: { status: 'ORDER_CREATED' } })
+  await writeAuditLog({ userId: access.userId, action: 'TELEGRAM_ORDER_CREATED', entityId: conversationId })
+
+  revalidatePath(`/admin/telegram/${conversationId}`)
+  revalidatePath('/admin/telegram')
+  return { ok: true as const }
+}
+
+// ============================================================
+// ВНУТРЕННИЕ ЗАМЕТКИ — видны только сотрудникам, никогда не уходят клиенту.
+// ============================================================
+
+export async function addInternalNote(conversationId: string, text: string) {
+  const access = await requireTelegramAccess()
+  if (!access.ok) return { ok: false as const, error: access.error }
+  const trimmed = text.trim()
+  if (!trimmed) return { ok: false as const, error: 'Пустая заметка' }
+
+  await prisma.telegramInternalNote.create({ data: { conversationId, authorUserId: access.userId, text: trimmed } })
+  await writeAuditLog({ userId: access.userId, action: 'TELEGRAM_NOTE_ADDED', entityId: conversationId })
+
+  revalidatePath(`/admin/telegram/${conversationId}`)
+  return { ok: true as const }
+}
+
+export async function updateInternalNote(noteId: string, text: string) {
+  const access = await requireTelegramAccess()
+  if (!access.ok) return { ok: false as const, error: access.error }
+
+  const note = await prisma.telegramInternalNote.findUnique({ where: { id: noteId } })
+  if (!note) return { ok: false as const, error: 'Заметка не найдена' }
+  if (note.authorUserId !== access.userId) return { ok: false as const, error: 'Редактировать можно только свои заметки' }
+
+  await prisma.telegramInternalNote.update({ where: { id: noteId }, data: { text: text.trim() } })
+  revalidatePath(`/admin/telegram/${note.conversationId}`)
+  return { ok: true as const }
+}
+
+// ============================================================
+// НАСТРОЙКИ МОДУЛЯ (только Owner) — токен бота сюда не входит, он только в
+// TELEGRAM_BOT_TOKEN (env) и никогда не сериализуется на фронтенд.
+// ============================================================
+
+export interface TelegramSettingsDTO {
+  privacyPolicyUrl: string | null
+  consentRequired: boolean
+  consentText: string
+  consentVersion: string
+  managerHandoffMessage: string
+  dataRetentionMode: string
+  dataRetentionDays: number | null
+  archiveWarningThresholdMessages: number
+  archiveWarningThresholdStorageMb: number
+  maxAttachmentSizeMb: number
+}
+
+function toSettingsDTO(s: TelegramSettings): TelegramSettingsDTO {
+  return {
+    privacyPolicyUrl: s.privacyPolicyUrl,
+    consentRequired: s.consentRequired,
+    consentText: s.consentText,
+    consentVersion: s.consentVersion,
+    managerHandoffMessage: s.managerHandoffMessage,
+    dataRetentionMode: s.dataRetentionMode,
+    dataRetentionDays: s.dataRetentionDays,
+    archiveWarningThresholdMessages: s.archiveWarningThresholdMessages,
+    archiveWarningThresholdStorageMb: s.archiveWarningThresholdStorageMb,
+    maxAttachmentSizeMb: s.maxAttachmentSizeMb,
+  }
+}
+
+const DEFAULT_CONSENT_TEXT =
+  'Здравствуйте! Это бот студии контента 2470. Мы поможем принять вашу заявку и передать её менеджеру. ' +
+  'Для этого студии нужно обработать ваши персональные данные: имя или ник в Telegram, контакт, текст сообщения, ' +
+  'параметры заявки, желаемые дату и время записи. Данные используются только для консультации, связи с вами и ' +
+  'организации записи в студию. Нажимая «Согласен», вы подтверждаете согласие на обработку персональных данных. ' +
+  'Политика обработки персональных данных: {{privacy_policy_url}}. Вы можете отозвать согласие сообщением «Отозвать согласие».'
+
+export interface TelegramWebhookStatusDTO {
+  botTokenConfigured: boolean
+  botUsername: string | null
+  webhookUrl: string | null
+  pendingUpdateCount: number | null
+  lastErrorMessage: string | null
+}
+
+export async function getTelegramSettings(): Promise<
+  { ok: true; data: TelegramSettingsDTO; webhookStatus: TelegramWebhookStatusDTO } | { ok: false; error: string }
+> {
+  const access = await requireTelegramAccess()
+  if (!access.ok) return { ok: false, error: access.error }
+
+  const settings = await prisma.telegramSettings.upsert({
+    where: { id: 'singleton' },
+    create: { id: 'singleton', consentText: DEFAULT_CONSENT_TEXT },
+    update: {},
+  })
+
+  const tokenConfigured = isTelegramBotTokenConfigured()
+  const [botInfo, webhookInfo] = tokenConfigured
+    ? await Promise.all([getTelegramBotInfo(), getTelegramWebhookInfo()])
+    : [null, null]
+
+  return {
+    ok: true,
+    data: toSettingsDTO(settings),
+    webhookStatus: {
+      botTokenConfigured: tokenConfigured,
+      botUsername: botInfo?.username ?? null,
+      webhookUrl: webhookInfo?.url || null,
+      pendingUpdateCount: webhookInfo?.pending_update_count ?? null,
+      lastErrorMessage: webhookInfo?.last_error_message ?? null,
+    },
+  }
+}
+
+export async function updateTelegramSettings(input: Partial<TelegramSettingsDTO>) {
+  const access = await requireTelegramOwnerAccess()
+  if (!access.ok) return { ok: false as const, error: access.error }
+
+  await prisma.telegramSettings.upsert({
+    where: { id: 'singleton' },
+    create: { id: 'singleton', consentText: input.consentText ?? DEFAULT_CONSENT_TEXT, ...input },
+    update: { ...input },
+  })
+
+  await writeAuditLog({ userId: access.userId, action: 'TELEGRAM_SETTINGS_UPDATED', entityId: 'singleton' })
+  revalidatePath('/admin/telegram/settings')
+  return { ok: true as const }
+}
+
+// ============================================================
+// ПРЕДУПРЕЖДЕНИЕ О РАЗМЕРЕ АРХИВА — считается "лениво" при загрузке
+// страницы настроек, без фонового задания (в проекте нет настроенного cron).
+// ============================================================
+
+export async function getArchiveWarning(): Promise<string | null> {
+  const access = await requireTelegramAccess()
+  if (!access.ok) return null
+
+  const settings = await prisma.telegramSettings.upsert({
+    where: { id: 'singleton' },
+    create: { id: 'singleton', consentText: DEFAULT_CONSENT_TEXT },
+    update: {},
+  })
+
+  const messageCount = await prisma.telegramMessage.count()
+  if (messageCount >= settings.archiveWarningThresholdMessages) {
+    return 'В Telegram-архиве накопилось много переписок и файлов. Проверьте политику хранения и при необходимости архивируйте или обезличьте старые данные.'
+  }
+  return null
 }
