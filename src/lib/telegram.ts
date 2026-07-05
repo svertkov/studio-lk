@@ -262,7 +262,7 @@ export function getTelegramFileDownloadUrl(filePath: string): string {
 // ============================================================
 
 export type SendAttachmentResult =
-  | { ok: true; telegramMessageId: string; fileId: string }
+  | { ok: true; telegramMessageId: string; fileId: string; fileSize?: number; width?: number; height?: number; duration?: number }
   | { ok: false; error: string }
 
 async function sendTelegramFile(
@@ -283,13 +283,27 @@ async function sendTelegramFile(
     }
 
     const result = data.result
-    const fileId: string | undefined =
+    // Telegram пересжимает фото при sendPhoto — реальный размер загруженного
+    // файла на серверах Telegram отличается от исходного file.size с браузера.
+    // Берём метаданные из ответа Telegram (как и для входящих вложений), а не
+    // из исходного файла — иначе прокси-роут отдаёт неверный Content-Length,
+    // и браузер обрывает загрузку картинки как повреждённую.
+    type RemoteFile = { file_id: string; file_size?: number; width?: number; height?: number; duration?: number }
+    const remote: RemoteFile | undefined =
       field === 'photo'
-        ? (result.photo as { file_id: string; width: number }[]).reduce((a, b) => (b.width > a.width ? b : a)).file_id
-        : result[field]?.file_id
-    if (!fileId) return { ok: false, error: 'Telegram не вернул file_id отправленного файла' }
+        ? (result.photo as RemoteFile[]).reduce((a, b) => ((b.width ?? 0) > (a.width ?? 0) ? b : a))
+        : result[field]
+    if (!remote?.file_id) return { ok: false, error: 'Telegram не вернул file_id отправленного файла' }
 
-    return { ok: true, telegramMessageId: String(result.message_id), fileId }
+    return {
+      ok: true,
+      telegramMessageId: String(result.message_id),
+      fileId: remote.file_id,
+      fileSize: remote.file_size,
+      width: remote.width,
+      height: remote.height,
+      duration: remote.duration,
+    }
   } catch (e) {
     console.error(`[${method}]`, e)
     return { ok: false, error: 'Не удалось отправить файл в Telegram' }

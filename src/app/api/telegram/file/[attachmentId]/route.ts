@@ -37,8 +37,14 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ atta
     }
 
     const headers = new Headers()
-    headers.set('Content-Type', attachment.mimeType || 'application/octet-stream')
-    if (attachment.fileSize) headers.set('Content-Length', String(attachment.fileSize))
+    headers.set('Content-Type', attachment.mimeType || fileRes.headers.get('content-type') || 'application/octet-stream')
+    // Content-Length — из реального ответа Telegram, а не из сохранённого у
+    // нас attachment.fileSize: для фото, отправленных ботом, Telegram отдаёт
+    // пересжатую версию другого размера, чем исходный файл — несовпадение
+    // длины тела с заголовком заставляет браузер обрывать загрузку картинки
+    // как повреждённую.
+    const upstreamLength = fileRes.headers.get('content-length')
+    if (upstreamLength) headers.set('Content-Length', upstreamLength)
     headers.set('Cache-Control', 'private, max-age=3600')
     // Отдельная ссылка "скачать" передаёт ?download=1 — иначе файл отдаётся
     // как есть (нужно для <img>/<audio>/<video> src без принудительного

@@ -469,7 +469,13 @@ export async function sendConversationAttachment(conversationId: string, formDat
         telegramFileId: result.fileId,
         fileName: file.name || null,
         mimeType: file.type || null,
-        fileSize: file.size,
+        // Размер — от Telegram (после возможного пересжатия фото), а не
+        // исходного файла из браузера: иначе прокси-роут отдаёт неверный
+        // Content-Length, и браузер показывает "битую" картинку.
+        fileSize: result.fileSize ?? file.size,
+        width: result.width ?? null,
+        height: result.height ?? null,
+        duration: result.duration ?? null,
       },
     })
     await prisma.telegramConversation.update({
