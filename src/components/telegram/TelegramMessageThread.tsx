@@ -23,6 +23,18 @@ import Lightbox from './Lightbox'
 const scrollMemory = new Map<string, { scrollTop: number; lastMessageId: string | null }>()
 const STICK_TO_BOTTOM_THRESHOLD_PX = 120
 
+// Экспортируется для ClientTelegramPanel: когда встроенную панель сворачивают
+// (не просто remount от нового сообщения, а осознанное "скрыть"), она
+// полностью размонтируется — но scrollMemory как модульная переменная это
+// пережила бы и при следующем разворачивании подставила бы старую позицию
+// скролла, а не показала последнее сообщение (см. ТЗ: "при раскрытии панели
+// из свёрнутого состояния — скролл к последнему сообщению"). Вызывается перед
+// сворачиванием, чтобы следующее монтирование прошло по ветке "первое
+// открытие" в эффекте ниже.
+export function forgetScrollPosition(conversationId: string) {
+  scrollMemory.delete(conversationId)
+}
+
 // Совпадает с ATTACHMENT_FALLBACK_LABEL в src/app/api/telegram/webhook/route.ts
 // — если text равен одной из этих подписей, значит у сообщения не было
 // собственной подписи (caption), и повторно показывать её под вложением не нужно.

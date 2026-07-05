@@ -9,7 +9,7 @@ import {
   getConsentDisplayStatus, CONSENT_DISPLAY_LABELS, CONSENT_DISPLAY_COLORS,
   computeChatPriority, CHAT_PRIORITY_LABELS, CHAT_PRIORITY_BADGE_COLORS,
 } from '@/lib/telegram-model'
-import TelegramMessageThread from './TelegramMessageThread'
+import TelegramMessageThread, { forgetScrollPosition } from './TelegramMessageThread'
 import TelegramComposer from './TelegramComposer'
 import TelegramAttachmentsPanel from './TelegramAttachmentsPanel'
 import LinkTelegramConversationModal from './LinkTelegramConversationModal'
@@ -167,7 +167,7 @@ export default function ClientTelegramPanel({ clientId, clientName, conversation
           {onCollapse && (
             <button
               type="button"
-              onClick={onCollapse}
+              onClick={() => { forgetScrollPosition(conversation.id); onCollapse() }}
               title="Свернуть Telegram"
               className="text-zinc-400 hover:text-zinc-200 p-1.5 rounded-lg hover:bg-zinc-800 transition-colors"
             >

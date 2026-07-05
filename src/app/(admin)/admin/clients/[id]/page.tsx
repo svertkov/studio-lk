@@ -117,26 +117,36 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
             </div>
           </div>
 
-          {/* Summary stats — единый масштаб (label сверху, значение снизу)
-              вместо разномастных text-3xl у трёх карточек и text-sm у
-              четвёртой; ни одна карточка не кликабельна — намеренно без
-              hover/cursor-pointer, чтобы не выглядеть кликабельной. */}
+          {/* Summary stats — единый масштаб (label сверху, значение снизу).
+              text-lg, а не text-xl: на тексте "Заметок"/"Контактов" разница
+              незаметна, но у "Источник" значение — слово (например,
+              "Telegram"), а не цифра, и на text-xl bold оно и визуально
+              "тяжелее" соседних однозначных чисел, и физически не всегда
+              помещается в карточку той же ширины (при ~1280-1440px реально
+              обрезалось в "Telegra…" несмотря на truncate). text-lg решает
+              оба: одинаковый вес во всём ряду, честно помещается. title=
+              на самой карточке — полное значение видно по наведению, если
+              когда-нибудь встретится более длинный источник. Ни одна
+              карточка не кликабельна — намеренно без hover/cursor-pointer. */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
             <div className="bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3.5 flex flex-col justify-center gap-0.5 h-[72px]">
               <p className="text-zinc-500 text-[11px] uppercase tracking-wide">Заметок</p>
-              <p className="text-white text-xl font-semibold">{client.clientNotes.length}</p>
+              <p className="text-white text-lg font-semibold">{client.clientNotes.length}</p>
             </div>
             <div className="bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3.5 flex flex-col justify-center gap-0.5 h-[72px]">
               <p className="text-zinc-500 text-[11px] uppercase tracking-wide">Контактов</p>
-              <p className="text-white text-xl font-semibold">{client.contacts.length}</p>
+              <p className="text-white text-lg font-semibold">{client.contacts.length}</p>
             </div>
             <div className="bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3.5 flex flex-col justify-center gap-0.5 h-[72px]">
               <p className="text-zinc-500 text-[11px] uppercase tracking-wide">Документов</p>
-              <p className="text-white text-xl font-semibold">{client.documents.length}</p>
+              <p className="text-white text-lg font-semibold">{client.documents.length}</p>
             </div>
-            <div className="bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3.5 flex flex-col justify-center gap-0.5 h-[72px]">
+            <div
+              className="bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3.5 flex flex-col justify-center gap-0.5 h-[72px]"
+              title={client.source ? CLIENT_SOURCE_LABELS[client.source as keyof typeof CLIENT_SOURCE_LABELS] : undefined}
+            >
               <p className="text-zinc-500 text-[11px] uppercase tracking-wide">Источник</p>
-              <p className="text-white text-xl font-semibold truncate">
+              <p className="text-white text-lg font-semibold truncate">
                 {client.source ? CLIENT_SOURCE_LABELS[client.source as keyof typeof CLIENT_SOURCE_LABELS] : '—'}
               </p>
             </div>
