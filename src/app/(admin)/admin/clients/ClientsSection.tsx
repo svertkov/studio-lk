@@ -44,6 +44,25 @@ function formatMoney(v: number | null | undefined) {
   return new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB', maximumFractionDigits: 0 }).format(v)
 }
 
+// Вынесен на уровень модуля (был объявлен внутри ClientsSection) — компонент,
+// объявленный в теле другого компонента, пересоздаётся как НОВЫЙ тип функции
+// на каждый рендер родителя (react-hooks/static-components), а значит на
+// каждое нажатие клавиши в поиске React считал бы каждую кнопку сортировки
+// другим типом компонента и пересоздавал её заново вместо обновления на месте.
+function SortBtn({ k, label, sortKey, sortDir, onToggle }: {
+  k: SortKey; label: string; sortKey: SortKey; sortDir: 'asc' | 'desc'; onToggle: (k: SortKey) => void
+}) {
+  const isActive = sortKey === k
+  return (
+    <button onClick={() => onToggle(k)} className="flex items-center gap-1 hover:text-white transition-colors">
+      {label}
+      {isActive ? (
+        sortDir === 'asc' ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />
+      ) : <ArrowUpDown className="w-3 h-3 opacity-30" />}
+    </button>
+  )
+}
+
 interface Props {
   initialClients: ClientRow[]
   stats: {
@@ -98,18 +117,6 @@ export default function ClientsSection({ initialClients, stats, dbConnected, pen
       return sortDir === 'asc' ? cmp : -cmp
     })
   }, [filtered, sortKey, sortDir])
-
-  function SortBtn({ k, label }: { k: SortKey; label: string }) {
-    const isActive = sortKey === k
-    return (
-      <button onClick={() => toggleSort(k)} className="flex items-center gap-1 hover:text-white transition-colors">
-        {label}
-        {isActive ? (
-          sortDir === 'asc' ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />
-        ) : <ArrowUpDown className="w-3 h-3 opacity-30" />}
-      </button>
-    )
-  }
 
   return (
     <div className="p-8 space-y-6">
@@ -218,32 +225,32 @@ export default function ClientsSection({ initialClients, stats, dbConnected, pen
               <thead>
                 <tr className="border-b border-zinc-800">
                   <th className="text-left px-4 py-3 text-zinc-400 text-xs uppercase tracking-wider font-medium">
-                    <SortBtn k="name" label="Клиент" />
+                    <SortBtn k="name" label="Клиент" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
                   </th>
                   <th className="text-left px-4 py-3 text-zinc-400 text-xs uppercase tracking-wider font-medium">
-                    <SortBtn k="type" label="Тип" />
+                    <SortBtn k="type" label="Тип" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
                   </th>
                   <th className="text-left px-4 py-3 text-zinc-400 text-xs uppercase tracking-wider font-medium">
-                    <SortBtn k="contact" label="Контакт" />
+                    <SortBtn k="contact" label="Контакт" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
                   </th>
                   <th className="text-left px-4 py-3 text-zinc-400 text-xs uppercase tracking-wider font-medium">
-                    <SortBtn k="company" label="Компания" />
+                    <SortBtn k="company" label="Компания" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
                   </th>
                   <th className="text-left px-4 py-3 text-zinc-400 text-xs uppercase tracking-wider font-medium">
-                    <SortBtn k="status" label="Статус" />
+                    <SortBtn k="status" label="Статус" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
                   </th>
                   <th className="text-left px-4 py-3 text-zinc-400 text-xs uppercase tracking-wider font-medium">
-                    <SortBtn k="visitsCount" label="Визитов" />
+                    <SortBtn k="visitsCount" label="Визитов" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
                   </th>
                   <th className="text-left px-4 py-3 text-zinc-400 text-xs uppercase tracking-wider font-medium">Часов</th>
                   <th className="text-left px-4 py-3 text-zinc-400 text-xs uppercase tracking-wider font-medium">
-                    <SortBtn k="totalGross" label="Потрачено" />
+                    <SortBtn k="totalGross" label="Потрачено" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
                   </th>
                   <th className="text-left px-4 py-3 text-zinc-400 text-xs uppercase tracking-wider font-medium">
-                    <SortBtn k="lastVisitDate" label="Последний визит" />
+                    <SortBtn k="lastVisitDate" label="Последний визит" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
                   </th>
                   <th className="text-left px-4 py-3 text-zinc-400 text-xs uppercase tracking-wider font-medium">
-                    <SortBtn k="createdAt" label="Добавлен" />
+                    <SortBtn k="createdAt" label="Добавлен" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
                   </th>
                   <th className="px-4 py-3" />
                 </tr>
@@ -251,7 +258,12 @@ export default function ClientsSection({ initialClients, stats, dbConnected, pen
               <tbody>
                 {sorted.map((c, i) => (
                   <tr key={c.id}
-                    className={`border-b border-zinc-800/60 hover:bg-zinc-800/40 transition-colors ${i === sorted.length - 1 ? 'border-b-0' : ''}`}>
+                    onClick={() => router.push(`/admin/clients/${c.id}`)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); router.push(`/admin/clients/${c.id}`) }
+                    }}
+                    tabIndex={0}
+                    className={`border-b border-zinc-800/60 hover:bg-white/[0.04] transition-colors cursor-pointer focus:outline-none focus:bg-white/[0.04] ${i === sorted.length - 1 ? 'border-b-0' : ''}`}>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-3">
                         <div className="w-9 h-9 rounded-full bg-zinc-700 flex items-center justify-center text-white text-sm font-semibold flex-shrink-0">
@@ -303,7 +315,16 @@ export default function ClientsSection({ initialClients, stats, dbConnected, pen
                       </p>
                     </td>
                     <td className="px-4 py-3">
+                      {/* Настоящий Link, а не просто визуальная стрелка — чтобы
+                          отсюда всё ещё работали открытие в новой вкладке
+                          (средний клик/Ctrl+клик) и «Открыть ссылку в новой
+                          вкладке» из контекстного меню, которые onClick на
+                          <tr> дать не может (это не настоящая ссылка).
+                          stopPropagation — чтобы клик не запускал ещё и
+                          onClick строки (двойная, хоть и безобидная навигация). */}
                       <Link href={`/admin/clients/${c.id}`}
+                        onClick={e => e.stopPropagation()}
+                        aria-label={`Открыть карточку клиента ${c.name}`}
                         className="flex items-center justify-center w-7 h-7 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-white transition-colors">
                         <ChevronRight className="w-4 h-4" />
                       </Link>

@@ -6,7 +6,16 @@ import type { TelegramConversationDetailDTO } from '@/lib/actions/telegram'
 import { computeChatPriority, CHAT_PRIORITY_LABELS } from '@/lib/telegram-model'
 import ClientTelegramPanel from './ClientTelegramPanel'
 
-const STORAGE_KEY = 'studio-lk:client-telegram-panel-collapsed'
+// Ключ включает clientId — раньше был один общий ключ на всех клиентов, из-за
+// чего сворачивание панели у ОДНОГО клиента незаметно сворачивало её и для
+// всех остальных клиентов при следующем открытии их карточек (в т.ч. могло
+// выглядеть как "Telegram не открывается по умолчанию", хотя код по умолчанию
+// уже разворачивает панель — просто разворачивать было нечего, потому что
+// глобальный флаг с прошлого раза стоял "свёрнуто"). Теперь "свернуть"
+// запоминается персонально для каждого клиента.
+function getStorageKey(clientId: string) {
+  return `studio-lk:client-telegram-panel-collapsed:${clientId}`
+}
 
 interface Props {
   // Левая колонка карточки клиента (шапка/статистика/вкладки) приходит как
@@ -83,13 +92,13 @@ export default function ClientTelegramLayout({ children, clientId, clientName, c
   // setState отложен через setTimeout(…, 0) — react-hooks/set-state-in-effect
   // не разрешает синхронный setState в теле эффекта (см. память проекта).
   useEffect(() => {
-    const timer = setTimeout(() => setCollapsed(localStorage.getItem(STORAGE_KEY) === '1'), 0)
+    const timer = setTimeout(() => setCollapsed(localStorage.getItem(getStorageKey(clientId)) === '1'), 0)
     return () => clearTimeout(timer)
-  }, [])
+  }, [clientId])
 
   function setAndPersist(next: boolean) {
     setCollapsed(next)
-    localStorage.setItem(STORAGE_KEY, next ? '1' : '0')
+    localStorage.setItem(getStorageKey(clientId), next ? '1' : '0')
   }
 
   return (

@@ -53,8 +53,14 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
           в пределах экрана. Само сворачивание/разворачивание правой панели
           (+ персистентность в localStorage) живёт в ClientTelegramLayout —
           это клиентский компонент, а вся левая колонка ниже остаётся
-          обычным серверным рендерингом, переданным туда как children. */}
+          обычным серверным рендерингом, переданным туда как children.
+          key={client.id} — переход из карточки клиента A в карточку клиента B
+          (тот же маршрут-шаблон [id], меняется только параметр) не обязан
+          пересоздавать компонент сам по себе; без явного key стейт
+          "свёрнуто/развёрнуто" от клиента A мог бы на мгновение перенестись
+          на B до срабатывания эффекта чтения localStorage. */}
       <ClientTelegramLayout
+        key={client.id}
         clientId={client.id}
         clientName={client.name}
         conversation={conversation}
