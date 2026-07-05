@@ -10,7 +10,6 @@ import {
 } from '@/lib/telegram'
 import { revokeConsent } from '@/lib/telegram-consent'
 import { DEFAULT_CONSENT_TEXT, DEFAULT_MANAGER_HANDOFF_MESSAGE } from '@/lib/telegram-model'
-import { createClient, type CreateClientInput } from '@/lib/actions/clients'
 import type {
   TelegramConversation, TelegramMessage, TelegramMessageAttachment, TelegramSettings, Client, User,
   TelegramConversationStatus, TelegramConsentStatus, TelegramMessageDirection, TelegramMessageStatus, TelegramMessageType, TelegramSenderType,
@@ -150,6 +149,11 @@ export interface TelegramInternalNoteDTO {
 export interface TelegramConversationDetailDTO extends TelegramConversationListItemDTO {
   telegramChatId: string
   phone: string | null
+  // Раздельные first/last из Telegram-профиля (в отличие от clientNameGuess
+  // на списковом DTO, который их уже склеил) — используются только для
+  // предзаполнения формы "Создать клиента", см. ConversationView.tsx.
+  telegramFirstName: string | null
+  telegramLastName: string | null
   consentRequestVersion: string | null
   // Telegram message_id сообщения с кнопкой «Согласиться» — ConversationView
   // сверяет его с TelegramMessageDTO.telegramMessageId, чтобы нарисовать
@@ -295,6 +299,8 @@ export async function getConversationDetail(
         ...toListDTO(row),
         telegramChatId: row.telegramChatId,
         phone: row.phone,
+        telegramFirstName: row.telegramFirstName,
+        telegramLastName: row.telegramLastName,
         consentRequestVersion: row.consentRequestVersion,
         consentRequestMessageId: row.consentRequestMessageId,
         messages: row.messages.map(toMessageDTO),
@@ -609,39 +615,6 @@ export async function findClientMatchForConversation(conversationId: string) {
   return { ok: true as const, data: match }
 }
 
-export async function createClientFromConversation(conversationId: string, forceCreate = false) {
-  const access = await requireTelegramAccess()
-  if (!access.ok) return { ok: false as const, error: access.error }
-
-  const conversation = await prisma.telegramConversation.findUnique({ where: { id: conversationId } })
-  if (!conversation) return { ok: false as const, error: 'Диалог не найден' }
-  if (conversation.linkedClientId) return { ok: false as const, error: 'К диалогу уже привязан клиент' }
-
-  if (!forceCreate) {
-    const match = await findPotentialClientMatch(conversation.telegramUsername, conversation.phone)
-    if (match) return { ok: false as const, error: 'duplicate' as const, duplicate: match }
-  }
-
-  const nameParts = (conversation.clientNameGuess || conversation.telegramUsername || 'Telegram клиент').split(' ')
-  const input: CreateClientInput = {
-    firstName: nameParts[0] || 'Telegram клиент',
-    lastName: nameParts.slice(1).join(' ') || undefined,
-    telegram: conversation.telegramUsername ? `@${conversation.telegramUsername}` : undefined,
-    phone: conversation.phone || undefined,
-    source: 'TELEGRAM',
-    notes: `Создан из Telegram-диалога (id: ${conversation.id})`,
-  }
-
-  const result = await createClient(input)
-  if (!result.ok) return { ok: false as const, error: result.error }
-
-  await prisma.telegramConversation.update({ where: { id: conversationId }, data: { linkedClientId: result.data.id } })
-  await writeAuditLog({ userId: access.userId, action: 'TELEGRAM_CLIENT_CREATED', entityId: conversationId, metadata: { clientId: result.data.id } })
-
-  revalidatePath(`/admin/telegram/${conversationId}`)
-  revalidatePath('/admin/telegram')
-  return { ok: true as const, data: result.data }
-}
 
 export async function linkConversationToClient(conversationId: string, clientId: string) {
   const access = await requireTelegramAccess()

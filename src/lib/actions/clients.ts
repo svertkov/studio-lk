@@ -176,6 +176,12 @@ export interface CreateClientInput {
   documentComment?: string
   notes?: string
   responsibleUserId?: string
+  // Заполняется только при создании клиента из кнопки "Создать клиента" на
+  // странице Telegram-диалога (см. ConversationView.tsx) — после создания
+  // клиента диалог автоматически связывается с ним же (TelegramConversation
+  // .linkedClientId), одной атомарной транзакцией. Тот же паттерн, что и
+  // Order.telegramConversationId в actions/orders.ts.
+  telegramConversationId?: string
 }
 
 function buildFullName(parts: { lastName?: string; firstName?: string; patronymic?: string }) {
@@ -189,30 +195,48 @@ export async function createClient(input: CreateClientInput) {
   const userId = await getAuthUserId()
 
   try {
-    const client = await prisma.client.create({
-      data: {
-        name: buildFullName(input),
-        firstName: input.firstName.trim(),
-        lastName: input.lastName?.trim() || null,
-        patronymic: input.patronymic?.trim() || null,
-        workplace: input.workplace?.trim() || null,
-        type: input.type ?? 'INDIVIDUAL',
-        status: input.status ?? 'NEW',
-        source: input.source ?? null,
-        customSource: input.customSource?.trim() || null,
-        contactPerson: input.contactPerson?.trim() || null,
-        phone: input.phone?.trim() || null,
-        telegram: input.telegram?.trim() || null,
-        email: input.email?.trim() || null,
-        companyName: input.companyName?.trim() || null,
-        inn: input.inn?.trim() || null,
-        kpp: input.kpp?.trim() || null,
-        ogrn: input.ogrn?.trim() || null,
-        legalAddress: input.legalAddress?.trim() || null,
-        documentComment: input.documentComment?.trim() || null,
-        notes: input.notes?.trim() || null,
-        responsibleUserId: input.responsibleUserId || null,
-      },
+    const client = await prisma.$transaction(async tx => {
+      const created = await tx.client.create({
+        data: {
+          name: buildFullName(input),
+          firstName: input.firstName.trim(),
+          lastName: input.lastName?.trim() || null,
+          patronymic: input.patronymic?.trim() || null,
+          workplace: input.workplace?.trim() || null,
+          type: input.type ?? 'INDIVIDUAL',
+          status: input.status ?? 'NEW',
+          source: input.source ?? null,
+          customSource: input.customSource?.trim() || null,
+          contactPerson: input.contactPerson?.trim() || null,
+          phone: input.phone?.trim() || null,
+          telegram: input.telegram?.trim() || null,
+          email: input.email?.trim() || null,
+          companyName: input.companyName?.trim() || null,
+          inn: input.inn?.trim() || null,
+          kpp: input.kpp?.trim() || null,
+          ogrn: input.ogrn?.trim() || null,
+          legalAddress: input.legalAddress?.trim() || null,
+          documentComment: input.documentComment?.trim() || null,
+          notes: input.notes?.trim() || null,
+          responsibleUserId: input.responsibleUserId || null,
+        },
+      })
+
+      if (input.telegramConversationId) {
+        // Условие linkedClientId: null в where — атомарная защита от дублей:
+        // если диалог уже успели связать с другим клиентом (повторный клик,
+        // гонка двух одновременных отправок формы), count будет 0 и весь
+        // transaction откатится — новый Client не останется висеть без связи.
+        const linked = await tx.telegramConversation.updateMany({
+          where: { id: input.telegramConversationId, linkedClientId: null },
+          data: { linkedClientId: created.id },
+        })
+        if (linked.count === 0) {
+          throw new Error('TELEGRAM_CONVERSATION_ALREADY_LINKED')
+        }
+      }
+
+      return created
     })
 
     await writeAuditLog({
@@ -223,8 +247,15 @@ export async function createClient(input: CreateClientInput) {
     })
 
     revalidatePath('/admin/clients')
+    if (input.telegramConversationId) {
+      revalidatePath('/admin/telegram')
+      revalidatePath(`/admin/telegram/${input.telegramConversationId}`)
+    }
     return { ok: true as const, data: client }
   } catch (e) {
+    if (e instanceof Error && e.message === 'TELEGRAM_CONVERSATION_ALREADY_LINKED') {
+      return { ok: false as const, error: 'Этот Telegram-диалог уже связан с другим клиентом' }
+    }
     console.error('[createClient]', e)
     return { ok: false as const, error: 'Не удалось создать клиента' }
   }

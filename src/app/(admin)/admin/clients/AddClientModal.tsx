@@ -15,6 +15,16 @@ interface Props {
   open?: boolean
   onOpenChange?: (open: boolean) => void
   onCreated?: (client: { id: string; name: string }) => void
+  // Переопределяемые заголовок/подзаголовок — нужны для вызова из Telegram-
+  // диалога ("Создать клиента из Telegram"), по умолчанию — обычная форма
+  // из раздела "Клиенты".
+  title?: string
+  subtitle?: string
+  submitLabel?: string
+  // Мелкий серый текст внизу формы — например, технические Telegram User
+  // ID/Chat ID, которые не редактируются как обычные поля, но администратору
+  // полезно их видеть.
+  footerNote?: React.ReactNode
 }
 
 const EMPTY: CreateClientInput = {
@@ -25,18 +35,35 @@ const EMPTY: CreateClientInput = {
   documentComment: '', notes: '',
 }
 
+// {...EMPTY, ...initialValues} перетирает дефолт значением undefined, если
+// initialValues явно содержит ключ со значением undefined (а не просто не
+// содержит его) — например, когда вызывающий код пишет `lastName: x ?? undefined`
+// для отсутствующего в Telegram поля. Отфильтровываем такие ключи заранее,
+// чтобы firstName и т.п. всегда оставались строками, а не undefined.
+function withoutUndefined(values?: Partial<CreateClientInput>): Partial<CreateClientInput> {
+  if (!values) return {}
+  return Object.fromEntries(Object.entries(values).filter(([, v]) => v !== undefined))
+}
+
 const INPUT = 'w-full bg-zinc-800 border border-zinc-700 text-zinc-100 placeholder-zinc-600 rounded-lg px-3 py-2 text-sm outline-none focus:border-[#00c26b] transition-colors'
 const SELECT = 'w-full bg-zinc-800 border border-zinc-700 text-zinc-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-[#00c26b] transition-colors cursor-pointer'
 const LABEL = 'block text-zinc-400 text-xs mb-1.5'
 const SECTION = 'text-zinc-500 text-[11px] font-semibold uppercase tracking-wider mb-3 mt-5 first:mt-0 pt-4 border-t border-zinc-800/80 first:border-0 first:pt-0'
 
-export default function AddClientModal({ onSuccess, initialValues, open: openProp, onOpenChange: onOpenChangeProp, onCreated }: Props) {
+export default function AddClientModal({
+  onSuccess, initialValues, open: openProp, onOpenChange: onOpenChangeProp, onCreated,
+  title = 'Новый клиент', subtitle, footerNote, submitLabel = 'Сохранить клиента',
+}: Props) {
   const isControlled = openProp !== undefined
   const [internalOpen, setInternalOpen] = useState(false)
   const open = isControlled ? openProp : internalOpen
   const setOpen = isControlled ? (onOpenChangeProp ?? (() => {})) : setInternalOpen
 
-  const [form, setForm] = useState<CreateClientInput>({ ...EMPTY, ...initialValues })
+  // Явный undefined в initialValues (например, "поля из Telegram нет") не
+  // должен перетирать дефолт из EMPTY через spread — {...EMPTY, key:
+  // undefined} даёт undefined, а не ''. Отфильтровываем такие ключи, чтобы
+  // firstName/lastName и т.п. оставались строками, а не undefined.
+  const [form, setForm] = useState<CreateClientInput>({ ...EMPTY, ...withoutUndefined(initialValues) })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -53,7 +80,7 @@ export default function AddClientModal({ onSuccess, initialValues, open: openPro
     setLoading(false)
     if (result.ok) {
       setOpen(false)
-      setForm({ ...EMPTY, ...initialValues })
+      setForm({ ...EMPTY, ...withoutUndefined(initialValues) })
       onSuccess()
       onCreated?.(result.data)
     } else {
@@ -74,7 +101,8 @@ export default function AddClientModal({ onSuccess, initialValues, open: openPro
 
       <DialogContent className="bg-zinc-900 border-zinc-800 text-white max-w-lg sm:max-w-[589px] max-h-[88vh] flex flex-col p-0">
         <DialogHeader className="px-6 pt-6 pb-4 border-b border-zinc-800 flex-shrink-0">
-          <DialogTitle className="text-white text-lg font-semibold">Новый клиент</DialogTitle>
+          <DialogTitle className="text-white text-lg font-semibold">{title}</DialogTitle>
+          {subtitle && <p className="text-zinc-500 text-sm mt-0.5">{subtitle}</p>}
         </DialogHeader>
 
         <form onSubmit={handleSubmit} className="flex flex-col flex-1 min-h-0">
@@ -218,6 +246,10 @@ export default function AddClientModal({ onSuccess, initialValues, open: openPro
                 value={form.notes ?? ''} onChange={e => set('notes', e.target.value)} />
             </div>
 
+            {footerNote && (
+              <p className="text-zinc-600 text-[11px] pt-1">{footerNote}</p>
+            )}
+
             {error && (
               <p className="text-red-400 text-sm bg-red-950/30 border border-red-800/40 rounded-lg px-3 py-2">
                 {error}
@@ -226,9 +258,9 @@ export default function AddClientModal({ onSuccess, initialValues, open: openPro
           </div>
 
           <div className="flex items-center gap-3 px-6 py-4 border-t border-zinc-800 flex-shrink-0">
-            <button type="submit" disabled={loading}
+            <button type="submit" disabled={loading || !form.firstName.trim()}
               className="flex-1 bg-[#00c26b] hover:bg-[#00b360] disabled:opacity-50 text-white font-semibold text-sm py-2.5 rounded-lg transition-colors">
-              {loading ? 'Сохранение...' : 'Сохранить клиента'}
+              {loading ? 'Сохранение...' : submitLabel}
             </button>
             <button type="button" onClick={() => setOpen(false)}
               className="px-4 py-2.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-sm rounded-lg transition-colors">

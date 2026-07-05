@@ -12,12 +12,13 @@ import {
 } from 'lucide-react'
 import {
   sendConversationMessage, sendConversationAttachmentFromBlob, retryFailedMessage, claimConversation, pinConversation, archiveConversation,
-  unarchiveConversation, revokeConsentManually, createClientFromConversation, linkConversationToClient,
+  unarchiveConversation, revokeConsentManually, findClientMatchForConversation, linkConversationToClient,
   addInternalNote, markConversationOrderCreated,
   type TelegramConversationDetailDTO, type TelegramMessageDTO,
 } from '@/lib/actions/telegram'
 import { getClients } from '@/lib/actions/clients'
 import OrderFormModal from '../../orders/OrderFormModal'
+import AddClientModal from '../../clients/AddClientModal'
 import { TELEGRAM_STATUS_LABELS, TELEGRAM_STATUS_COLORS, TELEGRAM_MESSAGE_STATUS_LABELS, getConsentDisplayStatus, CONSENT_DISPLAY_LABELS, CONSENT_DISPLAY_COLORS } from '@/lib/telegram-model'
 
 interface Props {
@@ -184,8 +185,11 @@ export default function ConversationView({ initialData, currentUserId, currentUs
   const [clientQuery, setClientQuery] = useState('')
   const [clientResults, setClientResults] = useState<ClientOption[]>([])
   const [duplicateClient, setDuplicateClient] = useState<{ id: string; name: string } | null>(null)
+  const [createClientModalOpen, setCreateClientModalOpen] = useState(false)
+  const [checkingDuplicate, setCheckingDuplicate] = useState(false)
   const [orderFormOpen, setOrderFormOpen] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
+  const [actionSuccess, setActionSuccess] = useState<string | null>(null)
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null)
 
   // Вложение — свой небольшой стейт-машин, отдельный от текстовой отправки:
@@ -400,15 +404,25 @@ export default function ConversationView({ initialData, currentUserId, currentUs
     }
   }
 
-  async function handleCreateClient(force = false) {
-    const result = await createClientFromConversation(conversation.id, force)
-    if (result.ok) {
-      router.refresh()
-    } else if (result.error === 'duplicate' && 'duplicate' in result && result.duplicate) {
-      setDuplicateClient(result.duplicate)
+  // Клиент больше не создаётся по одному клику — сначала проверяем
+  // возможные совпадения (по telegramUsername/телефону диалога), и только
+  // если совпадений нет (или администратор явно выбрал "всё равно создать
+  // нового" в предупреждении ниже) — открываем форму на редактирование.
+  async function handleOpenCreateClient() {
+    setActionError(null)
+    setCheckingDuplicate(true)
+    const match = await findClientMatchForConversation(conversation.id)
+    setCheckingDuplicate(false)
+    if (match.ok && match.data) {
+      setDuplicateClient(match.data)
     } else {
-      setActionError(result.error)
+      setCreateClientModalOpen(true)
     }
+  }
+
+  function handleCreateAnyway() {
+    setDuplicateClient(null)
+    setCreateClientModalOpen(true)
   }
 
   async function handleAddNote() {
@@ -654,15 +668,18 @@ export default function ConversationView({ initialData, currentUserId, currentUs
 
         <div className="border-t border-zinc-800 pt-4 space-y-2">
           <p className="text-zinc-500 text-[11px] font-semibold uppercase tracking-wider mb-2">Клиент</p>
+          {actionSuccess && (
+            <p className="text-[#00c26b] text-xs bg-[#00c26b]/10 border border-[#00c26b]/30 rounded-lg px-2.5 py-2">{actionSuccess}</p>
+          )}
           {conversation.linkedClientId ? (
             <Link href={`/admin/clients/${conversation.linkedClientId}`} className="flex items-center gap-1.5 text-sm text-[#00c26b] hover:underline">
               {conversation.linkedClientName} <ExternalLink className="w-3 h-3" />
             </Link>
           ) : (
             <div className="space-y-2">
-              <button type="button" onClick={() => handleCreateClient(false)}
-                className="w-full flex items-center justify-center gap-1.5 text-xs font-medium px-3 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 transition-colors">
-                <UserPlus className="w-3.5 h-3.5" /> Создать клиента
+              <button type="button" onClick={handleOpenCreateClient} disabled={checkingDuplicate}
+                className="w-full flex items-center justify-center gap-1.5 text-xs font-medium px-3 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 disabled:opacity-60 text-zinc-200 transition-colors">
+                <UserPlus className="w-3.5 h-3.5" /> {checkingDuplicate ? 'Проверяем...' : 'Создать клиента'}
               </button>
               <button type="button" onClick={() => setLinkClientOpen(v => !v)}
                 className="w-full flex items-center justify-center gap-1.5 text-xs font-medium px-3 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 transition-colors">
@@ -686,11 +703,19 @@ export default function ConversationView({ initialData, currentUserId, currentUs
               )}
               {duplicateClient && (
                 <div className="bg-amber-950/30 border border-amber-800/40 rounded-lg p-2.5 space-y-1.5">
-                  <p className="text-amber-300 text-xs">Похоже, клиент уже есть: <strong>{duplicateClient.name}</strong></p>
-                  <div className="flex gap-2">
+                  <p className="text-amber-300 text-xs">
+                    Возможно, такой клиент уже существует:{' '}
+                    <Link href={`/admin/clients/${duplicateClient.id}`} className="underline hover:no-underline">
+                      <strong>{duplicateClient.name}</strong>
+                    </Link>
+                  </p>
+                  <div className="flex flex-wrap gap-x-3 gap-y-1">
+                    <Link href={`/admin/clients/${duplicateClient.id}`} className="text-xs text-zinc-300 hover:text-zinc-100 underline">
+                      Открыть
+                    </Link>
                     <button type="button" onClick={() => handleLinkClient(duplicateClient.id)}
-                      className="text-xs text-[#00c26b] hover:underline">Связать</button>
-                    <button type="button" onClick={() => handleCreateClient(true)}
+                      className="text-xs text-[#00c26b] hover:underline">Связать с этим диалогом</button>
+                    <button type="button" onClick={handleCreateAnyway}
                       className="text-xs text-zinc-400 hover:text-zinc-200">Всё равно создать нового</button>
                   </div>
                 </div>
@@ -759,6 +784,44 @@ export default function ConversationView({ initialData, currentUserId, currentUs
             clientPhone: conversation.phone ?? undefined,
             clientId: conversation.linkedClientId ?? undefined,
             comment: `Из Telegram-диалога: ${conversation.lastMessageText ?? ''} (id: ${conversation.id})`,
+          }}
+        />
+      )}
+
+      {createClientModalOpen && (
+        <AddClientModal
+          open
+          onOpenChange={setCreateClientModalOpen}
+          onSuccess={() => {
+            // Небольшая задержка перед refresh() — иначе он тут же
+            // перемонтирует ConversationView по key={dataKey} в page.tsx и
+            // мгновенно стирает actionSuccess/conversation ниже, не дав
+            // администратору увидеть подтверждение.
+            setTimeout(() => router.refresh(), 2000)
+          }}
+          onCreated={client => {
+            setConversation(prev => ({ ...prev, linkedClientId: client.id, linkedClientName: client.name }))
+            setActionSuccess('Клиент создан и связан с Telegram-диалогом')
+            setTimeout(() => setActionSuccess(null), 4000)
+          }}
+          title="Создать клиента из Telegram"
+          subtitle="Проверьте данные перед созданием карточки клиента"
+          submitLabel="Создать клиента"
+          footerNote={
+            <>Telegram User ID: {conversation.telegramUserId ?? '—'} · Chat ID: {conversation.telegramChatId}</>
+          }
+          initialValues={{
+            // Раздельные first/last, если есть (новые диалоги); для диалогов
+            // до этого поля — запасной вариант: clientNameGuess целиком в
+            // "Имя" (см. schema.prisma, telegramFirstName/telegramLastName).
+            // Пустые поля Telegram остаются пустыми — никогда не "Не указано".
+            firstName: conversation.telegramFirstName ?? conversation.clientNameGuess ?? undefined,
+            lastName: conversation.telegramLastName ?? undefined,
+            telegram: conversation.telegramUsername ? `@${conversation.telegramUsername}` : undefined,
+            phone: conversation.phone ?? undefined,
+            source: 'TELEGRAM',
+            notes: `Создан из Telegram-диалога (id: ${conversation.id})`,
+            telegramConversationId: conversation.id,
           }}
         />
       )}

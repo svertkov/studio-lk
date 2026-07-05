@@ -495,6 +495,13 @@ model TelegramConversation {
   // Имя/фамилия из профиля Telegram — подсказка для сопоставления с Client,
   // не источник правды (в отличие от Client.name после ручной привязки).
   clientNameGuess  String?                    @map("client_name_guess")
+  // Раздельные first_name/last_name из Telegram (в отличие от clientNameGuess,
+  // который их сразу склеивает) — нужны, чтобы форма создания клиента могла
+  // предзаполнить поля "Имя"/"Фамилия" по отдельности, а не одной строкой.
+  // Заполняются только при первом сообщении (как и clientNameGuess), не
+  // обновляются на каждое новое сообщение.
+  telegramFirstName String?                   @map("telegram_first_name")
+  telegramLastName  String?                   @map("telegram_last_name")
   phone            String?                                              // если клиент сам написал номер в чат
   linkedClientId   String?                    @map("linked_client_id")
   status           TelegramConversationStatus @default(NEW)

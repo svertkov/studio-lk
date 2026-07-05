@@ -163,6 +163,8 @@ async function handleMessage(update: TelegramUpdate) {
       telegramUserId: from ? String(from.id) : null,
       telegramUsername: from?.username ?? null,
       clientNameGuess: from ? [from.first_name, from.last_name].filter(Boolean).join(' ') || null : null,
+      telegramFirstName: from?.first_name ?? null,
+      telegramLastName: from?.last_name ?? null,
       lastMessageAt: new Date(message.date * 1000),
       firstMessageText: text,
     },
