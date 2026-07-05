@@ -14,7 +14,7 @@ import { getConversationForClient } from '@/lib/actions/telegram'
 import ClientTabs from './ClientTabs'
 import EditClientModal from './EditClientModal'
 import MergeClientModal from './MergeClientModal'
-import ClientTelegramPanel from '@/components/telegram/ClientTelegramPanel'
+import ClientTelegramLayout from '@/components/telegram/ClientTelegramLayout'
 
 export default async function ClientDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
@@ -50,55 +50,38 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
 
       {/* Двухколоночный layout: слева карточка клиента (обычный скролл
           страницы), справа Telegram-диалог — sticky и с собственным скроллом
-          в пределах экрана (xl:h-[...] вместо max-h: сама панель — flex-
-          колонка, где лента сообщений flex-1, ей нужна РЕАЛЬНАЯ высота
-          родителя, а не просто потолок). На экранах уже xl панель уходит
-          под основной контент обычным блоком. */}
-      <div className="mt-6 flex flex-col xl:flex-row gap-6 items-start">
-        <div className="w-full flex-1 min-w-0 space-y-6">
-          {/* Header card */}
-          <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6">
-            <div className="flex items-start justify-between gap-4">
-              <div className="flex items-center gap-5">
-                <div className="w-16 h-16 rounded-full bg-zinc-700 flex items-center justify-center text-white text-2xl font-bold flex-shrink-0">
+          в пределах экрана. Само сворачивание/разворачивание правой панели
+          (+ персистентность в localStorage) живёт в ClientTelegramLayout —
+          это клиентский компонент, а вся левая колонка ниже остаётся
+          обычным серверным рендерингом, переданным туда как children. */}
+      <ClientTelegramLayout
+        clientId={client.id}
+        clientName={client.name}
+        conversation={conversation}
+        telegramKey={telegramKey}
+      >
+          {/* Header card — компактный: аватар меньше, единый вертикальный
+              ритм (mt-1.5 везде вместо разнобоя mt-2/mt-3), кнопки справа
+              всегда в один ряд с именем и не ломают его благодаря min-w-0
+              на текстовом блоке. */}
+          <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-4 min-w-0">
+                <div className="w-12 h-12 rounded-full bg-zinc-700 flex items-center justify-center text-white text-lg font-bold flex-shrink-0">
                   {initials}
                 </div>
-                <div>
-                  <h1 className="text-xl font-bold text-white">{client.name}</h1>
+                <div className="min-w-0">
+                  <h1 className="text-lg font-bold text-white truncate">{client.name}</h1>
                   {client.companyName && (
-                    <p className="text-zinc-400 text-sm mt-0.5">{client.companyName}</p>
+                    <p className="text-zinc-400 text-sm mt-0.5 truncate">{client.companyName}</p>
                   )}
-                  <div className="flex items-center gap-2 mt-2 flex-wrap">
+                  <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
                     <Badge variant="outline" className={`text-xs ${CLIENT_TYPE_COLORS[client.type as keyof typeof CLIENT_TYPE_COLORS]}`}>
                       {CLIENT_TYPE_LABELS[client.type as keyof typeof CLIENT_TYPE_LABELS]}
                     </Badge>
                     <Badge variant="outline" className={`text-xs ${CLIENT_STATUS_COLORS[client.status as keyof typeof CLIENT_STATUS_COLORS]}`}>
                       {CLIENT_STATUS_LABELS[client.status as keyof typeof CLIENT_STATUS_LABELS]}
                     </Badge>
-                  </div>
-                  <div className="flex flex-wrap gap-4 mt-3">
-                    {client.email && (
-                      <span className="flex items-center gap-1.5 text-zinc-400 text-sm">
-                        <Mail className="w-3.5 h-3.5" />
-                        {client.email}
-                      </span>
-                    )}
-                    {client.phone && (
-                      <span className="flex items-center gap-1.5 text-zinc-400 text-sm">
-                        <Phone className="w-3.5 h-3.5" />
-                        {client.phone}
-                      </span>
-                    )}
-                    {client.telegram && (
-                      <span className="flex items-center gap-1.5 text-zinc-400 text-sm">
-                        <MessageCircle className="w-3.5 h-3.5" />
-                        {client.telegram}
-                      </span>
-                    )}
-                    <span className="flex items-center gap-1.5 text-zinc-400 text-sm">
-                      <Calendar className="w-3.5 h-3.5" />
-                      добавлен {new Date(client.createdAt).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })}
-                    </span>
                   </div>
                 </div>
               </div>
@@ -107,40 +90,61 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
                 <EditClientModal client={client} />
               </div>
             </div>
+
+            <div className="flex flex-wrap gap-x-4 gap-y-1.5 mt-4 pt-4 border-t border-zinc-800">
+              {client.email && (
+                <span className="flex items-center gap-1.5 text-zinc-400 text-sm">
+                  <Mail className="w-3.5 h-3.5 flex-shrink-0" />
+                  {client.email}
+                </span>
+              )}
+              {client.phone && (
+                <span className="flex items-center gap-1.5 text-zinc-400 text-sm">
+                  <Phone className="w-3.5 h-3.5 flex-shrink-0" />
+                  {client.phone}
+                </span>
+              )}
+              {client.telegram && (
+                <span className="flex items-center gap-1.5 text-zinc-400 text-sm">
+                  <MessageCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                  {client.telegram}
+                </span>
+              )}
+              <span className="flex items-center gap-1.5 text-zinc-400 text-sm">
+                <Calendar className="w-3.5 h-3.5 flex-shrink-0" />
+                добавлен {new Date(client.createdAt).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })}
+              </span>
+            </div>
           </div>
 
-          {/* Summary stats */}
+          {/* Summary stats — единый масштаб (label сверху, значение снизу)
+              вместо разномастных text-3xl у трёх карточек и text-sm у
+              четвёртой; ни одна карточка не кликабельна — намеренно без
+              hover/cursor-pointer, чтобы не выглядеть кликабельной. */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-            <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 text-center">
-              <p className="text-3xl font-bold text-white">{client.clientNotes.length}</p>
-              <p className="text-zinc-500 text-xs mt-1">заметок</p>
+            <div className="bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3.5 flex flex-col justify-center gap-0.5 h-[72px]">
+              <p className="text-zinc-500 text-[11px] uppercase tracking-wide">Заметок</p>
+              <p className="text-white text-xl font-semibold">{client.clientNotes.length}</p>
             </div>
-            <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 text-center">
-              <p className="text-3xl font-bold text-white">{client.contacts.length}</p>
-              <p className="text-zinc-500 text-xs mt-1">контактов</p>
+            <div className="bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3.5 flex flex-col justify-center gap-0.5 h-[72px]">
+              <p className="text-zinc-500 text-[11px] uppercase tracking-wide">Контактов</p>
+              <p className="text-white text-xl font-semibold">{client.contacts.length}</p>
             </div>
-            <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 text-center">
-              <p className="text-3xl font-bold text-white">{client.documents.length}</p>
-              <p className="text-zinc-500 text-xs mt-1">документов</p>
+            <div className="bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3.5 flex flex-col justify-center gap-0.5 h-[72px]">
+              <p className="text-zinc-500 text-[11px] uppercase tracking-wide">Документов</p>
+              <p className="text-white text-xl font-semibold">{client.documents.length}</p>
             </div>
-            <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 text-center">
-              <p className="text-sm font-semibold text-white">
+            <div className="bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3.5 flex flex-col justify-center gap-0.5 h-[72px]">
+              <p className="text-zinc-500 text-[11px] uppercase tracking-wide">Источник</p>
+              <p className="text-white text-xl font-semibold truncate">
                 {client.source ? CLIENT_SOURCE_LABELS[client.source as keyof typeof CLIENT_SOURCE_LABELS] : '—'}
               </p>
-              <p className="text-zinc-500 text-xs mt-1">источник</p>
             </div>
           </div>
 
           {/* Tabs */}
           <ClientTabs client={client} subscriptions={subscriptionsResult.data} bookings={bookingsResult.data} />
-        </div>
-
-        {/* Telegram-панель — ширина клампится между ~420 и ~720px, около
-            38% экрана между этими границами (см. ТЗ: 55-65%/35-45% слева/справа) */}
-        <div className="w-full xl:w-[clamp(420px,38vw,720px)] flex-shrink-0 xl:sticky xl:top-8 xl:h-[calc(100vh-4rem)]">
-          <ClientTelegramPanel key={telegramKey} clientId={client.id} clientName={client.name} conversation={conversation} />
-        </div>
-      </div>
+      </ClientTelegramLayout>
     </div>
   )
 }

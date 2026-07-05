@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
-import { MessageCircle, ExternalLink, Paperclip, Link2 } from 'lucide-react'
+import { MessageCircle, ExternalLink, Paperclip, Link2, PanelRightClose } from 'lucide-react'
 import { retryFailedMessage, type TelegramConversationDetailDTO } from '@/lib/actions/telegram'
 import { getConsentDisplayStatus, CONSENT_DISPLAY_LABELS, CONSENT_DISPLAY_COLORS } from '@/lib/telegram-model'
 import TelegramMessageThread from './TelegramMessageThread'
@@ -15,6 +15,10 @@ interface Props {
   clientId: string
   clientName: string
   conversation: TelegramConversationDetailDTO | null
+  // Кнопка сворачивания панели живёт в её собственной шапке (см. ТЗ), но
+  // сама персистентность/состояние "свёрнуто" — забота родителя
+  // (ClientTelegramLayout), эта панель ничего не знает про localStorage.
+  onCollapse?: () => void
 }
 
 // Встроенная Telegram-панель в карточке клиента — переиспользует те же
@@ -25,7 +29,7 @@ interface Props {
 // initialData-подобный паттерн; page.tsx оборачивает это в key={dataKey},
 // как и ConversationView, чтобы обновления сервера корректно сбрасывали
 // локальный state, а не пытались слить его вручную через useEffect.
-export default function ClientTelegramPanel({ clientId, clientName, conversation: initialConversation }: Props) {
+export default function ClientTelegramPanel({ clientId, clientName, conversation: initialConversation, onCollapse }: Props) {
   const router = useRouter()
   const [conversation] = useState(initialConversation)
   const [linkModalOpen, setLinkModalOpen] = useState(false)
@@ -52,7 +56,17 @@ export default function ClientTelegramPanel({ clientId, clientName, conversation
 
   if (!conversation) {
     return (
-      <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-8 text-center h-full flex flex-col items-center justify-center">
+      <div className="relative bg-zinc-900 border border-zinc-800 rounded-xl p-8 text-center h-full flex flex-col items-center justify-center">
+        {onCollapse && (
+          <button
+            type="button"
+            onClick={onCollapse}
+            title="Свернуть Telegram"
+            className="absolute top-3 right-3 text-zinc-500 hover:text-zinc-200 p-1.5 rounded-lg hover:bg-zinc-800 transition-colors"
+          >
+            <PanelRightClose className="w-4 h-4" />
+          </button>
+        )}
         <MessageCircle className="w-10 h-10 text-zinc-600 mb-4" />
         <p className="text-zinc-200 font-medium">Telegram-диалог не связан</p>
         <p className="text-zinc-500 text-sm mt-1.5 max-w-xs mx-auto">
@@ -103,7 +117,7 @@ export default function ClientTelegramPanel({ clientId, clientName, conversation
             {conversation.telegramUsername ? `@${conversation.telegramUsername}` : clientName}
           </p>
         </div>
-        <div className="flex items-center gap-1 flex-shrink-0">
+        <div className="flex items-center gap-0.5 flex-shrink-0">
           <button
             type="button"
             onClick={() => setAttachmentsPanelOpen(true)}
@@ -119,6 +133,16 @@ export default function ClientTelegramPanel({ clientId, clientName, conversation
           >
             <ExternalLink className="w-4 h-4" />
           </Link>
+          {onCollapse && (
+            <button
+              type="button"
+              onClick={onCollapse}
+              title="Свернуть Telegram"
+              className="text-zinc-400 hover:text-zinc-200 p-1.5 rounded-lg hover:bg-zinc-800 transition-colors"
+            >
+              <PanelRightClose className="w-4 h-4" />
+            </button>
+          )}
         </div>
       </div>
 

@@ -62,9 +62,12 @@ export default function MergeClientModal({ clientId, clientName }: Props) {
 
   return (
     <Dialog open={open} onOpenChange={v => { setOpen(v); if (!v) reset() }}>
-      <DialogTrigger className="flex items-center gap-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-sm px-3 py-2 rounded-lg transition-colors">
-        <Merge className="w-3.5 h-3.5" />
-        Объединить с другим клиентом
+      <DialogTrigger
+        title="Объединить с другим клиентом"
+        className="flex items-center justify-center bg-zinc-800 hover:bg-zinc-700 text-zinc-300 w-9 h-9 rounded-lg transition-colors flex-shrink-0"
+      >
+        <Merge className="w-4 h-4" />
+        <span className="sr-only">Объединить с другим клиентом</span>
       </DialogTrigger>
 
       <DialogContent className="bg-zinc-900 border-zinc-800 text-white max-w-lg max-h-[85vh] flex flex-col p-0">

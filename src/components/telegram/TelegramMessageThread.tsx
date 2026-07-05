@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { format, parseISO, isSameDay } from 'date-fns'
 import { ru } from 'date-fns/locale'
-import { FileText, ImageOff, RotateCcw, Check } from 'lucide-react'
+import { FileText, ImageOff, RotateCcw, Check, Download } from 'lucide-react'
 import type { TelegramMessageDTO } from '@/lib/actions/telegram'
 import { TELEGRAM_MESSAGE_STATUS_LABELS } from '@/lib/telegram-model'
 import { formatFileSize, formatDuration } from '@/lib/telegram-ui-utils'
@@ -86,9 +86,15 @@ function MessageAttachment({ message, onOpenLightbox }: { message: TelegramMessa
   }
   if (message.messageType === 'VIDEO') {
     return (
-      <div className="space-y-1">
-        <video controls src={a.fileUrl} className="max-w-[240px] rounded-lg" />
-        <a href={a.downloadUrl} className="text-[11px] text-zinc-400 hover:text-zinc-200 underline">Скачать</a>
+      <div className="space-y-1.5">
+        <video controls src={a.fileUrl} className="max-w-[240px] max-h-[320px] rounded-lg bg-black" />
+        <a
+          href={a.downloadUrl}
+          title="Скачать видео"
+          className="inline-flex items-center gap-1.5 text-[11px] text-zinc-400 hover:text-zinc-200 bg-black/20 hover:bg-black/30 rounded-md px-2 py-1 transition-colors"
+        >
+          <Download className="w-3 h-3" /> Скачать
+        </a>
       </div>
     )
   }

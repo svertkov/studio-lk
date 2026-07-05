@@ -8,7 +8,11 @@ import { ru } from 'date-fns/locale'
 import { Search, MessageCircle, ShoppingBag, Pin, Archive } from 'lucide-react'
 import type { TelegramConversationListItemDTO, TelegramConversationFilter } from '@/lib/actions/telegram'
 import { pinConversation, archiveConversation } from '@/lib/actions/telegram'
-import { TELEGRAM_STATUS_LABELS, TELEGRAM_STATUS_COLORS, TELEGRAM_STATUS_FILTER_ORDER, getConsentDisplayStatus, CONSENT_DISPLAY_LABELS, CONSENT_DISPLAY_COLORS } from '@/lib/telegram-model'
+import {
+  TELEGRAM_STATUS_LABELS, TELEGRAM_STATUS_COLORS, TELEGRAM_STATUS_FILTER_ORDER,
+  getConsentDisplayStatus, CONSENT_DISPLAY_LABELS, CONSENT_DISPLAY_COLORS,
+  CHAT_PRIORITY_LABELS, CHAT_PRIORITY_BADGE_COLORS, CHAT_PRIORITY_ROW_ACCENT, type TelegramChatPriority,
+} from '@/lib/telegram-model'
 
 interface Props {
   initialConversations: TelegramConversationListItemDTO[]
@@ -19,14 +23,31 @@ const TABS: { key: TelegramConversationFilter; label: string }[] = [
   ...TELEGRAM_STATUS_FILTER_ORDER.map(s => ({ key: s, label: TELEGRAM_STATUS_LABELS[s] })),
 ]
 
+type PriorityFilter = 'ALL' | TelegramChatPriority
+
+const PRIORITY_FILTERS: { key: PriorityFilter; label: string }[] = [
+  { key: 'ALL', label: 'Все' },
+  { key: 'needs_reply', label: 'Требуют ответа' },
+  { key: 'new_unprocessed', label: 'Новые / не оформлены' },
+  { key: 'inactive', label: 'Неактивные 7+ дней' },
+]
+
+const LEGEND_ITEMS: { priority: TelegramChatPriority; dot: string; label: string }[] = [
+  { priority: 'needs_reply', dot: 'bg-red-500', label: 'требует ответа администратора' },
+  { priority: 'new_unprocessed', dot: 'bg-amber-500', label: 'новый клиент / не создана карточка или заказ' },
+  { priority: 'inactive', dot: 'bg-emerald-500', label: 'нет активности 7+ дней / условно завершён' },
+]
+
 export default function TelegramInbox({ initialConversations }: Props) {
   const router = useRouter()
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState<TelegramConversationFilter>('ALL')
+  const [priorityFilter, setPriorityFilter] = useState<PriorityFilter>('ALL')
   const [, startTransition] = useTransition()
 
   const filtered = useMemo(() => {
     let list = filter === 'ALL' ? initialConversations : initialConversations.filter(c => c.status === filter)
+    if (priorityFilter !== 'ALL') list = list.filter(c => c.chatPriority === priorityFilter)
     const q = search.trim().toLowerCase()
     if (q) {
       list = list.filter(c =>
@@ -38,7 +59,7 @@ export default function TelegramInbox({ initialConversations }: Props) {
       )
     }
     return list
-  }, [initialConversations, filter, search])
+  }, [initialConversations, filter, priorityFilter, search])
 
   function togglePin(e: React.MouseEvent, id: string, pinned: boolean) {
     e.preventDefault()
@@ -63,6 +84,41 @@ export default function TelegramInbox({ initialConversations }: Props) {
       <p className="text-zinc-400 text-sm bg-zinc-900/60 border border-zinc-800 rounded-lg px-3.5 py-2.5">
         Здесь отображаются заявки из Telegram-бота студии. После согласия клиента менеджер может отвечать ему прямо из платформы.
       </p>
+
+      {/* Легенда статусов — компактная строка, не отдельный блок с рамкой */}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 px-0.5 text-xs text-zinc-500">
+        <span className="font-medium text-zinc-400">Статусы чатов:</span>
+        {LEGEND_ITEMS.map(item => (
+          <span key={item.priority} className="flex items-center gap-1.5">
+            <span className={`w-2 h-2 rounded-full ${item.dot}`} />
+            {item.label}
+          </span>
+        ))}
+        <span className="flex items-center gap-1.5">
+          <span className="w-2 h-2 rounded-full bg-zinc-700" />
+          без цвета — обычный активный чат
+        </span>
+      </div>
+
+      {/* Фильтр по приоритету (требует ответа / новый / неактивен) — отдельно
+          от фильтра по стадии диалога ниже, отвечает на другой вопрос
+          ("нужно ли внимание сейчас" против "на каком этапе диалог"). */}
+      <div className="flex flex-wrap gap-1.5">
+        {PRIORITY_FILTERS.map(p => (
+          <button
+            key={p.key}
+            type="button"
+            onClick={() => setPriorityFilter(p.key)}
+            className={`text-xs font-medium px-3 py-1.5 rounded-full border transition-colors ${
+              priorityFilter === p.key
+                ? 'bg-zinc-700 border-zinc-600 text-white'
+                : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200 hover:border-zinc-700'
+            }`}
+          >
+            {p.label}
+          </button>
+        ))}
+      </div>
 
       <div className="flex flex-wrap gap-1.5">
         {TABS.map(tab => (
@@ -107,7 +163,7 @@ export default function TelegramInbox({ initialConversations }: Props) {
               <Link
                 key={c.id}
                 href={`/admin/telegram/${c.id}`}
-                className="group w-full text-left px-4 py-3.5 flex items-center gap-3 hover:bg-zinc-800/50 transition-colors"
+                className={`group w-full text-left pl-3.5 pr-4 py-3.5 flex items-center gap-3 hover:bg-zinc-800/50 transition-colors ${CHAT_PRIORITY_ROW_ACCENT[c.chatPriority]}`}
               >
                 <div className="w-9 h-9 rounded-full bg-zinc-800 border border-zinc-700 flex items-center justify-center text-zinc-300 text-sm font-semibold flex-shrink-0">
                   {name.trim().charAt(0).toUpperCase() || '?'}
@@ -120,6 +176,11 @@ export default function TelegramInbox({ initialConversations }: Props) {
                     {c.unreadCount > 0 && (
                       <span className="bg-[#00c26b] text-white text-[10px] font-semibold rounded-full min-w-[18px] h-[18px] px-1 flex items-center justify-center flex-shrink-0">
                         {c.unreadCount}
+                      </span>
+                    )}
+                    {c.chatPriority !== 'normal' && (
+                      <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full border flex-shrink-0 ${CHAT_PRIORITY_BADGE_COLORS[c.chatPriority]}`}>
+                        {CHAT_PRIORITY_LABELS[c.chatPriority]}
                       </span>
                     )}
                   </div>

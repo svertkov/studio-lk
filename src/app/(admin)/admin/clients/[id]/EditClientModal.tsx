@@ -93,9 +93,12 @@ export default function EditClientModal({ client }: Props) {
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger className="flex items-center gap-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-sm px-3 py-2 rounded-lg transition-colors">
-        <Edit2 className="w-3.5 h-3.5" />
-        Редактировать
+      <DialogTrigger
+        title="Редактировать"
+        className="flex items-center justify-center bg-zinc-800 hover:bg-zinc-700 text-zinc-300 w-9 h-9 rounded-lg transition-colors flex-shrink-0"
+      >
+        <Edit2 className="w-4 h-4" />
+        <span className="sr-only">Редактировать</span>
       </DialogTrigger>
 
       <DialogContent className="bg-zinc-900 border-zinc-800 text-white max-w-lg sm:max-w-[589px] max-h-[88vh] flex flex-col p-0">

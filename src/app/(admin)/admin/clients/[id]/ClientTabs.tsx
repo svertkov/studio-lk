@@ -157,11 +157,14 @@ export default function ClientTabs({ client, subscriptions, bookings }: Props) {
 
   return (
     <div className="space-y-4">
-      {/* Tab bar */}
-      <div className="flex items-center gap-1 bg-zinc-900 border border-zinc-800 rounded-xl p-1.5 overflow-x-auto">
+      {/* Tab bar — flex-nowrap явно (не полагаемся на дефолт), чтобы узкая
+          правая колонка карточки клиента не спровоцировала перенос вкладок
+          на вторую строку вместо горизонтального скролла. */}
+      <div className="flex flex-nowrap items-center gap-1 bg-zinc-900 border border-zinc-800 rounded-xl p-1.5 overflow-x-auto">
         {TABS.map(tab => (
           <button
             key={tab.id}
+            type="button"
             onClick={() => setActiveTab(tab.id)}
             className={`flex-shrink-0 px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
               activeTab === tab.id

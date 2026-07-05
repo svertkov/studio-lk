@@ -9,7 +9,7 @@ import {
   getTelegramWebhookInfo, getTelegramBotInfo, isTelegramBotTokenConfigured,
 } from '@/lib/telegram'
 import { revokeConsent } from '@/lib/telegram-consent'
-import { DEFAULT_CONSENT_TEXT, DEFAULT_MANAGER_HANDOFF_MESSAGE } from '@/lib/telegram-model'
+import { DEFAULT_CONSENT_TEXT, DEFAULT_MANAGER_HANDOFF_MESSAGE, computeChatPriority, type TelegramChatPriority } from '@/lib/telegram-model'
 import { extractLinks } from '@/lib/telegram-ui-utils'
 import type {
   TelegramConversation, TelegramMessage, TelegramMessageAttachment, TelegramSettings, Client, User,
@@ -68,7 +68,7 @@ async function writeAuditLog(params: { userId: string | null; action: string; en
 // ============================================================
 
 type ConversationWithRelations = TelegramConversation & {
-  linkedClient: Pick<Client, 'id' | 'name'> | null
+  linkedClient: (Pick<Client, 'id' | 'name'> & { _count: { orders: number } }) | null
   assignedAdmin: Pick<User, 'id' | 'name' | 'email'> | null
   order: { id: string } | null
   messages: TelegramMessage[]
@@ -120,6 +120,11 @@ export interface TelegramConversationListItemDTO {
   // Нужен для getConsentDisplayStatus() — отличить "не запрошено" от
   // "ожидаем" (оба технически consentStatus=NONE).
   consentRequestSentAt: string | null
+  // Вычисляется computeChatPriority() из уже существующих полей — см.
+  // telegram-model.ts. Не хранится отдельной колонкой: пересчитывается на
+  // каждый список, поэтому не может "протухнуть" (например, порог 7 дней
+  // неактивности сам по себе меняется со временем без каких-либо действий).
+  chatPriority: TelegramChatPriority
   unreadCount: number
   isPinned: boolean
   archivedAt: string | null
@@ -196,7 +201,15 @@ function toMessageDTO(m: TelegramMessage & { attachment: TelegramMessageAttachme
 }
 
 function toListDTO(row: ConversationWithRelations): TelegramConversationListItemDTO {
-  const lastMessage = row.messages[0]
+  // Не полагаемся на row.messages[0] — вызывающие запросы сортируют историю
+  // по-разному (список диалогов берёт только последнее сообщение, отсортировав
+  // desc; getConversationDetail загружает всю историю asc для показа треда
+  // сверху вниз, и там messages[0] — это САМОЕ СТАРОЕ сообщение). Ищем
+  // максимум по createdAt явно, чтобы toListDTO корректно работал при любом
+  // порядке входного массива.
+  const lastMessage = row.messages.length > 0
+    ? row.messages.reduce((latest, m) => (m.createdAt > latest.createdAt ? m : latest))
+    : undefined
   return {
     id: row.id,
     telegramUsername: row.telegramUsername,
@@ -210,6 +223,13 @@ function toListDTO(row: ConversationWithRelations): TelegramConversationListItem
     status: row.status,
     consentStatus: row.consentStatus,
     consentRequestSentAt: row.consentRequestSentAt ? row.consentRequestSentAt.toISOString() : null,
+    chatPriority: computeChatPriority({
+      lastMessageDirection: lastMessage?.direction ?? null,
+      linkedClientId: row.linkedClient?.id ?? null,
+      linkedClientOrderCount: row.linkedClient?._count.orders ?? 0,
+      lastMessageAt: row.lastMessageAt,
+      conversationStatus: row.status,
+    }),
     unreadCount: row.unreadCount,
     isPinned: row.isPinned,
     archivedAt: row.archivedAt ? row.archivedAt.toISOString() : null,
@@ -221,7 +241,7 @@ function toListDTO(row: ConversationWithRelations): TelegramConversationListItem
 }
 
 const CONVERSATION_INCLUDE_LIST = {
-  linkedClient: { select: { id: true, name: true } },
+  linkedClient: { select: { id: true, name: true, _count: { select: { orders: true } } } },
   assignedAdmin: { select: { id: true, name: true, email: true } },
   order: { select: { id: true } },
   messages: { orderBy: { createdAt: 'desc' as const }, take: 1 },
@@ -282,7 +302,7 @@ export async function getConversationDetail(
     const row = await prisma.telegramConversation.findUnique({
       where: { id },
       include: {
-        linkedClient: { select: { id: true, name: true } },
+        linkedClient: { select: { id: true, name: true, _count: { select: { orders: true } } } },
         assignedAdmin: { select: { id: true, name: true, email: true } },
         order: { select: { id: true } },
         messages: { orderBy: { createdAt: 'asc' }, include: { attachment: true } },
