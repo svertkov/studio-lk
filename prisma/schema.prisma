@@ -178,6 +178,13 @@ enum TelegramMessageType {
   VOICE
   VIDEO
   STICKER
+  // Кружочки (video_note) и обычное аудио (audio, отдельно от voice) — раньше
+  // не были заведены вовсе: detectAttachment() в webhook/route.ts не проверял
+  // message.video_note/message.audio, и такие сообщения приходили без
+  // вложения вообще (терялся сам файл). Нужны для классификации вложений
+  // ("Кружочки"/"Голосовые" во вкладке "Вложения" диалога).
+  VIDEO_NOTE
+  AUDIO
 }
 
 enum TelegramMessageStatus {

@@ -66,6 +66,22 @@ function detectAttachment(message: TelegramMessagePayload): DetectedAttachment |
       duration: null, width: s.width, height: s.height, isAnimatedSticker: s.is_animated || s.is_video,
     }
   }
+  if (message.video_note) {
+    const vn = message.video_note
+    return {
+      messageType: 'VIDEO_NOTE', telegramFileId: vn.file_id, telegramFileUniqueId: vn.file_unique_id,
+      fileName: null, mimeType: null, fileSize: vn.file_size ?? null,
+      duration: vn.duration, width: vn.length, height: vn.length, isAnimatedSticker: false,
+    }
+  }
+  if (message.audio) {
+    const a = message.audio
+    return {
+      messageType: 'AUDIO', telegramFileId: a.file_id, telegramFileUniqueId: a.file_unique_id,
+      fileName: a.title ?? null, mimeType: a.mime_type ?? null, fileSize: a.file_size ?? null,
+      duration: a.duration, width: null, height: null, isAnimatedSticker: false,
+    }
+  }
   return null
 }
 
@@ -141,6 +157,7 @@ function renderConsentText(template: string, policyUrl: string | null): string {
 const ATTACHMENT_FALLBACK_LABEL: Record<TelegramMessageType, string> = {
   TEXT: '', SYSTEM: '',
   PHOTO: '📷 Фото', DOCUMENT: '📄 Документ', VOICE: '🎤 Голосовое сообщение', VIDEO: '🎬 Видео', STICKER: '🎭 Стикер',
+  VIDEO_NOTE: '⭕ Видео-кружок', AUDIO: '🎵 Аудио',
 }
 
 async function handleMessage(update: TelegramUpdate) {

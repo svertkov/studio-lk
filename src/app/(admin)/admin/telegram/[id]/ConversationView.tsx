@@ -1,25 +1,27 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
-import { format, parseISO, isSameDay } from 'date-fns'
+import { format, parseISO } from 'date-fns'
 import { ru } from 'date-fns/locale'
-import { upload } from '@vercel/blob/client'
 import {
   ArrowLeft, Pin, Archive, ArchiveRestore, UserPlus, Users, ShoppingBag,
-  Send, RotateCcw, AlertTriangle, ShieldOff, ExternalLink, FileText, Paperclip, X, ImageOff, Loader2, Check,
+  AlertTriangle, ShieldOff, ExternalLink, Paperclip,
 } from 'lucide-react'
 import {
-  sendConversationMessage, sendConversationAttachmentFromBlob, retryFailedMessage, claimConversation, pinConversation, archiveConversation,
+  retryFailedMessage, claimConversation, pinConversation, archiveConversation,
   unarchiveConversation, revokeConsentManually, findClientMatchForConversation, linkConversationToClient,
   addInternalNote, markConversationOrderCreated,
-  type TelegramConversationDetailDTO, type TelegramMessageDTO,
+  type TelegramConversationDetailDTO,
 } from '@/lib/actions/telegram'
 import { getClients } from '@/lib/actions/clients'
 import OrderFormModal from '../../orders/OrderFormModal'
 import AddClientModal from '../../clients/AddClientModal'
-import { TELEGRAM_STATUS_LABELS, TELEGRAM_STATUS_COLORS, TELEGRAM_MESSAGE_STATUS_LABELS, getConsentDisplayStatus, CONSENT_DISPLAY_LABELS, CONSENT_DISPLAY_COLORS } from '@/lib/telegram-model'
+import TelegramMessageThread from '@/components/telegram/TelegramMessageThread'
+import TelegramComposer from '@/components/telegram/TelegramComposer'
+import TelegramAttachmentsPanel from '@/components/telegram/TelegramAttachmentsPanel'
+import { TELEGRAM_STATUS_LABELS, TELEGRAM_STATUS_COLORS, getConsentDisplayStatus, CONSENT_DISPLAY_LABELS, CONSENT_DISPLAY_COLORS } from '@/lib/telegram-model'
 
 interface Props {
   initialData: TelegramConversationDetailDTO
@@ -33,141 +35,6 @@ interface ClientOption {
   phone?: string | null
 }
 
-// Совпадает с ATTACHMENT_FALLBACK_LABEL в src/app/api/telegram/webhook/route.ts
-// — если text равен одной из этих подписей, значит у сообщения не было
-// собственной подписи (caption), и повторно показывать её под вложением не нужно.
-const ATTACHMENT_PLACEHOLDER_TEXTS = ['📷 Фото', '📄 Документ', '🎤 Голосовое сообщение', '🎬 Видео', '🎭 Стикер']
-
-function formatFileSize(bytes: number | null): string {
-  if (!bytes) return ''
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} КБ`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} МБ`
-}
-
-function formatDuration(seconds: number | null): string {
-  if (!seconds) return ''
-  const m = Math.floor(seconds / 60)
-  const s = seconds % 60
-  return `${m}:${String(s).padStart(2, '0')}`
-}
-
-// Пока идёт запрос к прокси-роуту — скелетон; если запрос упал (битый
-// file_id, рассинхрон Content-Length и т.п.) — аккуратная плашка вместо
-// сломанной иконки браузера.
-function PhotoAttachment({ url, alt, size = 'md', onOpen }: { url: string; alt: string; size?: 'sm' | 'md'; onOpen?: () => void }) {
-  const [status, setStatus] = useState<'loading' | 'loaded' | 'error'>('loading')
-
-  if (status === 'error') {
-    return (
-      <div className={`flex flex-col items-center justify-center gap-1 bg-black/20 rounded-lg text-zinc-500 ${size === 'sm' ? 'w-24 h-24' : 'w-[220px] min-h-[120px] p-3'}`}>
-        <ImageOff className="w-5 h-5 flex-shrink-0" />
-        <span className="text-[10px] text-center">Не удалось загрузить изображение</span>
-      </div>
-    )
-  }
-
-  const image = (
-    // eslint-disable-next-line @next/next/no-img-element -- прокси-роут, не статичный ассет
-    <img
-      src={url}
-      alt={alt}
-      className={`${size === 'sm' ? 'w-24 h-24 object-contain' : 'w-full h-auto'} ${status === 'loading' ? 'opacity-0' : 'opacity-100'} transition-opacity duration-150`}
-      onLoad={() => setStatus('loaded')}
-      onError={() => setStatus('error')}
-    />
-  )
-
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      disabled={!onOpen || status !== 'loaded'}
-      className={`relative block rounded-lg overflow-hidden bg-zinc-800/60 ${size === 'sm' ? 'w-24 h-24' : 'w-[220px] min-h-[120px]'} ${onOpen && status === 'loaded' ? 'cursor-pointer' : 'cursor-default'}`}
-    >
-      {status === 'loading' && <div className="absolute inset-0 animate-pulse bg-zinc-700/50" />}
-      {image}
-    </button>
-  )
-}
-
-function MessageAttachment({ message, onOpenLightbox }: { message: TelegramMessageDTO; onOpenLightbox: (url: string) => void }) {
-  const a = message.attachment
-  if (!a) return null
-
-  if (message.messageType === 'PHOTO') {
-    return <PhotoAttachment url={a.fileUrl} alt="Фото" onOpen={() => onOpenLightbox(a.fileUrl)} />
-  }
-  if (message.messageType === 'DOCUMENT') {
-    return (
-      <a href={a.downloadUrl} className="flex items-center gap-2 bg-black/20 rounded-lg px-3 py-2 hover:bg-black/30 transition-colors">
-        <FileText className="w-5 h-5 text-zinc-400 flex-shrink-0" />
-        <div className="min-w-0">
-          <p className="text-xs truncate">{a.fileName || 'Документ'}</p>
-          <p className="text-zinc-500 text-[11px]">{formatFileSize(a.fileSize)}{a.mimeType ? ` · ${a.mimeType}` : ''}</p>
-        </div>
-      </a>
-    )
-  }
-  if (message.messageType === 'VOICE') {
-    return (
-      <div className="flex items-center gap-2">
-        <audio controls src={a.fileUrl} className="max-w-[220px] h-8" />
-        {a.duration != null && <span className="text-zinc-500 text-[11px] flex-shrink-0">{formatDuration(a.duration)}</span>}
-      </div>
-    )
-  }
-  if (message.messageType === 'VIDEO') {
-    return (
-      <div className="space-y-1">
-        <video controls src={a.fileUrl} className="max-w-[240px] rounded-lg" />
-        <a href={a.downloadUrl} className="text-[11px] text-zinc-400 hover:text-zinc-200 underline">Скачать</a>
-      </div>
-    )
-  }
-  if (message.messageType === 'STICKER') {
-    return a.isAnimatedSticker ? (
-      <div className="w-20 h-20 flex items-center justify-center text-3xl bg-black/20 rounded-lg">🎭</div>
-    ) : (
-      <PhotoAttachment url={a.fileUrl} alt="Стикер" size="sm" />
-    )
-  }
-  return null
-}
-
-// Визуальное эхо inline-кнопки «Согласиться», которую реально видит клиент в
-// Telegram — не интерактивный элемент (клик тут ничего не делает: согласие
-// может дать только сам клиент нажатием в Telegram), просто помогает
-// администратору увидеть, отправлена ли кнопка и нажал ли клиент её, не
-// открывая сам Telegram. cursor-default вместо pointer — намеренно, чтобы не
-// создавать видимость кликабельности.
-function ConsentButtonPreview({ given }: { given: boolean }) {
-  return (
-    <button
-      type="button"
-      disabled={given}
-      tabIndex={-1}
-      title={given ? 'Клиент уже нажал эту кнопку в Telegram' : 'Клиент ещё не нажал эту кнопку в Telegram'}
-      className={`mt-2 flex items-center gap-1.5 text-xs font-semibold px-3.5 py-1.5 rounded-lg transition-colors cursor-default ${
-        given ? 'bg-zinc-700/50 text-zinc-400' : 'bg-[#00c26b] hover:bg-[#00b360] text-white'
-      }`}
-    >
-      {given && <Check className="w-3.5 h-3.5" />}
-      Согласиться
-    </button>
-  )
-}
-
-function groupByDate(messages: TelegramMessageDTO[]) {
-  const groups: { day: Date; label: string; items: TelegramMessageDTO[] }[] = []
-  for (const m of messages) {
-    const day = parseISO(m.createdAt)
-    const last = groups[groups.length - 1]
-    if (last && isSameDay(last.day, day)) last.items.push(m)
-    else groups.push({ day, label: format(day, 'd MMMM yyyy', { locale: ru }), items: [m] })
-  }
-  return groups
-}
-
 export default function ConversationView({ initialData, currentUserId, currentUserName }: Props) {
   const router = useRouter()
   const [conversation, setConversation] = useState(initialData)
@@ -177,8 +44,6 @@ export default function ConversationView({ initialData, currentUserId, currentUs
   const messages = initialData.messages
   const notes = initialData.internalNotes
 
-  const [messageText, setMessageText] = useState('')
-  const [sending, setSending] = useState(false)
   const [noteText, setNoteText] = useState('')
 
   const [linkClientOpen, setLinkClientOpen] = useState(false)
@@ -188,28 +53,9 @@ export default function ConversationView({ initialData, currentUserId, currentUs
   const [createClientModalOpen, setCreateClientModalOpen] = useState(false)
   const [checkingDuplicate, setCheckingDuplicate] = useState(false)
   const [orderFormOpen, setOrderFormOpen] = useState(false)
-  const [actionError, setActionError] = useState<string | null>(null)
+  const [attachmentsPanelOpen, setAttachmentsPanelOpen] = useState(false)
+  const [highlightMessageId, setHighlightMessageId] = useState<string | null>(null)
   const [actionSuccess, setActionSuccess] = useState<string | null>(null)
-  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null)
-
-  // Вложение — свой небольшой стейт-машин, отдельный от текстовой отправки:
-  // idle (ничего не прикреплено) → staged (файл выбран, ждём отправки) →
-  // uploading (реальная загрузка байтов на наш сервер, есть процент) →
-  // processing (байты уже у нас, ждём ответ от Telegram) → error.
-  type AttachmentPhase = 'idle' | 'staged' | 'uploading' | 'processing' | 'error'
-  const [stagedFile, setStagedFile] = useState<File | null>(null)
-  const [attachmentPhase, setAttachmentPhase] = useState<AttachmentPhase>('idle')
-  const [uploadProgress, setUploadProgress] = useState(0)
-  const [attachmentError, setAttachmentError] = useState<string | null>(null)
-  const [isDraggingOver, setIsDraggingOver] = useState(false)
-  const uploadAbortRef = useRef<AbortController | null>(null)
-
-  const bottomRef = useRef<HTMLDivElement>(null)
-  const fileInputRef = useRef<HTMLInputElement>(null)
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages.length])
 
   // Лёгкий polling вместо realtime (в проекте нет ws/pusher) — подхватывает
   // новые сообщения клиента, пока страница диалога открыта у администратора.
@@ -227,137 +73,16 @@ export default function ConversationView({ initialData, currentUserId, currentUs
   const consentGiven = conversation.consentStatus === 'GIVEN'
   const consentDisplay = getConsentDisplayStatus(conversation.consentStatus, conversation.consentRequestSentAt)
 
-  const MAX_UPLOAD_MB = 50
-
-  // Реальный прогресс — через upload() из @vercel/blob/client (onUploadProgress
-  // считает по фактическим байтам, не фейковый таймер). Файл уходит напрямую
-  // из браузера в Vercel Blob, а не в нашу serverless-функцию: у функций
-  // Vercel жёсткий лимит тела запроса 4.5 МБ, который никак не связан с
-  // Next.js (experimental.serverActions.bodySizeLimit в next.config.ts на
-  // него не влияет) — при видео/больших файлах без Blob запрос падал с 413/500
-  // ещё до того, как доходил до нашего кода. После загрузки в Blob сервер
-  // забирает байты оттуда и пересылает в Telegram (sendConversationAttachmentFromBlob),
-  // а сам blob сразу удаляется — это временный релей, не постоянное хранилище.
-  async function uploadStagedFile(file: File): Promise<{ ok: true; url: string } | { ok: false; error: string }> {
-    const controller = new AbortController()
-    uploadAbortRef.current = controller
-    try {
-      const blob = await upload(`telegram/${conversation.id}/${Date.now()}-${file.name}`, file, {
-        access: 'private',
-        handleUploadUrl: '/api/telegram/blob-upload',
-        contentType: file.type || undefined,
-        abortSignal: controller.signal,
-        onUploadProgress: ({ percentage }) => setUploadProgress(Math.round(percentage)),
-      })
-      return { ok: true, url: blob.url }
-    } catch (e) {
-      if (controller.signal.aborted) return { ok: false, error: 'Загрузка отменена' }
-      return { ok: false, error: e instanceof Error ? e.message : 'Не удалось загрузить файл' }
-    } finally {
-      uploadAbortRef.current = null
-    }
-  }
-
-  async function handleSend() {
-    if (sending || attachmentPhase === 'uploading' || attachmentPhase === 'processing') return
-    const text = messageText.trim()
-
-    if (stagedFile) {
-      setAttachmentPhase('uploading')
-      setUploadProgress(0)
-      setAttachmentError(null)
-      const uploadResult = await uploadStagedFile(stagedFile)
-      if (!uploadResult.ok) {
-        setAttachmentPhase('error')
-        setAttachmentError(uploadResult.error)
-        return
-      }
-
-      // Байты уже в Blob — дальше сервер сам читает их оттуда и шлёт в
-      // Telegram; с клиента тут прогресс отслеживать больше нечем.
-      setAttachmentPhase('processing')
-      const sendResult = await sendConversationAttachmentFromBlob(conversation.id, {
-        blobUrl: uploadResult.url,
-        fileName: stagedFile.name,
-        mimeType: stagedFile.type || 'application/octet-stream',
-        caption: text || undefined,
-      })
-      if (sendResult.ok) {
-        setStagedFile(null)
-        setAttachmentPhase('idle')
-        setUploadProgress(0)
-        setMessageText('')
-        router.refresh()
-      } else {
-        setAttachmentPhase('error')
-        setAttachmentError(sendResult.error)
-      }
-      return
-    }
-
-    if (!text) return
-    setSending(true)
-    setMessageText('')
-    const result = await sendConversationMessage(conversation.id, text)
-    setSending(false)
-    if (!result.ok) setActionError(result.error)
-    router.refresh()
-  }
-
-  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      handleSend()
-    }
-  }
-
-  function stageFile(file: File) {
-    setUploadProgress(0)
-    if (file.size > MAX_UPLOAD_MB * 1024 * 1024) {
-      setStagedFile(file)
-      setAttachmentPhase('error')
-      setAttachmentError(`Файл больше ${MAX_UPLOAD_MB} МБ — Telegram не примет его от бота`)
-      return
-    }
-    setStagedFile(file)
-    setAttachmentPhase('staged')
-    setAttachmentError(null)
-  }
-
-  function handleRemoveStagedFile() {
-    if (attachmentPhase === 'uploading') uploadAbortRef.current?.abort()
-    setStagedFile(null)
-    setAttachmentPhase('idle')
-    setUploadProgress(0)
-    setAttachmentError(null)
-  }
-
-  function handleFileInputChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]
-    if (file) stageFile(file)
-    e.target.value = '' // чтобы повторный выбор того же файла тоже сработал
-  }
-
-  function handleDragOver(e: React.DragEvent) {
-    e.preventDefault()
-    setIsDraggingOver(true)
-  }
-
-  function handleDragLeave(e: React.DragEvent) {
-    e.preventDefault()
-    setIsDraggingOver(false)
-  }
-
-  function handleDrop(e: React.DragEvent) {
-    e.preventDefault()
-    setIsDraggingOver(false)
-    const file = e.dataTransfer.files?.[0]
-    if (file) stageFile(file)
-  }
-
   async function handleRetry(messageId: string) {
     await retryFailedMessage(messageId)
     router.refresh()
+  }
+
+  // Вызывается из панели вложений ("Показать в чате") — закрывает панель и
+  // просит TelegramMessageThread проскроллить к сообщению и подсветить его.
+  function handleShowInChat(messageId: string) {
+    setAttachmentsPanelOpen(false)
+    setHighlightMessageId(messageId)
   }
 
   async function handleClaim() {
@@ -409,7 +134,6 @@ export default function ConversationView({ initialData, currentUserId, currentUs
   // если совпадений нет (или администратор явно выбрал "всё равно создать
   // нового" в предупреждении ниже) — открываем форму на редактирование.
   async function handleOpenCreateClient() {
-    setActionError(null)
     setCheckingDuplicate(true)
     const match = await findClientMatchForConversation(conversation.id)
     setCheckingDuplicate(false)
@@ -433,25 +157,13 @@ export default function ConversationView({ initialData, currentUserId, currentUs
     if (result.ok) router.refresh()
   }
 
-  const dateGroups = groupByDate(messages)
-
   return (
     // h-screen, а не h-full: родительский <main> в AdminLayout — min-h-screen
     // (не h-screen), поэтому h-full от него не даёт надёжную границу высоты.
     // Без явной границы flex-1 ниже не сжимается, а раздвигает всю страницу,
     // и нижняя панель ввода "уезжает" вниз за пределы экрана.
     <div className="flex h-screen">
-      <div
-        className="flex-1 flex flex-col min-w-0 min-h-0 relative"
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-      >
-        {isDraggingOver && (
-          <div className="absolute inset-0 z-50 bg-[#00c26b]/10 border-2 border-dashed border-[#00c26b]/60 rounded-lg flex items-center justify-center pointer-events-none">
-            <p className="text-[#00c26b] font-medium">Отпустите файл, чтобы прикрепить</p>
-          </div>
-        )}
+      <div className="flex-1 flex flex-col min-w-0 min-h-0 relative">
         {/* Верхняя панель */}
         <div className="px-6 py-4 border-b border-zinc-800 flex items-center justify-between gap-3 flex-wrap flex-shrink-0">
           <div className="flex items-center gap-3 min-w-0">
@@ -491,6 +203,11 @@ export default function ConversationView({ initialData, currentUserId, currentUs
               {conversation.status === 'ARCHIVED' ? <ArchiveRestore className="w-3.5 h-3.5" /> : <Archive className="w-3.5 h-3.5" />}
               {conversation.status === 'ARCHIVED' ? 'Разархивировать' : 'Архивировать'}
             </button>
+            <button type="button" onClick={() => setAttachmentsPanelOpen(true)} title="Вложения"
+              className="text-xs font-medium px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 transition-colors flex items-center gap-1.5">
+              <Paperclip className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Вложения</span>
+            </button>
           </div>
         </div>
 
@@ -512,142 +229,15 @@ export default function ConversationView({ initialData, currentUserId, currentUs
           </div>
         )}
 
-        {/* Лента сообщений — flex-1 + min-h-0 вместо фиксированного max-h:
-            сама сжимается, когда нижняя панель растёт (прикреплённый файл,
-            многострочный текст), и никогда не перекрывается панелью ввода. */}
-        <div className="flex-1 min-h-0 overflow-y-auto px-6 py-4 space-y-4">
-          {messages.length === 0 ? (
-            <p className="text-zinc-600 text-sm text-center py-10">Сообщений пока нет</p>
-          ) : (
-            dateGroups.map(group => (
-              <div key={group.label} className="space-y-3">
-                <p className="text-zinc-600 text-[11px] text-center uppercase tracking-wider">{group.label}</p>
-                {group.items.map(m => {
-                  if (m.senderType === 'SYSTEM') {
-                    return (
-                      <p key={m.id} className="text-zinc-500 text-xs text-center">{m.text}</p>
-                    )
-                  }
-                  const isOutbound = m.direction === 'OUTBOUND'
-                  return (
-                    <div key={m.id} className={`flex ${isOutbound ? 'justify-end' : 'justify-start'}`}>
-                      <div className={`max-w-[70%] rounded-lg px-3 py-2 text-sm ${
-                        isOutbound ? 'bg-[#00c26b]/15 border border-[#00c26b]/30 text-zinc-100' : 'bg-zinc-800 border border-zinc-700 text-zinc-100'
-                      }`}>
-                        {m.senderType === 'BOT' && <p className="text-[10px] text-zinc-500 mb-0.5">Автоматически</p>}
-                        {m.senderType === 'ADMIN' && m.senderName && <p className="text-[10px] text-zinc-500 mb-0.5">{m.senderName}</p>}
-                        {m.attachment && (
-                          <div className="mb-1.5">
-                            <MessageAttachment message={m} onOpenLightbox={setLightboxUrl} />
-                          </div>
-                        )}
-                        {(!m.attachment || (m.text && !ATTACHMENT_PLACEHOLDER_TEXTS.includes(m.text))) && (
-                          <p className="whitespace-pre-wrap break-words">{m.text || '(без текста)'}</p>
-                        )}
-                        {m.telegramMessageId && m.telegramMessageId === conversation.consentRequestMessageId && (
-                          <ConsentButtonPreview given={consentGiven} />
-                        )}
-                        <div className="flex items-center gap-1.5 mt-1">
-                          <p className="text-zinc-500 text-[11px]">{format(parseISO(m.createdAt), 'HH:mm')}</p>
-                          {isOutbound && (
-                            <>
-                              <span className="text-zinc-600 text-[11px]">·</span>
-                              <span className={`text-[11px] ${m.status === 'FAILED' ? 'text-red-400' : 'text-zinc-500'}`}>
-                                {TELEGRAM_MESSAGE_STATUS_LABELS[m.status]}
-                              </span>
-                              {m.status === 'FAILED' && (
-                                <button type="button" onClick={() => handleRetry(m.id)} className="text-red-400 hover:text-red-300">
-                                  <RotateCcw className="w-3 h-3" />
-                                </button>
-                              )}
-                            </>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            ))
-          )}
-          <div ref={bottomRef} />
-        </div>
+        <TelegramMessageThread
+          messages={messages}
+          consentRequestMessageId={conversation.consentRequestMessageId}
+          consentGiven={consentGiven}
+          onRetry={handleRetry}
+          highlightMessageId={highlightMessageId}
+        />
 
-        {/* Нижняя панель — единый закреплённый блок: ошибка / прикреплённый
-            файл с прогрессом / строка ввода. Фото/документ/видео — через
-            скрепку или drag-and-drop (текст рядом становится подписью);
-            emoji/reply/forward — Этап C2. */}
-        <div className="border-t border-zinc-800 flex-shrink-0">
-          {actionError && (
-            <p className="mx-4 sm:mx-6 mt-3 text-red-400 text-xs bg-red-950/30 border border-red-800/40 rounded-lg px-3 py-2">{actionError}</p>
-          )}
-
-          {stagedFile && (
-            <div className="mx-4 sm:mx-6 mt-3 bg-zinc-800/60 border border-zinc-700 rounded-lg px-3 py-2 space-y-1.5">
-              <div className="flex items-center gap-2">
-                <FileText className="w-4 h-4 text-zinc-400 flex-shrink-0" />
-                <p className="text-zinc-200 text-xs truncate flex-1 min-w-0">{stagedFile.name}</p>
-                <p className="text-zinc-500 text-[11px] flex-shrink-0">{formatFileSize(stagedFile.size)}</p>
-                <button type="button" onClick={handleRemoveStagedFile} title="Убрать файл" className="text-zinc-500 hover:text-zinc-200 flex-shrink-0">
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              </div>
-
-              {attachmentPhase === 'uploading' && (
-                <div className="space-y-1">
-                  <div className="h-1 bg-zinc-700 rounded-full overflow-hidden">
-                    <div className="h-full bg-[#00c26b] transition-[width] duration-150" style={{ width: `${uploadProgress}%` }} />
-                  </div>
-                  <p className="text-zinc-500 text-[11px]">Загрузка: {uploadProgress}%</p>
-                </div>
-              )}
-              {attachmentPhase === 'processing' && (
-                <p className="text-zinc-500 text-[11px] flex items-center gap-1.5">
-                  <Loader2 className="w-3 h-3 animate-spin" /> Отправка в Telegram...
-                </p>
-              )}
-              {attachmentPhase === 'staged' && (
-                <p className="text-zinc-500 text-[11px]">Готово к отправке</p>
-              )}
-              {attachmentPhase === 'error' && (
-                <p className="text-red-400 text-[11px]">Ошибка загрузки{attachmentError ? `: ${attachmentError}` : ''}</p>
-              )}
-            </div>
-          )}
-
-          <div className="px-4 sm:px-6 py-3 flex items-end gap-2 sm:gap-3">
-            <input ref={fileInputRef} type="file" hidden onChange={handleFileInputChange} />
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={attachmentPhase === 'uploading' || attachmentPhase === 'processing'}
-              title="Прикрепить файл"
-              className="text-zinc-400 hover:text-zinc-200 disabled:opacity-40 p-2.5 rounded-lg flex-shrink-0 transition-colors"
-            >
-              <Paperclip className="w-4 h-4" />
-            </button>
-            <textarea
-              value={messageText}
-              onChange={e => setMessageText(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder={stagedFile ? 'Подпись к файлу (необязательно)...' : 'Написать сообщение...'}
-              rows={2}
-              className="flex-1 min-w-0 bg-zinc-800 border border-zinc-700 text-zinc-100 placeholder-zinc-600 rounded-lg px-3 py-2 text-sm outline-none focus:border-[#00c26b] transition-colors resize-none"
-            />
-            <button
-              type="button"
-              onClick={handleSend}
-              disabled={sending || attachmentPhase === 'uploading' || attachmentPhase === 'processing' || (!messageText.trim() && !stagedFile)}
-              className="bg-[#00c26b] hover:bg-[#00b360] disabled:opacity-50 text-white p-2.5 rounded-lg transition-colors flex-shrink-0"
-            >
-              {attachmentPhase === 'uploading' || attachmentPhase === 'processing' ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <Send className="w-4 h-4" />
-              )}
-            </button>
-          </div>
-        </div>
+        <TelegramComposer conversationId={conversation.id} onSent={() => router.refresh()} />
       </div>
 
       {/* Правая панель */}
@@ -826,22 +416,13 @@ export default function ConversationView({ initialData, currentUserId, currentUs
         />
       )}
 
-      {lightboxUrl && (
-        <div
-          className="fixed inset-0 z-[70] bg-black/90 flex items-center justify-center p-8"
-          onClick={() => setLightboxUrl(null)}
-        >
-          <button
-            type="button"
-            onClick={() => setLightboxUrl(null)}
-            className="absolute top-4 right-4 text-white/70 hover:text-white"
-          >
-            <X className="w-6 h-6" />
-          </button>
-          {/* eslint-disable-next-line @next/next/no-img-element -- прокси-роут, не статичный ассет */}
-          <img src={lightboxUrl} alt="Фото" className="max-w-full max-h-full object-contain" onClick={e => e.stopPropagation()} />
-        </div>
-      )}
+      <TelegramAttachmentsPanel
+        conversationId={conversation.id}
+        open={attachmentsPanelOpen}
+        onOpenChange={setAttachmentsPanelOpen}
+        dialogName={name}
+        onShowInChat={handleShowInChat}
+      />
     </div>
   )
 }

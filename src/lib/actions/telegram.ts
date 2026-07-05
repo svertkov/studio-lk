@@ -10,6 +10,7 @@ import {
 } from '@/lib/telegram'
 import { revokeConsent } from '@/lib/telegram-consent'
 import { DEFAULT_CONSENT_TEXT, DEFAULT_MANAGER_HANDOFF_MESSAGE } from '@/lib/telegram-model'
+import { extractLinks } from '@/lib/telegram-ui-utils'
 import type {
   TelegramConversation, TelegramMessage, TelegramMessageAttachment, TelegramSettings, Client, User,
   TelegramConversationStatus, TelegramConsentStatus, TelegramMessageDirection, TelegramMessageStatus, TelegramMessageType, TelegramSenderType,
@@ -625,6 +626,8 @@ export async function linkConversationToClient(conversationId: string, clientId:
 
   revalidatePath(`/admin/telegram/${conversationId}`)
   revalidatePath('/admin/telegram')
+  // Диалог теперь виден и во встроенной Telegram-панели карточки клиента.
+  revalidatePath(`/admin/clients/${clientId}`)
   return { ok: true as const }
 }
 
@@ -787,4 +790,177 @@ export async function getArchiveWarning(): Promise<string | null> {
     return 'В Telegram-архиве накопилось много переписок и файлов. Проверьте политику хранения и при необходимости архивируйте или обезличьте старые данные.'
   }
   return null
+}
+
+// ============================================================
+// TELEGRAM-ДИАЛОГ ВНУТРИ КАРТОЧКИ КЛИЕНТА — та же getConversationDetail(),
+// просто найденная по clientId, а не по id диалога напрямую. Один клиент
+// может исторически иметь несколько связанных диалогов (linkConversationToClient
+// вызывался несколько раз) — берём самый свежий по lastMessageAt.
+// ============================================================
+
+export async function getConversationForClient(
+  clientId: string
+): Promise<{ ok: true; data: TelegramConversationDetailDTO | null } | { ok: false; error: string }> {
+  const access = await requireTelegramAccess()
+  if (!access.ok) return { ok: false, error: access.error }
+
+  const conversation = await prisma.telegramConversation.findFirst({
+    where: { linkedClientId: clientId },
+    orderBy: { lastMessageAt: 'desc' },
+    select: { id: true },
+  })
+  if (!conversation) return { ok: true, data: null }
+
+  return getConversationDetail(conversation.id)
+}
+
+export interface UnlinkedConversationOptionDTO {
+  id: string
+  telegramUsername: string | null
+  telegramUserId: string | null
+  telegramChatId: string
+  clientNameGuess: string | null
+  lastMessageAt: string | null
+}
+
+// Для пикера "Связать с диалогом" в карточке клиента (обратное направление
+// от уже существующего "Связать с существующим клиентом" в разделе Telegram).
+// Намеренно ищем только среди ЕЩЁ НЕ связанных диалогов — иначе можно было бы
+// случайно "отобрать" диалог у другого клиента одним кликом в поиске.
+export async function searchUnlinkedTelegramConversations(
+  query: string
+): Promise<{ ok: true; data: UnlinkedConversationOptionDTO[] } | { ok: false; data: []; error: string }> {
+  const access = await requireTelegramAccess()
+  if (!access.ok) return { ok: false, data: [], error: access.error }
+
+  const q = query.trim()
+  if (q.length < 2) return { ok: true, data: [] }
+
+  const rows = await prisma.telegramConversation.findMany({
+    where: {
+      linkedClientId: null,
+      OR: [
+        { telegramUsername: { contains: q, mode: 'insensitive' as const } },
+        { telegramUserId: { contains: q } },
+        { telegramChatId: { contains: q } },
+        { clientNameGuess: { contains: q, mode: 'insensitive' as const } },
+      ],
+    },
+    orderBy: { lastMessageAt: 'desc' },
+    take: 10,
+  })
+
+  return {
+    ok: true,
+    data: rows.map(r => ({
+      id: r.id,
+      telegramUsername: r.telegramUsername,
+      telegramUserId: r.telegramUserId,
+      telegramChatId: r.telegramChatId,
+      clientNameGuess: r.clientNameGuess,
+      lastMessageAt: r.lastMessageAt ? r.lastMessageAt.toISOString() : null,
+    })),
+  }
+}
+
+// ============================================================
+// ВЛОЖЕНИЯ ДИАЛОГА — классификация для панели "Вложения" (Медиа/Документы/
+// Ссылки/Голосовые/Кружочки). Один источник данных для обоих мест, где эта
+// панель открывается (раздел Telegram и встроенная панель карточки клиента).
+// Ссылки не хранятся как отдельная сущность в БД — вычисляются на лету из
+// текста сообщений (см. память проекта: "можно начать с вычисления ссылок
+// из текста сообщений", отдельная сущность MessageLink оставлена на будущее).
+// ============================================================
+
+export type AttachmentCategory = 'media' | 'document' | 'voice' | 'video_note' | 'link'
+
+export interface ConversationAttachmentItemDTO {
+  id: string
+  category: AttachmentCategory
+  messageId: string
+  createdAt: string
+  senderType: TelegramSenderType
+  senderName: string | null
+  messageType?: TelegramMessageType
+  fileUrl?: string
+  downloadUrl?: string
+  fileName?: string | null
+  mimeType?: string | null
+  fileSize?: number | null
+  duration?: number | null
+  width?: number | null
+  height?: number | null
+  isAnimatedSticker?: boolean
+  url?: string
+  messageSnippet?: string
+}
+
+function classifyMessageType(type: TelegramMessageType): AttachmentCategory | null {
+  switch (type) {
+    case 'PHOTO': case 'VIDEO': case 'STICKER': return 'media'
+    case 'DOCUMENT': return 'document'
+    case 'VOICE': case 'AUDIO': return 'voice'
+    case 'VIDEO_NOTE': return 'video_note'
+    default: return null
+  }
+}
+
+export async function getConversationAttachments(
+  conversationId: string
+): Promise<{ ok: true; data: ConversationAttachmentItemDTO[] } | { ok: false; error: string }> {
+  const access = await requireTelegramAccess()
+  if (!access.ok) return { ok: false, error: access.error }
+
+  const messages = await prisma.telegramMessage.findMany({
+    where: { conversationId },
+    orderBy: { createdAt: 'desc' },
+    include: { attachment: true },
+  })
+
+  const items: ConversationAttachmentItemDTO[] = []
+  for (const m of messages) {
+    const createdAt = m.createdAt.toISOString()
+
+    if (m.attachment) {
+      const category = classifyMessageType(m.messageType)
+      if (category) {
+        items.push({
+          id: m.attachment.id,
+          category,
+          messageId: m.id,
+          createdAt,
+          senderType: m.senderType,
+          senderName: m.senderName,
+          messageType: m.messageType,
+          fileUrl: `/api/telegram/file/${m.attachment.id}`,
+          downloadUrl: `/api/telegram/file/${m.attachment.id}?download=1`,
+          fileName: m.attachment.fileName,
+          mimeType: m.attachment.mimeType,
+          fileSize: m.attachment.fileSize,
+          duration: m.attachment.duration,
+          width: m.attachment.width,
+          height: m.attachment.height,
+          isAnimatedSticker: m.attachment.isAnimatedSticker,
+        })
+      }
+    }
+
+    if (m.text) {
+      for (const [i, url] of extractLinks(m.text).entries()) {
+        items.push({
+          id: `link-${m.id}-${i}`,
+          category: 'link',
+          messageId: m.id,
+          createdAt,
+          senderType: m.senderType,
+          senderName: m.senderName,
+          url,
+          messageSnippet: m.text.length > 160 ? `${m.text.slice(0, 160)}…` : m.text,
+        })
+      }
+    }
+  }
+
+  return { ok: true, data: items }
 }

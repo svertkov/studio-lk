@@ -81,6 +81,26 @@ export interface TelegramSticker {
   file_size?: number
 }
 
+// "Кружочек" — видео-сообщение, всегда квадратное (width === height).
+export interface TelegramVideoNote {
+  file_id: string
+  file_unique_id: string
+  length: number // сторона квадрата в пикселях
+  duration: number
+  file_size?: number
+}
+
+// Обычное аудио (музыка), в отличие от voice — отдельное поле у Telegram.
+export interface TelegramAudio {
+  file_id: string
+  file_unique_id: string
+  duration: number
+  performer?: string
+  title?: string
+  mime_type?: string
+  file_size?: number
+}
+
 export interface TelegramMessagePayload {
   message_id: number
   date: number
@@ -95,6 +115,8 @@ export interface TelegramMessagePayload {
   voice?: TelegramVoice
   video?: TelegramVideo
   sticker?: TelegramSticker
+  video_note?: TelegramVideoNote
+  audio?: TelegramAudio
 }
 
 // callback_query приходит при нажатии inline-кнопки («Согласиться») — своя
