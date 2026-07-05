@@ -39,3 +39,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# credentials runbook — never commit, local-only backup of real secret values
+CREDENTIALS.md
