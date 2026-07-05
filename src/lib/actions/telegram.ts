@@ -1,6 +1,7 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
+import { get as getBlob, del as deleteBlob } from '@vercel/blob'
 import { prisma } from '@/lib/prisma'
 import { auth } from '@/auth'
 import {
@@ -415,28 +416,36 @@ export async function sendConversationMessage(conversationId: string, text: stri
 
 const TELEGRAM_BOT_UPLOAD_LIMIT_MB = 50 // лимит самого Telegram на загрузку файла ботом через multipart
 
-// Next.js Server Actions умеют принимать FormData/File как аргумент при
-// прямом вызове из клиентского компонента — отдельный API-роут для загрузки
-// не нужен. Тип отправки определяется по MIME: image/* → sendPhoto, video/*
-// → sendVideo, всё остальное (в т.ч. аудио — отправку voice/audio от имени
-// администратора спецификация не требовала) → sendDocument.
-export async function sendConversationAttachment(conversationId: string, formData: FormData) {
+// Файл сначала уходит из браузера напрямую в Vercel Blob (см.
+// /api/telegram/blob-upload и upload() в ConversationView.tsx) — это
+// единственный способ обойти жёсткий лимит Vercel в 4.5 МБ на тело запроса к
+// функции, который не связан с настройками Next.js (bodySizeLimit в
+// next.config.ts на него не влияет). Сюда приходит уже готовый blob URL, а не
+// сам файл: читаем байты из Blob, пересылаем в Telegram и сразу удаляем blob —
+// он используется только как временный релей, постоянного хранения вложений
+// в проекте по-прежнему нет (см. TelegramMessageAttachment — хранится только
+// telegramFileId).
+export async function sendConversationAttachmentFromBlob(conversationId: string, params: {
+  blobUrl: string
+  fileName: string
+  mimeType: string
+  caption?: string
+}) {
   const access = await requireTelegramAccess()
-  if (!access.ok) return { ok: false as const, error: access.error }
-
-  const file = formData.get('file')
-  if (!(file instanceof File)) return { ok: false as const, error: 'Файл не выбран' }
-  if (file.size > TELEGRAM_BOT_UPLOAD_LIMIT_MB * 1024 * 1024) {
-    return { ok: false as const, error: `Файл больше ${TELEGRAM_BOT_UPLOAD_LIMIT_MB} МБ — Telegram не примет его от бота` }
+  if (!access.ok) {
+    await deleteBlob(params.blobUrl).catch(() => {})
+    return { ok: false as const, error: access.error }
   }
-  const caption = (formData.get('caption') as string | null)?.trim() || undefined
 
   const conversation = await prisma.telegramConversation.findUnique({ where: { id: conversationId } })
-  if (!conversation) return { ok: false as const, error: 'Диалог не найден' }
+  if (!conversation) {
+    await deleteBlob(params.blobUrl).catch(() => {})
+    return { ok: false as const, error: 'Диалог не найден' }
+  }
 
-  const messageType: TelegramMessageType = file.type.startsWith('image/')
+  const messageType: TelegramMessageType = params.mimeType.startsWith('image/')
     ? 'PHOTO'
-    : file.type.startsWith('video/')
+    : params.mimeType.startsWith('video/')
       ? 'VIDEO'
       : 'DOCUMENT'
 
@@ -447,16 +456,31 @@ export async function sendConversationAttachment(conversationId: string, formDat
       direction: 'OUTBOUND',
       senderType: 'ADMIN',
       senderAdminId: access.userId,
-      text: caption ?? null,
+      text: params.caption ?? null,
       messageType,
       status: 'PENDING',
       rawPayload: {},
     },
   })
 
-  const buffer = Buffer.from(await file.arrayBuffer())
+  let buffer: Buffer
+  try {
+    const blob = await getBlob(params.blobUrl, { access: 'private' })
+    if (!blob?.stream) throw new Error('Blob не найден')
+    buffer = Buffer.from(await new Response(blob.stream).arrayBuffer())
+    if (buffer.byteLength > TELEGRAM_BOT_UPLOAD_LIMIT_MB * 1024 * 1024) {
+      throw new Error(`Файл больше ${TELEGRAM_BOT_UPLOAD_LIMIT_MB} МБ — Telegram не примет его от бота`)
+    }
+  } catch (e) {
+    const message = e instanceof Error ? e.message : 'Не удалось прочитать загруженный файл'
+    await prisma.telegramMessage.update({ where: { id: pending.id }, data: { status: 'FAILED', errorMessage: message } })
+    await deleteBlob(params.blobUrl).catch(() => {})
+    revalidatePath(`/admin/telegram/${conversationId}`)
+    return { ok: false as const, error: message }
+  }
+
   const sendFn = messageType === 'PHOTO' ? sendTelegramPhoto : messageType === 'VIDEO' ? sendTelegramVideo : sendTelegramDocument
-  const result = await sendFn(conversation.telegramChatId, buffer, file.name || 'file', caption)
+  const result = await sendFn(conversation.telegramChatId, buffer, params.fileName || 'file', params.caption)
 
   if (result.ok) {
     await prisma.telegramMessage.update({
@@ -467,12 +491,12 @@ export async function sendConversationAttachment(conversationId: string, formDat
       data: {
         messageId: pending.id,
         telegramFileId: result.fileId,
-        fileName: file.name || null,
-        mimeType: file.type || null,
+        fileName: params.fileName || null,
+        mimeType: params.mimeType || null,
         // Размер — от Telegram (после возможного пересжатия фото), а не
         // исходного файла из браузера: иначе прокси-роут отдаёт неверный
         // Content-Length, и браузер показывает "битую" картинку.
-        fileSize: result.fileSize ?? file.size,
+        fileSize: result.fileSize ?? buffer.byteLength,
         width: result.width ?? null,
         height: result.height ?? null,
         duration: result.duration ?? null,
@@ -488,6 +512,7 @@ export async function sendConversationAttachment(conversationId: string, formDat
     await writeAuditLog({ userId: access.userId, action: 'TELEGRAM_ATTACHMENT_SEND_FAILED', entityId: conversationId, metadata: { error: result.error } })
   }
 
+  await deleteBlob(params.blobUrl).catch(() => {})
   revalidatePath(`/admin/telegram/${conversationId}`)
   return result.ok ? { ok: true as const } : { ok: false as const, error: result.error }
 }

@@ -5,12 +5,13 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { format, parseISO, isSameDay } from 'date-fns'
 import { ru } from 'date-fns/locale'
+import { upload } from '@vercel/blob/client'
 import {
   ArrowLeft, Pin, Archive, ArchiveRestore, UserPlus, Users, ShoppingBag,
   Send, RotateCcw, AlertTriangle, ShieldOff, ExternalLink, FileText, Paperclip, X, ImageOff, Loader2,
 } from 'lucide-react'
 import {
-  sendConversationMessage, retryFailedMessage, claimConversation, pinConversation, archiveConversation,
+  sendConversationMessage, sendConversationAttachmentFromBlob, retryFailedMessage, claimConversation, pinConversation, archiveConversation,
   unarchiveConversation, revokeConsentManually, createClientFromConversation, linkConversationToClient,
   addInternalNote, markConversationOrderCreated,
   type TelegramConversationDetailDTO, type TelegramMessageDTO,
@@ -174,7 +175,7 @@ export default function ConversationView({ initialData, currentUserId, currentUs
   const [uploadProgress, setUploadProgress] = useState(0)
   const [attachmentError, setAttachmentError] = useState<string | null>(null)
   const [isDraggingOver, setIsDraggingOver] = useState(false)
-  const xhrRef = useRef<XMLHttpRequest | null>(null)
+  const uploadAbortRef = useRef<AbortController | null>(null)
 
   const bottomRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -200,42 +201,33 @@ export default function ConversationView({ initialData, currentUserId, currentUs
 
   const MAX_UPLOAD_MB = 50
 
-  // Реальный прогресс — через XMLHttpRequest (upload.onprogress), не фейковый
-  // таймер: Server Actions не дают доступа к событиям прогресса отправки
-  // тела запроса, поэтому вложение уходит на /api/telegram/attachments
-  // обычным POST (та же бизнес-логика, что и раньше — переиспользуется
-  // sendConversationAttachment на сервере, см. этот роут).
-  function uploadStagedFile(file: File, caption: string): Promise<{ ok: true } | { ok: false; error: string }> {
-    return new Promise(resolve => {
-      const xhr = new XMLHttpRequest()
-      xhrRef.current = xhr
-      xhr.open('POST', '/api/telegram/attachments')
-
-      xhr.upload.onprogress = e => {
-        if (e.lengthComputable) setUploadProgress(Math.round((e.loaded / e.total) * 100))
-      }
-      // Байты полностью ушли на наш сервер — дальше сервер сам отправляет их
-      // в Telegram, клиенту тут прогресс отслеживать нечем, показываем
-      // индикатор "обрабатывается" вместо застрявших 100%.
-      xhr.upload.onload = () => setAttachmentPhase('processing')
-
-      xhr.onerror = () => resolve({ ok: false, error: 'Загрузка прервалась — проверьте соединение и попробуйте снова' })
-      xhr.onabort = () => resolve({ ok: false, error: 'Загрузка отменена' })
-      xhr.onload = () => {
-        try {
-          const data = JSON.parse(xhr.responseText)
-          resolve(data.ok ? { ok: true } : { ok: false, error: data.error || 'Не удалось отправить файл' })
-        } catch {
-          resolve({ ok: false, error: `Сервер вернул ошибку (${xhr.status})` })
-        }
-      }
-
-      const formData = new FormData()
-      formData.append('conversationId', conversation.id)
-      formData.append('file', file)
-      if (caption) formData.append('caption', caption)
-      xhr.send(formData)
-    })
+  // Реальный прогресс — через upload() из @vercel/blob/client (onUploadProgress
+  // считает по фактическим байтам, не фейковый таймер). Файл уходит напрямую
+  // из браузера в Vercel Blob, а не в нашу serverless-функцию: у функций
+  // Vercel жёсткий лимит тела запроса 4.5 МБ, который никак не связан с
+  // Next.js (experimental.serverActions.bodySizeLimit в next.config.ts на
+  // него не влияет) — при видео/больших файлах без Blob запрос падал с 413/500
+  // ещё до того, как доходил до нашего кода. После загрузки в Blob сервер
+  // забирает байты оттуда и пересылает в Telegram (sendConversationAttachmentFromBlob),
+  // а сам blob сразу удаляется — это временный релей, не постоянное хранилище.
+  async function uploadStagedFile(file: File): Promise<{ ok: true; url: string } | { ok: false; error: string }> {
+    const controller = new AbortController()
+    uploadAbortRef.current = controller
+    try {
+      const blob = await upload(`telegram/${conversation.id}/${Date.now()}-${file.name}`, file, {
+        access: 'private',
+        handleUploadUrl: '/api/telegram/blob-upload',
+        contentType: file.type || undefined,
+        abortSignal: controller.signal,
+        onUploadProgress: ({ percentage }) => setUploadProgress(Math.round(percentage)),
+      })
+      return { ok: true, url: blob.url }
+    } catch (e) {
+      if (controller.signal.aborted) return { ok: false, error: 'Загрузка отменена' }
+      return { ok: false, error: e instanceof Error ? e.message : 'Не удалось загрузить файл' }
+    } finally {
+      uploadAbortRef.current = null
+    }
   }
 
   async function handleSend() {
@@ -246,9 +238,23 @@ export default function ConversationView({ initialData, currentUserId, currentUs
       setAttachmentPhase('uploading')
       setUploadProgress(0)
       setAttachmentError(null)
-      const result = await uploadStagedFile(stagedFile, text)
-      xhrRef.current = null
-      if (result.ok) {
+      const uploadResult = await uploadStagedFile(stagedFile)
+      if (!uploadResult.ok) {
+        setAttachmentPhase('error')
+        setAttachmentError(uploadResult.error)
+        return
+      }
+
+      // Байты уже в Blob — дальше сервер сам читает их оттуда и шлёт в
+      // Telegram; с клиента тут прогресс отслеживать больше нечем.
+      setAttachmentPhase('processing')
+      const sendResult = await sendConversationAttachmentFromBlob(conversation.id, {
+        blobUrl: uploadResult.url,
+        fileName: stagedFile.name,
+        mimeType: stagedFile.type || 'application/octet-stream',
+        caption: text || undefined,
+      })
+      if (sendResult.ok) {
         setStagedFile(null)
         setAttachmentPhase('idle')
         setUploadProgress(0)
@@ -256,7 +262,7 @@ export default function ConversationView({ initialData, currentUserId, currentUs
         router.refresh()
       } else {
         setAttachmentPhase('error')
-        setAttachmentError(result.error)
+        setAttachmentError(sendResult.error)
       }
       return
     }
@@ -291,7 +297,7 @@ export default function ConversationView({ initialData, currentUserId, currentUs
   }
 
   function handleRemoveStagedFile() {
-    if (attachmentPhase === 'uploading') xhrRef.current?.abort()
+    if (attachmentPhase === 'uploading') uploadAbortRef.current?.abort()
     setStagedFile(null)
     setAttachmentPhase('idle')
     setUploadProgress(0)
