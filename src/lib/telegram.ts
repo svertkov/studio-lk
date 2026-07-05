@@ -97,8 +97,8 @@ export interface TelegramMessagePayload {
   sticker?: TelegramSticker
 }
 
-// callback_query приходит при нажатии inline-кнопки (Согласен / Позвать
-// менеджера) — своя структура, у неё нет chat напрямую, только через message.
+// callback_query приходит при нажатии inline-кнопки («Согласиться») — своя
+// структура, у неё нет chat напрямую, только через message.
 export interface TelegramCallbackQuery {
   id: string
   from: TelegramUser
@@ -106,10 +106,22 @@ export interface TelegramCallbackQuery {
   data?: string
 }
 
+export interface SendTelegramMessageOptions {
+  // Согласие ссылается на внешний документ (Google Docs) — без этого
+  // Telegram разворачивает большую карточку-предпросмотр под текстом.
+  // link_preview_options — актуальный (Bot API 7.0+) способ отключения,
+  // пришедший на смену устаревшему disable_web_page_preview.
+  disableLinkPreview?: boolean
+}
+
 export async function sendTelegramMessage(
-  chatId: string, text: string
+  chatId: string, text: string, options?: SendTelegramMessageOptions
 ): Promise<{ ok: true; telegramMessageId: string } | { ok: false; error: string }> {
-  return sendTelegramMessageRaw({ chat_id: chatId, text })
+  return sendTelegramMessageRaw({
+    chat_id: chatId,
+    text,
+    ...(options?.disableLinkPreview ? { link_preview_options: { is_disabled: true } } : {}),
+  })
 }
 
 export interface InlineButton {
@@ -121,12 +133,13 @@ export interface InlineButton {
 }
 
 export async function sendTelegramMessageWithButtons(
-  chatId: string, text: string, buttons: InlineButton[][]
+  chatId: string, text: string, buttons: InlineButton[][], options?: SendTelegramMessageOptions
 ): Promise<{ ok: true; telegramMessageId: string } | { ok: false; error: string }> {
   return sendTelegramMessageRaw({
     chat_id: chatId,
     text,
     reply_markup: { inline_keyboard: buttons },
+    ...(options?.disableLinkPreview ? { link_preview_options: { is_disabled: true } } : {}),
   })
 }
 
@@ -148,6 +161,32 @@ async function sendTelegramMessageRaw(
   } catch (e) {
     console.error('[sendTelegramMessage]', e)
     return { ok: false, error: 'Не удалось отправить сообщение в Telegram' }
+  }
+}
+
+// Убирает inline-кнопку(и) из уже отправленного сообщения — вызывается сразу
+// после того, как клиент нажал «Согласиться», чтобы кнопка не оставалась
+// кликабельной в Telegram-клиенте (повторное нажатие иначе создавало бы
+// видимость, что можно "согласиться" ещё раз). Не критично для основного
+// потока, если Telegram вернёт ошибку (например, сообщению больше 48 часов) —
+// поэтому только логируем, не бросаем исключение.
+export async function removeInlineKeyboard(chatId: string, telegramMessageId: string): Promise<void> {
+  try {
+    const res = await fetch(`${TELEGRAM_API_BASE}/bot${getBotToken()}/editMessageReplyMarkup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        message_id: Number(telegramMessageId),
+        reply_markup: { inline_keyboard: [] },
+      }),
+    })
+    const data = await res.json()
+    if (!res.ok || !data.ok) {
+      console.error('[removeInlineKeyboard]', data.description || `Telegram API вернул ${res.status}`)
+    }
+  } catch (e) {
+    console.error('[removeInlineKeyboard]', e)
   }
 }
 

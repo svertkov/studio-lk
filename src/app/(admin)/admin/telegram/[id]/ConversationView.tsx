@@ -8,7 +8,7 @@ import { ru } from 'date-fns/locale'
 import { upload } from '@vercel/blob/client'
 import {
   ArrowLeft, Pin, Archive, ArchiveRestore, UserPlus, Users, ShoppingBag,
-  Send, RotateCcw, AlertTriangle, ShieldOff, ExternalLink, FileText, Paperclip, X, ImageOff, Loader2,
+  Send, RotateCcw, AlertTriangle, ShieldOff, ExternalLink, FileText, Paperclip, X, ImageOff, Loader2, Check,
 } from 'lucide-react'
 import {
   sendConversationMessage, sendConversationAttachmentFromBlob, retryFailedMessage, claimConversation, pinConversation, archiveConversation,
@@ -18,7 +18,7 @@ import {
 } from '@/lib/actions/telegram'
 import { getClients } from '@/lib/actions/clients'
 import OrderFormModal from '../../orders/OrderFormModal'
-import { TELEGRAM_STATUS_LABELS, TELEGRAM_STATUS_COLORS, TELEGRAM_CONSENT_STATUS_LABELS, TELEGRAM_MESSAGE_STATUS_LABELS } from '@/lib/telegram-model'
+import { TELEGRAM_STATUS_LABELS, TELEGRAM_STATUS_COLORS, TELEGRAM_MESSAGE_STATUS_LABELS, getConsentDisplayStatus, CONSENT_DISPLAY_LABELS, CONSENT_DISPLAY_COLORS } from '@/lib/telegram-model'
 
 interface Props {
   initialData: TelegramConversationDetailDTO
@@ -133,6 +133,29 @@ function MessageAttachment({ message, onOpenLightbox }: { message: TelegramMessa
   return null
 }
 
+// Визуальное эхо inline-кнопки «Согласиться», которую реально видит клиент в
+// Telegram — не интерактивный элемент (клик тут ничего не делает: согласие
+// может дать только сам клиент нажатием в Telegram), просто помогает
+// администратору увидеть, отправлена ли кнопка и нажал ли клиент её, не
+// открывая сам Telegram. cursor-default вместо pointer — намеренно, чтобы не
+// создавать видимость кликабельности.
+function ConsentButtonPreview({ given }: { given: boolean }) {
+  return (
+    <button
+      type="button"
+      disabled={given}
+      tabIndex={-1}
+      title={given ? 'Клиент уже нажал эту кнопку в Telegram' : 'Клиент ещё не нажал эту кнопку в Telegram'}
+      className={`mt-2 flex items-center gap-1.5 text-xs font-semibold px-3.5 py-1.5 rounded-lg transition-colors cursor-default ${
+        given ? 'bg-zinc-700/50 text-zinc-400' : 'bg-[#00c26b] hover:bg-[#00b360] text-white'
+      }`}
+    >
+      {given && <Check className="w-3.5 h-3.5" />}
+      Согласиться
+    </button>
+  )
+}
+
 function groupByDate(messages: TelegramMessageDTO[]) {
   const groups: { day: Date; label: string; items: TelegramMessageDTO[] }[] = []
   for (const m of messages) {
@@ -198,6 +221,7 @@ export default function ConversationView({ initialData, currentUserId, currentUs
 
   const name = conversation.linkedClientName || conversation.clientNameGuess || conversation.telegramUsername || 'Без имени'
   const consentGiven = conversation.consentStatus === 'GIVEN'
+  const consentDisplay = getConsentDisplayStatus(conversation.consentStatus, conversation.consentRequestSentAt)
 
   const MAX_UPLOAD_MB = 50
 
@@ -426,8 +450,8 @@ export default function ConversationView({ initialData, currentUserId, currentUs
                 <span className={`text-[11px] font-medium px-2 py-0.5 rounded-full border ${TELEGRAM_STATUS_COLORS[conversation.status]}`}>
                   {TELEGRAM_STATUS_LABELS[conversation.status]}
                 </span>
-                <span className="text-[11px] font-medium px-2 py-0.5 rounded-full border border-zinc-700 text-zinc-400">
-                  {TELEGRAM_CONSENT_STATUS_LABELS[conversation.consentStatus]}
+                <span className={`text-[11px] font-medium px-2 py-0.5 rounded-full border ${CONSENT_DISPLAY_COLORS[consentDisplay]}`}>
+                  {CONSENT_DISPLAY_LABELS[consentDisplay]}
                 </span>
               </div>
               <p className="text-zinc-500 text-xs mt-0.5">
@@ -505,6 +529,9 @@ export default function ConversationView({ initialData, currentUserId, currentUs
                         )}
                         {(!m.attachment || (m.text && !ATTACHMENT_PLACEHOLDER_TEXTS.includes(m.text))) && (
                           <p className="whitespace-pre-wrap break-words">{m.text || '(без текста)'}</p>
+                        )}
+                        {m.telegramMessageId && m.telegramMessageId === conversation.consentRequestMessageId && (
+                          <ConsentButtonPreview given={consentGiven} />
                         )}
                         <div className="flex items-center gap-1.5 mt-1">
                           <p className="text-zinc-500 text-[11px]">{format(parseISO(m.createdAt), 'HH:mm')}</p>

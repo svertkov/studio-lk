@@ -9,6 +9,7 @@ import {
   getTelegramWebhookInfo, getTelegramBotInfo, isTelegramBotTokenConfigured,
 } from '@/lib/telegram'
 import { revokeConsent } from '@/lib/telegram-consent'
+import { DEFAULT_CONSENT_TEXT, DEFAULT_MANAGER_HANDOFF_MESSAGE } from '@/lib/telegram-model'
 import { createClient, type CreateClientInput } from '@/lib/actions/clients'
 import type {
   TelegramConversation, TelegramMessage, TelegramMessageAttachment, TelegramSettings, Client, User,
@@ -88,6 +89,10 @@ export interface TelegramMessageAttachmentDTO {
 
 export interface TelegramMessageDTO {
   id: string
+  // Telegram-овский message_id (не наш cuid) — нужен ConversationView, чтобы
+  // найти среди сообщений то самое, где была кнопка «Согласиться»
+  // (сверяется с TelegramConversationDetailDTO.consentRequestMessageId).
+  telegramMessageId: string | null
   direction: TelegramMessageDirection
   senderType: TelegramSenderType
   messageType: TelegramMessageType
@@ -112,6 +117,9 @@ export interface TelegramConversationListItemDTO {
   assignedAdminName: string | null
   status: TelegramConversationStatus
   consentStatus: TelegramConsentStatus
+  // Нужен для getConsentDisplayStatus() — отличить "не запрошено" от
+  // "ожидаем" (оба технически consentStatus=NONE).
+  consentRequestSentAt: string | null
   unreadCount: number
   isPinned: boolean
   archivedAt: string | null
@@ -142,8 +150,11 @@ export interface TelegramInternalNoteDTO {
 export interface TelegramConversationDetailDTO extends TelegramConversationListItemDTO {
   telegramChatId: string
   phone: string | null
-  consentRequestSentAt: string | null
   consentRequestVersion: string | null
+  // Telegram message_id сообщения с кнопкой «Согласиться» — ConversationView
+  // сверяет его с TelegramMessageDTO.telegramMessageId, чтобы нарисовать
+  // визуальный предпросмотр кнопки под нужным сообщением в ленте.
+  consentRequestMessageId: string | null
   messages: TelegramMessageDTO[]
   consents: TelegramConsentRecordDTO[]
   internalNotes: TelegramInternalNoteDTO[]
@@ -152,6 +163,7 @@ export interface TelegramConversationDetailDTO extends TelegramConversationListI
 function toMessageDTO(m: TelegramMessage & { attachment: TelegramMessageAttachment | null }): TelegramMessageDTO {
   return {
     id: m.id,
+    telegramMessageId: m.telegramMessageId,
     direction: m.direction,
     senderType: m.senderType,
     messageType: m.messageType,
@@ -192,6 +204,7 @@ function toListDTO(row: ConversationWithRelations): TelegramConversationListItem
     assignedAdminName: row.assignedAdmin?.name ?? row.assignedAdmin?.email ?? null,
     status: row.status,
     consentStatus: row.consentStatus,
+    consentRequestSentAt: row.consentRequestSentAt ? row.consentRequestSentAt.toISOString() : null,
     unreadCount: row.unreadCount,
     isPinned: row.isPinned,
     archivedAt: row.archivedAt ? row.archivedAt.toISOString() : null,
@@ -282,8 +295,8 @@ export async function getConversationDetail(
         ...toListDTO(row),
         telegramChatId: row.telegramChatId,
         phone: row.phone,
-        consentRequestSentAt: row.consentRequestSentAt ? row.consentRequestSentAt.toISOString() : null,
         consentRequestVersion: row.consentRequestVersion,
+        consentRequestMessageId: row.consentRequestMessageId,
         messages: row.messages.map(toMessageDTO),
         consents: row.consents.map(c => ({
           id: c.id,
@@ -723,13 +736,6 @@ function toSettingsDTO(s: TelegramSettings): TelegramSettingsDTO {
   }
 }
 
-const DEFAULT_CONSENT_TEXT =
-  'Здравствуйте! Это бот студии контента 2470. Мы поможем принять вашу заявку и передать её менеджеру. ' +
-  'Для этого студии нужно обработать ваши персональные данные: имя или ник в Telegram, контакт, текст сообщения, ' +
-  'параметры заявки, желаемые дату и время записи. Данные используются только для консультации, связи с вами и ' +
-  'организации записи в студию. Нажимая «Согласен», вы подтверждаете согласие на обработку персональных данных. ' +
-  'Политика обработки персональных данных: {{privacy_policy_url}}. Вы можете отозвать согласие сообщением «Отозвать согласие».'
-
 export interface TelegramWebhookStatusDTO {
   botTokenConfigured: boolean
   botUsername: string | null
@@ -746,7 +752,7 @@ export async function getTelegramSettings(): Promise<
 
   const settings = await prisma.telegramSettings.upsert({
     where: { id: 'singleton' },
-    create: { id: 'singleton', consentText: DEFAULT_CONSENT_TEXT },
+    create: { id: 'singleton', consentText: DEFAULT_CONSENT_TEXT, managerHandoffMessage: DEFAULT_MANAGER_HANDOFF_MESSAGE },
     update: {},
   })
 
@@ -774,7 +780,12 @@ export async function updateTelegramSettings(input: Partial<TelegramSettingsDTO>
 
   await prisma.telegramSettings.upsert({
     where: { id: 'singleton' },
-    create: { id: 'singleton', consentText: input.consentText ?? DEFAULT_CONSENT_TEXT, ...input },
+    create: {
+      id: 'singleton',
+      consentText: input.consentText ?? DEFAULT_CONSENT_TEXT,
+      managerHandoffMessage: input.managerHandoffMessage ?? DEFAULT_MANAGER_HANDOFF_MESSAGE,
+      ...input,
+    },
     update: { ...input },
   })
 
@@ -794,7 +805,7 @@ export async function getArchiveWarning(): Promise<string | null> {
 
   const settings = await prisma.telegramSettings.upsert({
     where: { id: 'singleton' },
-    create: { id: 'singleton', consentText: DEFAULT_CONSENT_TEXT },
+    create: { id: 'singleton', consentText: DEFAULT_CONSENT_TEXT, managerHandoffMessage: DEFAULT_MANAGER_HANDOFF_MESSAGE },
     update: {},
   })
 

@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import type { TelegramMessageType, TelegramSettings } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
-import { sendTelegramMessage, sendTelegramMessageWithButtons, answerCallbackQuery, type TelegramUpdate, type TelegramMessagePayload } from '@/lib/telegram'
-import { REVOKE_CONSENT_PHRASES } from '@/lib/telegram-model'
+import {
+  sendTelegramMessage, sendTelegramMessageWithButtons, answerCallbackQuery, removeInlineKeyboard,
+  type TelegramUpdate, type TelegramMessagePayload,
+} from '@/lib/telegram'
+import { REVOKE_CONSENT_PHRASES, DEFAULT_CONSENT_TEXT, DEFAULT_MANAGER_HANDOFF_MESSAGE } from '@/lib/telegram-model'
 import { revokeConsent } from '@/lib/telegram-consent'
 
 interface DetectedAttachment {
@@ -74,11 +77,11 @@ function isAttachmentTypeAllowed(settings: TelegramSettings, type: TelegramMessa
 
 // Приём входящих сообщений и нажатий inline-кнопок от Telegram.
 //
-// Consent-first: пока клиент не нажал «Согласен», бот не задаёт никаких
-// вопросов о заявке — только присылает запрос согласия (один раз на версию
-// текста). После согласия бот отправляет ровно одну фразу про менеджера и
-// дальше молчит — переписку продолжает только администратор из платформы.
-// Никакого ИИ здесь и нигде в этом модуле нет.
+// Consent-first: пока клиент не нажал единственную кнопку «Согласиться», бот
+// не задаёт никаких вопросов о заявке — только присылает запрос согласия
+// (один раз на версию текста). После согласия бот отправляет ровно одну
+// фразу про менеджера и дальше молчит — переписку продолжает только
+// администратор из платформы. Никакого ИИ здесь и нигде в этом модуле нет.
 export async function POST(req: NextRequest) {
   const secret = req.headers.get('x-telegram-bot-api-secret-token')
   if (!process.env.TELEGRAM_WEBHOOK_SECRET || secret !== process.env.TELEGRAM_WEBHOOK_SECRET) {
@@ -122,12 +125,8 @@ async function getSettings() {
     where: { id: 'singleton' },
     create: {
       id: 'singleton',
-      consentText:
-        'Здравствуйте! Это бот студии контента 2470. Мы поможем принять вашу заявку и передать её менеджеру. ' +
-        'Для этого студии нужно обработать ваши персональные данные: имя или ник в Telegram, контакт, текст сообщения, ' +
-        'параметры заявки, желаемые дату и время записи. Данные используются только для консультации, связи с вами и ' +
-        'организации записи в студию. Нажимая «Согласен», вы подтверждаете согласие на обработку персональных данных. ' +
-        'Политика обработки персональных данных: {{privacy_policy_url}}. Вы можете отозвать согласие сообщением «Отозвать согласие».',
+      consentText: DEFAULT_CONSENT_TEXT,
+      managerHandoffMessage: DEFAULT_MANAGER_HANDOFF_MESSAGE,
     },
     update: {},
   })
@@ -264,17 +263,25 @@ async function ensureConsentRequested(conversationId: string, telegramChatId: st
   }
 
   const text = renderConsentText(settings.consentText, settings.privacyPolicyUrl)
-  const result = await sendTelegramMessageWithButtons(telegramChatId, text, [
-    [{ text: 'Согласен', callback_data: 'consent_given' }],
-    [{ text: 'Позвать менеджера', callback_data: 'call_manager' }],
-    ...(settings.privacyPolicyUrl ? [[{ text: 'Политика обработки ПДн', url: settings.privacyPolicyUrl }]] : []),
-  ])
+  // Единственная кнопка — «Согласиться». Ссылка на согласие уже встроена в
+  // текст сообщения (не отдельной url-кнопкой), поэтому предпросмотр этой
+  // ссылки отключаем через disableLinkPreview — иначе Telegram разворачивает
+  // под текстом большую карточку документа.
+  const result = await sendTelegramMessageWithButtons(
+    telegramChatId, text,
+    [[{ text: 'Согласиться', callback_data: 'consent_given' }]],
+    { disableLinkPreview: true },
+  )
 
   if (result.ok) {
     await prisma.$transaction([
       prisma.telegramConversation.update({
         where: { id: conversationId },
-        data: { consentRequestSentAt: new Date(), consentRequestVersion: settings.consentVersion },
+        data: {
+          consentRequestSentAt: new Date(),
+          consentRequestVersion: settings.consentVersion,
+          consentRequestMessageId: result.telegramMessageId,
+        },
       }),
       prisma.telegramMessage.create({
         data: {
@@ -309,7 +316,22 @@ async function handleCallbackQuery(update: TelegramUpdate) {
   }
 
   if (cq.data === 'consent_given') {
+    // Атомарный guard от дублей: если конверсия уже была переведена в GIVEN
+    // (повторное нажатие, гонка одновременных callback-ов от двойного тапа),
+    // updateMany с условием consentStatus !== GIVEN затронет 0 строк — тогда
+    // просто отвечаем клиенту нейтрально и не создаём второй TelegramConsent
+    // и не шлём второй раз фразу про менеджера.
     const settings = await getSettings()
+    const updateResult = await prisma.telegramConversation.updateMany({
+      where: { id: conversation.id, consentStatus: { not: 'GIVEN' } },
+      data: { consentStatus: 'GIVEN', status: 'WAITING_MANAGER' },
+    })
+
+    if (updateResult.count === 0) {
+      await answerCallbackQuery(cq.id, 'Согласие уже получено')
+      return
+    }
+
     await prisma.telegramConsent.create({
       data: {
         conversationId: conversation.id,
@@ -325,10 +347,12 @@ async function handleCallbackQuery(update: TelegramUpdate) {
         source: 'telegram_bot',
       },
     })
-    await prisma.telegramConversation.update({
-      where: { id: conversation.id },
-      data: { consentStatus: 'GIVEN', status: 'WAITING_MANAGER' },
-    })
+
+    // Убираем кнопку из исходного сообщения — иначе она остаётся кликабельной
+    // в Telegram-клиенте у клиента и после согласия.
+    if (conversation.consentRequestMessageId) {
+      await removeInlineKeyboard(telegramChatId, conversation.consentRequestMessageId)
+    }
 
     const result = await sendTelegramMessage(telegramChatId, settings.managerHandoffMessage)
     if (result.ok) {
@@ -340,29 +364,6 @@ async function handleCallbackQuery(update: TelegramUpdate) {
           direction: 'OUTBOUND',
           senderType: 'BOT',
           text: settings.managerHandoffMessage,
-          messageType: 'TEXT',
-          status: 'SENT',
-          sentAt: new Date(),
-          rawPayload: update as object,
-        },
-      })
-    }
-  } else if (cq.data === 'call_manager') {
-    await prisma.telegramConversation.update({
-      where: { id: conversation.id },
-      data: { status: 'WAITING_MANAGER' },
-    })
-    const text = 'Передали диалог менеджеру. Он подключится в ближайшее время.'
-    const result = await sendTelegramMessage(telegramChatId, text)
-    if (result.ok) {
-      await prisma.telegramMessage.create({
-        data: {
-          conversationId: conversation.id,
-          telegramUpdateId: String(update.update_id),
-          telegramMessageId: result.telegramMessageId,
-          direction: 'OUTBOUND',
-          senderType: 'BOT',
-          text,
           messageType: 'TEXT',
           status: 'SENT',
           sentAt: new Date(),

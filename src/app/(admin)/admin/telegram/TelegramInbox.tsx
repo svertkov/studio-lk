@@ -8,7 +8,7 @@ import { ru } from 'date-fns/locale'
 import { Search, MessageCircle, ShoppingBag, Pin, Archive } from 'lucide-react'
 import type { TelegramConversationListItemDTO, TelegramConversationFilter } from '@/lib/actions/telegram'
 import { pinConversation, archiveConversation } from '@/lib/actions/telegram'
-import { TELEGRAM_STATUS_LABELS, TELEGRAM_STATUS_COLORS, TELEGRAM_STATUS_FILTER_ORDER, TELEGRAM_CONSENT_STATUS_LABELS } from '@/lib/telegram-model'
+import { TELEGRAM_STATUS_LABELS, TELEGRAM_STATUS_COLORS, TELEGRAM_STATUS_FILTER_ORDER, getConsentDisplayStatus, CONSENT_DISPLAY_LABELS, CONSENT_DISPLAY_COLORS } from '@/lib/telegram-model'
 
 interface Props {
   initialConversations: TelegramConversationListItemDTO[]
@@ -102,6 +102,7 @@ export default function TelegramInbox({ initialConversations }: Props) {
         <div className="bg-zinc-900 border border-zinc-800 rounded-xl divide-y divide-zinc-800 overflow-hidden">
           {filtered.map(c => {
             const name = c.linkedClientName || c.clientNameGuess || c.telegramUsername || 'Без имени'
+            const consentDisplay = getConsentDisplayStatus(c.consentStatus, c.consentRequestSentAt)
             return (
               <Link
                 key={c.id}
@@ -126,8 +127,8 @@ export default function TelegramInbox({ initialConversations }: Props) {
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
                   {c.orderId && <ShoppingBag className="w-3.5 h-3.5 text-zinc-400" />}
-                  <span className="text-[11px] font-medium px-2 py-0.5 rounded-full border border-zinc-700 text-zinc-400 hidden md:inline-block">
-                    {TELEGRAM_CONSENT_STATUS_LABELS[c.consentStatus]}
+                  <span className={`text-[11px] font-medium px-2 py-0.5 rounded-full border hidden md:inline-block ${CONSENT_DISPLAY_COLORS[consentDisplay]}`}>
+                    {CONSENT_DISPLAY_LABELS[consentDisplay]}
                   </span>
                   <span className={`text-[11px] font-medium px-2 py-0.5 rounded-full border ${TELEGRAM_STATUS_COLORS[c.status]}`}>
                     {TELEGRAM_STATUS_LABELS[c.status]}

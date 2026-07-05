@@ -508,6 +508,11 @@ model TelegramConversation {
   // слать его повторно на каждое новое сообщение клиента.
   consentRequestSentAt   DateTime?            @map("consent_request_sent_at")
   consentRequestVersion  String?              @map("consent_request_version")
+  // Telegram message_id сообщения с кнопкой «Согласиться» — нужен, чтобы
+  // после нажатия убрать inline-кнопку из ЭТОГО конкретного сообщения через
+  // editMessageReplyMarkup (иначе кнопка в Telegram-клиенте у клиента
+  // остаётся кликабельной и после согласия).
+  consentRequestMessageId String?             @map("consent_request_message_id")
 
   // ---- Рабочие поля инбокса ----
   assignedAdminId  String?   @map("assigned_admin_id") // информационная метка "кто ведёт", не ограничение видимости
@@ -652,7 +657,7 @@ model TelegramSettings {
   consentRequired                  Boolean  @default(true) @map("consent_required")
   consentText                      String   @map("consent_text")
   consentVersion                   String   @default("v1") @map("consent_version")
-  managerHandoffMessage            String   @default("Спасибо! Менеджер студии скоро подключится к диалогу.") @map("manager_handoff_message")
+  managerHandoffMessage            String   @default("Спасибо! Согласие получено. Администратор скоро подключится к диалогу.") @map("manager_handoff_message")
   dataRetentionMode                String   @default("archive_forever") @map("data_retention_mode")
   dataRetentionDays                Int?     @map("data_retention_days")
   archiveWarningThresholdMessages  Int      @default(5000) @map("archive_warning_threshold_messages")
