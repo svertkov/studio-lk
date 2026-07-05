@@ -12,7 +12,7 @@ import {
 import {
   retryFailedMessage, claimConversation, pinConversation, archiveConversation,
   unarchiveConversation, revokeConsentManually, findClientMatchForConversation, linkConversationToClient,
-  addInternalNote, markConversationOrderCreated,
+  addInternalNote, markConversationOrderCreated, markConversationRead,
   type TelegramConversationDetailDTO,
 } from '@/lib/actions/telegram'
 import { getClients } from '@/lib/actions/clients'
@@ -21,7 +21,10 @@ import AddClientModal from '../../clients/AddClientModal'
 import TelegramMessageThread from '@/components/telegram/TelegramMessageThread'
 import TelegramComposer from '@/components/telegram/TelegramComposer'
 import TelegramAttachmentsPanel from '@/components/telegram/TelegramAttachmentsPanel'
-import { TELEGRAM_STATUS_LABELS, TELEGRAM_STATUS_COLORS, getConsentDisplayStatus, CONSENT_DISPLAY_LABELS, CONSENT_DISPLAY_COLORS } from '@/lib/telegram-model'
+import {
+  TELEGRAM_STATUS_LABELS, TELEGRAM_STATUS_COLORS, getConsentDisplayStatus, CONSENT_DISPLAY_LABELS, CONSENT_DISPLAY_COLORS,
+  computeChatPriority, CHAT_PRIORITY_LABELS, CHAT_PRIORITY_BADGE_COLORS,
+} from '@/lib/telegram-model'
 
 interface Props {
   initialData: TelegramConversationDetailDTO
@@ -69,9 +72,39 @@ export default function ConversationView({ initialData, currentUserId, currentUs
     return () => clearInterval(interval)
   }, [router])
 
+  // Открытие диалога = прочтение. Срабатывает на каждом монтировании этого
+  // компонента — а монтирование происходит не только при первом переходе на
+  // страницу, но и при каждом remount по key={dataKey} в page.tsx (в т.ч. на
+  // каждый поллинг, подхвативший новое сообщение клиента, пока администратор
+  // уже смотрит именно этот диалог) — то есть именно тогда, когда сообщение
+  // нужно считать прочитанным. Условие unreadCount > 0 не даёт слать лишний
+  // запрос, если уже прочитано. router.refresh() после — чтобы шапка ниже
+  // (и бейдж в /admin/telegram при возврате туда) сразу отразили сброшенный
+  // unreadCount, а не ждали следующего 10-секундного поллинга.
+  useEffect(() => {
+    if (initialData.unreadCount === 0) return
+    let cancelled = false
+    markConversationRead(initialData.id).then(() => {
+      if (!cancelled) router.refresh()
+    })
+    return () => { cancelled = true }
+  }, [initialData.id, initialData.unreadCount, router])
+
   const name = conversation.linkedClientName || conversation.clientNameGuess || conversation.telegramUsername || 'Без имени'
   const consentGiven = conversation.consentStatus === 'GIVEN'
   const consentDisplay = getConsentDisplayStatus(conversation.consentStatus, conversation.consentRequestSentAt)
+  // Пересчитывается из локального state (не берётся готовым полем из DTO),
+  // чтобы мгновенно реагировать на оптимистичные обновления в этом же
+  // компоненте (Забрать в работу, Связать с клиентом и т.п.), не дожидаясь
+  // серверного round-trip — та же функция, что и в списке /admin/telegram,
+  // поэтому один и тот же чат не может показать разный статус в двух местах.
+  const chatPriority = computeChatPriority({
+    conversationStatus: conversation.status,
+    unreadCount: conversation.unreadCount,
+    linkedClientId: conversation.linkedClientId,
+    orderId: conversation.orderId,
+    lastMessageAt: conversation.lastMessageAt,
+  })
 
   async function handleRetry(messageId: string) {
     await retryFailedMessage(messageId)
@@ -173,9 +206,19 @@ export default function ConversationView({ initialData, currentUserId, currentUs
             <div className="min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
                 <p className="text-white font-semibold truncate">{name}</p>
-                <span className={`text-[11px] font-medium px-2 py-0.5 rounded-full border ${TELEGRAM_STATUS_COLORS[conversation.status]}`}>
-                  {TELEGRAM_STATUS_LABELS[conversation.status]}
-                </span>
+                {chatPriority !== 'normal' && (
+                  <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full border ${CHAT_PRIORITY_BADGE_COLORS[chatPriority]}`}>
+                    {CHAT_PRIORITY_LABELS[chatPriority]}
+                  </span>
+                )}
+                {/* chatPriority === 'in_progress' по построению означает
+                    conversation.status === 'IN_PROGRESS' — тот же бейдж ниже
+                    показал бы "В работе" второй раз подряд теми же словами. */}
+                {chatPriority !== 'in_progress' && (
+                  <span className={`text-[11px] font-medium px-2 py-0.5 rounded-full border ${TELEGRAM_STATUS_COLORS[conversation.status]}`}>
+                    {TELEGRAM_STATUS_LABELS[conversation.status]}
+                  </span>
+                )}
                 <span className={`text-[11px] font-medium px-2 py-0.5 rounded-full border ${CONSENT_DISPLAY_COLORS[consentDisplay]}`}>
                   {CONSENT_DISPLAY_LABELS[consentDisplay]}
                 </span>
@@ -230,6 +273,7 @@ export default function ConversationView({ initialData, currentUserId, currentUs
         )}
 
         <TelegramMessageThread
+          conversationId={conversation.id}
           messages={messages}
           consentRequestMessageId={conversation.consentRequestMessageId}
           consentGiven={consentGiven}

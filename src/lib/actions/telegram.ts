@@ -68,7 +68,7 @@ async function writeAuditLog(params: { userId: string | null; action: string; en
 // ============================================================
 
 type ConversationWithRelations = TelegramConversation & {
-  linkedClient: (Pick<Client, 'id' | 'name'> & { _count: { orders: number } }) | null
+  linkedClient: Pick<Client, 'id' | 'name'> | null
   assignedAdmin: Pick<User, 'id' | 'name' | 'email'> | null
   order: { id: string } | null
   messages: TelegramMessage[]
@@ -210,6 +210,7 @@ function toListDTO(row: ConversationWithRelations): TelegramConversationListItem
   const lastMessage = row.messages.length > 0
     ? row.messages.reduce((latest, m) => (m.createdAt > latest.createdAt ? m : latest))
     : undefined
+  const orderId = row.order?.id ?? null
   return {
     id: row.id,
     telegramUsername: row.telegramUsername,
@@ -217,18 +218,18 @@ function toListDTO(row: ConversationWithRelations): TelegramConversationListItem
     clientNameGuess: row.clientNameGuess,
     linkedClientId: row.linkedClient?.id ?? null,
     linkedClientName: row.linkedClient?.name ?? null,
-    orderId: row.order?.id ?? null,
+    orderId,
     assignedAdminId: row.assignedAdmin?.id ?? null,
     assignedAdminName: row.assignedAdmin?.name ?? row.assignedAdmin?.email ?? null,
     status: row.status,
     consentStatus: row.consentStatus,
     consentRequestSentAt: row.consentRequestSentAt ? row.consentRequestSentAt.toISOString() : null,
     chatPriority: computeChatPriority({
-      lastMessageDirection: lastMessage?.direction ?? null,
-      linkedClientId: row.linkedClient?.id ?? null,
-      linkedClientOrderCount: row.linkedClient?._count.orders ?? 0,
-      lastMessageAt: row.lastMessageAt,
       conversationStatus: row.status,
+      unreadCount: row.unreadCount,
+      linkedClientId: row.linkedClient?.id ?? null,
+      orderId,
+      lastMessageAt: row.lastMessageAt,
     }),
     unreadCount: row.unreadCount,
     isPinned: row.isPinned,
@@ -241,7 +242,7 @@ function toListDTO(row: ConversationWithRelations): TelegramConversationListItem
 }
 
 const CONVERSATION_INCLUDE_LIST = {
-  linkedClient: { select: { id: true, name: true, _count: { select: { orders: true } } } },
+  linkedClient: { select: { id: true, name: true } },
   assignedAdmin: { select: { id: true, name: true, email: true } },
   order: { select: { id: true } },
   messages: { orderBy: { createdAt: 'desc' as const }, take: 1 },
@@ -302,7 +303,7 @@ export async function getConversationDetail(
     const row = await prisma.telegramConversation.findUnique({
       where: { id },
       include: {
-        linkedClient: { select: { id: true, name: true, _count: { select: { orders: true } } } },
+        linkedClient: { select: { id: true, name: true } },
         assignedAdmin: { select: { id: true, name: true, email: true } },
         order: { select: { id: true } },
         messages: { orderBy: { createdAt: 'asc' }, include: { attachment: true } },
@@ -353,11 +354,25 @@ export async function getConversationDetail(
 // РАБОЧИЕ ДЕЙСТВИЯ ИНБОКСА
 // ============================================================
 
+// Вызывается при открытии диалога — и из полного раздела Telegram
+// (ConversationView), и из встроенной панели в карточке клиента
+// (ClientTelegramPanel), см. их эффект на mount. Условный updateMany вместо
+// безусловного update: если непрочитанных уже нет (админ уже смотрит этот же
+// диалог и обновление подхватило новое сообщение прямо в момент чтения),
+// затронутых строк 0 — не бампаем updatedAt и не инвалидируем страницы
+// зазря (dataKey в page.tsx включает updatedAt, лишний бамп означал бы
+// лишний remount ConversationView без реальной причины).
 export async function markConversationRead(id: string) {
   const access = await requireTelegramAccess()
   if (!access.ok) return { ok: false as const, error: access.error }
-  await prisma.telegramConversation.update({ where: { id }, data: { unreadCount: 0 } })
-  revalidatePath('/admin/telegram')
+  const result = await prisma.telegramConversation.updateMany({
+    where: { id, unreadCount: { gt: 0 } },
+    data: { unreadCount: 0 },
+  })
+  if (result.count > 0) {
+    revalidatePath('/admin/telegram')
+    revalidatePath(`/admin/telegram/${id}`)
+  }
   return { ok: true as const }
 }
 

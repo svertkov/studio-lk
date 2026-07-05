@@ -29,12 +29,14 @@ const PRIORITY_FILTERS: { key: PriorityFilter; label: string }[] = [
   { key: 'ALL', label: 'Все' },
   { key: 'needs_reply', label: 'Требуют ответа' },
   { key: 'new_unprocessed', label: 'Новые / не оформлены' },
+  { key: 'in_progress', label: 'В работе' },
   { key: 'inactive', label: 'Неактивные 7+ дней' },
 ]
 
 const LEGEND_ITEMS: { priority: TelegramChatPriority; dot: string; label: string }[] = [
-  { priority: 'needs_reply', dot: 'bg-red-500', label: 'требует ответа администратора' },
+  { priority: 'needs_reply', dot: 'bg-red-500', label: 'есть непрочитанное сообщение от клиента' },
   { priority: 'new_unprocessed', dot: 'bg-amber-500', label: 'новый клиент / не создана карточка или заказ' },
+  { priority: 'in_progress', dot: 'bg-blue-500', label: 'взят в работу администратором' },
   { priority: 'inactive', dot: 'bg-emerald-500', label: 'нет активности 7+ дней / условно завершён' },
 ]
 
@@ -191,9 +193,14 @@ export default function TelegramInbox({ initialConversations }: Props) {
                   <span className={`text-[11px] font-medium px-2 py-0.5 rounded-full border hidden md:inline-block ${CONSENT_DISPLAY_COLORS[consentDisplay]}`}>
                     {CONSENT_DISPLAY_LABELS[consentDisplay]}
                   </span>
-                  <span className={`text-[11px] font-medium px-2 py-0.5 rounded-full border ${TELEGRAM_STATUS_COLORS[c.status]}`}>
-                    {TELEGRAM_STATUS_LABELS[c.status]}
-                  </span>
+                  {/* chatPriority === 'in_progress' по построению означает
+                      c.status === 'IN_PROGRESS' — не дублируем один и тот же
+                      текст "В работе" двумя бейджами подряд. */}
+                  {c.chatPriority !== 'in_progress' && (
+                    <span className={`text-[11px] font-medium px-2 py-0.5 rounded-full border ${TELEGRAM_STATUS_COLORS[c.status]}`}>
+                      {TELEGRAM_STATUS_LABELS[c.status]}
+                    </span>
+                  )}
                   <span className="text-zinc-500 text-xs w-16 text-right hidden sm:block">
                     {c.lastMessageAt ? format(parseISO(c.lastMessageAt), 'd MMM, HH:mm', { locale: ru }) : ''}
                   </span>

@@ -4,8 +4,11 @@ import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { MessageCircle, ExternalLink, Paperclip, Link2, PanelRightClose } from 'lucide-react'
-import { retryFailedMessage, type TelegramConversationDetailDTO } from '@/lib/actions/telegram'
-import { getConsentDisplayStatus, CONSENT_DISPLAY_LABELS, CONSENT_DISPLAY_COLORS } from '@/lib/telegram-model'
+import { retryFailedMessage, markConversationRead, type TelegramConversationDetailDTO } from '@/lib/actions/telegram'
+import {
+  getConsentDisplayStatus, CONSENT_DISPLAY_LABELS, CONSENT_DISPLAY_COLORS,
+  computeChatPriority, CHAT_PRIORITY_LABELS, CHAT_PRIORITY_BADGE_COLORS,
+} from '@/lib/telegram-model'
 import TelegramMessageThread from './TelegramMessageThread'
 import TelegramComposer from './TelegramComposer'
 import TelegramAttachmentsPanel from './TelegramAttachmentsPanel'
@@ -43,6 +46,20 @@ export default function ClientTelegramPanel({ clientId, clientName, conversation
     const interval = setInterval(() => router.refresh(), 10_000)
     return () => clearInterval(interval)
   }, [router, conversation])
+
+  // Открытие карточки клиента с уже связанным диалогом = прочтение — тот же
+  // приём и по той же причине, что и в ConversationView.tsx (полный раздел
+  // Telegram): срабатывает на каждом монтировании, включая remount по
+  // key={telegramKey} в page.tsx, когда поллинг подхватил новое сообщение,
+  // пока администратор уже смотрит карточку этого клиента.
+  useEffect(() => {
+    if (!conversation || conversation.unreadCount === 0) return
+    let cancelled = false
+    markConversationRead(conversation.id).then(() => {
+      if (!cancelled) router.refresh()
+    })
+    return () => { cancelled = true }
+  }, [conversation, router])
 
   async function handleRetry(messageId: string) {
     await retryFailedMessage(messageId)
@@ -99,6 +116,15 @@ export default function ClientTelegramPanel({ clientId, clientName, conversation
   }
 
   const consentDisplay = getConsentDisplayStatus(conversation.consentStatus, conversation.consentRequestSentAt)
+  // Тот же источник правды, что и в списке /admin/telegram и в полном разделе
+  // Telegram (ConversationView) — см. комментарий там же про computeChatPriority.
+  const chatPriority = computeChatPriority({
+    conversationStatus: conversation.status,
+    unreadCount: conversation.unreadCount,
+    linkedClientId: conversation.linkedClientId,
+    orderId: conversation.orderId,
+    lastMessageAt: conversation.lastMessageAt,
+  })
 
   return (
     <div className="bg-zinc-900 border border-zinc-800 rounded-xl flex flex-col h-full overflow-hidden">
@@ -107,6 +133,11 @@ export default function ClientTelegramPanel({ clientId, clientName, conversation
         <div className="min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <p className="text-white font-semibold text-sm">Telegram</p>
+            {chatPriority !== 'normal' && (
+              <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full border ${CHAT_PRIORITY_BADGE_COLORS[chatPriority]}`}>
+                {CHAT_PRIORITY_LABELS[chatPriority]}
+              </span>
+            )}
             {conversation.consentStatus !== 'NONE' && (
               <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full border ${CONSENT_DISPLAY_COLORS[consentDisplay]}`}>
                 {CONSENT_DISPLAY_LABELS[consentDisplay]}
@@ -147,6 +178,7 @@ export default function ClientTelegramPanel({ clientId, clientName, conversation
       </div>
 
       <TelegramMessageThread
+        conversationId={conversation.id}
         messages={conversation.messages}
         consentRequestMessageId={conversation.consentRequestMessageId}
         consentGiven={conversation.consentStatus === 'GIVEN'}

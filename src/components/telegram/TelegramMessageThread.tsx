@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { format, parseISO, isSameDay } from 'date-fns'
 import { ru } from 'date-fns/locale'
 import { FileText, ImageOff, RotateCcw, Check, Download } from 'lucide-react'
@@ -8,6 +8,20 @@ import type { TelegramMessageDTO } from '@/lib/actions/telegram'
 import { TELEGRAM_MESSAGE_STATUS_LABELS } from '@/lib/telegram-model'
 import { formatFileSize, formatDuration } from '@/lib/telegram-ui-utils'
 import Lightbox from './Lightbox'
+
+// И полный раздел Telegram (ConversationView), и встроенная панель в
+// карточке клиента (ClientTelegramPanel) пересоздают этот компонент заново
+// (remount по key={dataKey}/key={telegramKey} у родителя) при КАЖДОМ новом
+// сообщении — не только раз в 10 секунд поллингом, см. комментарий в
+// соответствующих page.tsx. Обычный useRef/useState при этом обнулился бы
+// вместе с позицией скролла, и чат каждый раз дёргало бы к прочитанной ранее
+// точке или к самому верху — именно то дребезжание, которое просили убрать.
+// Модульная (не React) Map переживает такие remount'ы в рамках одной вкладки
+// браузера, но естественно очищается при настоящей перезагрузке страницы —
+// то есть именно то поведение, которое нужно ("при первом открытии — всегда
+// вниз", но не при каждом новом сообщении, если админ листает историю).
+const scrollMemory = new Map<string, { scrollTop: number; lastMessageId: string | null }>()
+const STICK_TO_BOTTOM_THRESHOLD_PX = 120
 
 // Совпадает с ATTACHMENT_FALLBACK_LABEL в src/app/api/telegram/webhook/route.ts
 // — если text равен одной из этих подписей, значит у сообщения не было
@@ -19,8 +33,8 @@ const ATTACHMENT_PLACEHOLDER_TEXTS = [
 // Пока идёт запрос к прокси-роуту — скелетон; если запрос упал (битый
 // file_id, рассинхрон Content-Length и т.п.) — аккуратная плашка вместо
 // сломанной иконки браузера.
-function PhotoAttachment({ url, alt, size = 'md', rounded = false, onOpen }: {
-  url: string; alt: string; size?: 'sm' | 'md'; rounded?: boolean; onOpen?: () => void
+function PhotoAttachment({ url, alt, size = 'md', rounded = false, onOpen, onMediaLoad }: {
+  url: string; alt: string; size?: 'sm' | 'md'; rounded?: boolean; onOpen?: () => void; onMediaLoad?: () => void
 }) {
   const [status, setStatus] = useState<'loading' | 'loaded' | 'error'>('loading')
 
@@ -40,7 +54,7 @@ function PhotoAttachment({ url, alt, size = 'md', rounded = false, onOpen }: {
       alt={alt}
       loading="lazy"
       className={`${size === 'sm' ? 'w-24 h-24 object-cover' : 'w-full h-auto'} ${status === 'loading' ? 'opacity-0' : 'opacity-100'} transition-opacity duration-150`}
-      onLoad={() => setStatus('loaded')}
+      onLoad={() => { setStatus('loaded'); onMediaLoad?.() }}
       onError={() => setStatus('error')}
     />
   )
@@ -58,12 +72,14 @@ function PhotoAttachment({ url, alt, size = 'md', rounded = false, onOpen }: {
   )
 }
 
-function MessageAttachment({ message, onOpenLightbox }: { message: TelegramMessageDTO; onOpenLightbox: (url: string) => void }) {
+function MessageAttachment({ message, onOpenLightbox, onMediaLoad }: {
+  message: TelegramMessageDTO; onOpenLightbox: (url: string) => void; onMediaLoad: () => void
+}) {
   const a = message.attachment
   if (!a) return null
 
   if (message.messageType === 'PHOTO') {
-    return <PhotoAttachment url={a.fileUrl} alt="Фото" onOpen={() => onOpenLightbox(a.fileUrl)} />
+    return <PhotoAttachment url={a.fileUrl} alt="Фото" onOpen={() => onOpenLightbox(a.fileUrl)} onMediaLoad={onMediaLoad} />
   }
   if (message.messageType === 'DOCUMENT') {
     return (
@@ -79,7 +95,7 @@ function MessageAttachment({ message, onOpenLightbox }: { message: TelegramMessa
   if (message.messageType === 'VOICE' || message.messageType === 'AUDIO') {
     return (
       <div className="flex items-center gap-2">
-        <audio controls src={a.fileUrl} className="max-w-[220px] h-8" />
+        <audio controls src={a.fileUrl} className="max-w-[220px] h-8" onLoadedMetadata={onMediaLoad} />
         {a.duration != null && <span className="text-zinc-500 text-[11px] flex-shrink-0">{formatDuration(a.duration)}</span>}
       </div>
     )
@@ -87,7 +103,7 @@ function MessageAttachment({ message, onOpenLightbox }: { message: TelegramMessa
   if (message.messageType === 'VIDEO') {
     return (
       <div className="space-y-1.5">
-        <video controls src={a.fileUrl} className="max-w-[240px] max-h-[320px] rounded-lg bg-black" />
+        <video controls src={a.fileUrl} className="max-w-[240px] max-h-[320px] rounded-lg bg-black" onLoadedMetadata={onMediaLoad} />
         <a
           href={a.downloadUrl}
           title="Скачать видео"
@@ -101,13 +117,13 @@ function MessageAttachment({ message, onOpenLightbox }: { message: TelegramMessa
   if (message.messageType === 'VIDEO_NOTE') {
     // "Кружочек" — Telegram-клиент показывает круглое видео; воспроизведение
     // через нативный <video> внутри круглой рамки (rounded-full + object-cover).
-    return <video controls src={a.fileUrl} className="w-40 h-40 rounded-full object-cover bg-black" />
+    return <video controls src={a.fileUrl} className="w-40 h-40 rounded-full object-cover bg-black" onLoadedMetadata={onMediaLoad} />
   }
   if (message.messageType === 'STICKER') {
     return a.isAnimatedSticker ? (
       <div className="w-20 h-20 flex items-center justify-center text-3xl bg-black/20 rounded-lg">🎭</div>
     ) : (
-      <PhotoAttachment url={a.fileUrl} alt="Стикер" size="sm" />
+      <PhotoAttachment url={a.fileUrl} alt="Стикер" size="sm" onMediaLoad={onMediaLoad} />
     )
   }
   return null
@@ -148,6 +164,9 @@ function groupByDate(messages: TelegramMessageDTO[]) {
 }
 
 interface TelegramMessageThreadProps {
+  // Ключ для scrollMemory (см. комментарий у неё выше) — обязателен, иначе
+  // позицию скролла невозможно правильно связать с конкретным диалогом.
+  conversationId: string
   messages: TelegramMessageDTO[]
   consentRequestMessageId?: string | null
   consentGiven?: boolean
@@ -162,17 +181,70 @@ interface TelegramMessageThreadProps {
 }
 
 export default function TelegramMessageThread({
-  messages, consentRequestMessageId = null, consentGiven = false, onRetry, emptyLabel = 'Сообщений пока нет',
+  conversationId, messages, consentRequestMessageId = null, consentGiven = false, onRetry, emptyLabel = 'Сообщений пока нет',
   highlightMessageId, compact = false,
 }: TelegramMessageThreadProps) {
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null)
   const [highlighted, setHighlighted] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
+  // "Приклеен ли" низ ленты — пока true, новое сообщение/догрузка медиа сами
+  // держат скролл внизу; как только админ вручную отскроллил вверх читать
+  // историю, становится false и мы больше не дёргаем его скролл, пока он не
+  // вернётся к низу сам или не отправит/не получит новое сообщение, требующее
+  // принудительного скролла (см. эффект ниже).
+  const stickToBottomRef = useRef(true)
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages.length])
+  function scrollToBottom() {
+    bottomRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' })
+  }
+
+  function persistScrollMemory() {
+    const el = containerRef.current
+    if (!el) return
+    scrollMemory.set(conversationId, { scrollTop: el.scrollTop, lastMessageId: messages[messages.length - 1]?.id ?? null })
+  }
+
+  function handleContainerScroll() {
+    const el = containerRef.current
+    if (!el) return
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    stickToBottomRef.current = distanceFromBottom < STICK_TO_BOTTOM_THRESHOLD_PX
+    persistScrollMemory()
+  }
+
+  // Вызывается, когда позже догружается фото/видео/аудио и меняет высоту
+  // уже отрисованного сообщения — держим низ ленты внизу, только если мы там
+  // и так были (stickToBottomRef), а не "прыгаем" туда, если админ читает
+  // историю выше и там же случайно догрузилась превьюшка старого сообщения.
+  function maybeScrollToBottom() {
+    if (stickToBottomRef.current) scrollToBottom()
+  }
+
+  // useLayoutEffect, а не useEffect — синхронно до отрисовки кадра, чтобы при
+  // remount'е (см. комментарий у scrollMemory) админ не увидел на долю секунды
+  // "прыжок" от scrollTop=0 к восстановленной позиции.
+  useLayoutEffect(() => {
+    const el = containerRef.current
+    const last = messages.length > 0 ? messages[messages.length - 1] : null
+    const remembered = scrollMemory.get(conversationId)
+    // Новое исходящее сообщение (администратор только что отправил, включая
+    // случай, когда это произошло уже после того, как он листал историю
+    // вверх) — всегда показываем его, это прямое следствие его действия.
+    const isNewOutbound = !!last && last.direction === 'OUTBOUND' && last.id !== remembered?.lastMessageId
+
+    if (!remembered || isNewOutbound) {
+      stickToBottomRef.current = true
+      scrollToBottom()
+    } else if (el) {
+      el.scrollTop = remembered.scrollTop
+      const distanceFromBottom = el.scrollHeight - remembered.scrollTop - el.clientHeight
+      stickToBottomRef.current = distanceFromBottom < STICK_TO_BOTTOM_THRESHOLD_PX
+    }
+
+    persistScrollMemory()
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- запускается один раз на монтирование этого экземпляра (см. scrollMemory)
+  }, [conversationId])
 
   // setHighlighted(...) отложен через setTimeout(…, 0) вместо прямого вызова —
   // react-hooks/set-state-in-effect не разрешает синхронный setState в теле
@@ -181,6 +253,10 @@ export default function TelegramMessageThread({
     if (!highlightMessageId) return
     const el = containerRef.current?.querySelector(`[data-message-id="${highlightMessageId}"]`)
     el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    // Переход "Показать в чате" — осознанный прыжок к конкретной точке
+    // истории, не к низу; не позволяем следующему сообщению тут же
+    // принудительно утащить обратно вниз.
+    stickToBottomRef.current = false
     const showTimer = setTimeout(() => setHighlighted(highlightMessageId), 0)
     const hideTimer = setTimeout(() => setHighlighted(null), 2000)
     return () => { clearTimeout(showTimer); clearTimeout(hideTimer) }
@@ -189,7 +265,7 @@ export default function TelegramMessageThread({
   const dateGroups = groupByDate(messages)
 
   return (
-    <div ref={containerRef} className={`flex-1 min-h-0 overflow-y-auto space-y-4 ${compact ? 'px-3 py-3' : 'px-6 py-4'}`}>
+    <div ref={containerRef} onScroll={handleContainerScroll} className={`flex-1 min-h-0 overflow-y-auto space-y-4 ${compact ? 'px-3 py-3' : 'px-6 py-4'}`}>
       {messages.length === 0 ? (
         <p className="text-zinc-600 text-sm text-center py-10">{emptyLabel}</p>
       ) : (
@@ -212,7 +288,7 @@ export default function TelegramMessageThread({
                     {m.senderType === 'ADMIN' && m.senderName && <p className="text-[10px] text-zinc-500 mb-0.5">{m.senderName}</p>}
                     {m.attachment && (
                       <div className="mb-1.5">
-                        <MessageAttachment message={m} onOpenLightbox={setLightboxUrl} />
+                        <MessageAttachment message={m} onOpenLightbox={setLightboxUrl} onMediaLoad={maybeScrollToBottom} />
                       </div>
                     )}
                     {(!m.attachment || (m.text && !ATTACHMENT_PLACEHOLDER_TEXTS.includes(m.text))) && (

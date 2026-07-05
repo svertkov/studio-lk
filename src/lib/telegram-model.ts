@@ -1,4 +1,4 @@
-import type { TelegramConversationStatus, TelegramConsentStatus, TelegramMessageStatus, TelegramMessageDirection } from '@prisma/client'
+import type { TelegramConversationStatus, TelegramConsentStatus, TelegramMessageStatus } from '@prisma/client'
 
 export type { TelegramConversationStatus, TelegramConsentStatus, TelegramMessageStatus }
 
@@ -63,38 +63,52 @@ export const CONSENT_DISPLAY_COLORS: Record<ConsentDisplayStatus, string> = {
 }
 
 // ============================================================
-// ПРИОРИТЕТ ДИАЛОГА — вычисляемый (не хранимый) статус для визуальной
-// подсветки списка в /admin/telegram: "требует ответа" / "новый, не
-// оформлен" / "неактивен" / обычный. Считается из уже существующих полей,
-// без новых колонок в БД — сам вычисление детерминировано и одинаково
-// доступно и на фронтенде (через DTO), и для будущей аналитики (можно
-// вызвать эту же функцию из любого server-side отчёта).
-export type TelegramChatPriority = 'needs_reply' | 'new_unprocessed' | 'inactive' | 'normal'
+// ПРИОРИТЕТ ДИАЛОГА — вычисляемый (не хранимый) визуальный статус,
+// используемый ВЕЗДЕ одинаково: список /admin/telegram, шапка открытого
+// диалога (ConversationView), встроенная панель в карточке клиента
+// (ClientTelegramPanel), фильтры, легенда. Один источник правды —
+// computeChatPriority() — гарантирует, что список и открытый диалог не
+// могут показать разный статус для одного и того же чата.
+//
+// "needs_reply" ("Требует ответа") — единственное, за что он отвечает: есть
+// ли непрочитанные входящие сообщения от клиента (unreadCount > 0). Раньше
+// это ошибочно считалось по направлению ПОСЛЕДНЕГО сообщения
+// (lastMessageDirection === 'INBOUND') — из-за этого бейдж не пропадал даже
+// после того, как администратор открывал и читал диалог, потому что
+// направление последнего сообщения не менялось от самого факта прочтения.
+// unreadCount — существующее поле в БД (инкрементируется в webhook на каждое
+// входящее сообщение клиента), просто markConversationRead(), которая его
+// обнуляет, раньше нигде не вызывалась при открытии диалога — см.
+// markConversationRead в actions/telegram.ts.
+export type TelegramChatPriority = 'needs_reply' | 'new_unprocessed' | 'in_progress' | 'inactive' | 'normal'
 
 export interface TelegramChatPriorityInput {
-  // Направление самого последнего сообщения в диалоге (INBOUND = от клиента,
-  // OUTBOUND = от бота или администратора). null — сообщений ещё не было.
-  lastMessageDirection: TelegramMessageDirection | null
-  linkedClientId: string | null
-  // Количество заказов у связанного клиента (0, если клиент не связан или
-  // заказов ещё нет) — используется как признак "оформлен" в CRM.
-  linkedClientOrderCount: number
-  lastMessageAt: string | Date | null
   conversationStatus: TelegramConversationStatus
+  // Сколько входящих сообщений клиента ещё не прочитаны администратором.
+  unreadCount: number
+  linkedClientId: string | null
+  // Заказ, созданный ИЗ ЭТОГО диалога (Order.telegramConversationId), а не
+  // "есть ли у клиента хоть один заказ откуда угодно" — так конкретное
+  // обращение не перестаёт считаться "новым/не оформленным" только из-за
+  // не связанной с ним старой сделки того же клиента.
+  orderId: string | null
+  lastMessageAt: string | Date | null
 }
 
 const INACTIVE_THRESHOLD_DAYS = 7
 
-// Порядок проверок — это и есть приоритет: "требует ответа" важнее, чем
-// "не оформлен", важнее, чем "неактивен" (см. ТЗ — совпадает с порядком if).
+// Порядок проверок — это и есть приоритет из ТЗ:
+// 1) требует ответа  2) новый/не оформлен  3) в работе  4) неактивен  5) обычный.
 export function computeChatPriority(input: TelegramChatPriorityInput): TelegramChatPriority {
   // Архив — сознательно закрытый диалог, не подсвечиваем как "требующий
   // внимания" даже если формально подходит под одно из условий ниже.
   if (input.conversationStatus === 'ARCHIVED') return 'normal'
 
-  if (input.lastMessageDirection === 'INBOUND') return 'needs_reply'
+  if (input.unreadCount > 0) return 'needs_reply'
 
-  if (!input.linkedClientId || input.linkedClientOrderCount === 0) return 'new_unprocessed'
+  if (!input.linkedClientId || !input.orderId) return 'new_unprocessed'
+
+  if (input.conversationStatus === 'IN_PROGRESS') return 'in_progress'
 
   if (input.lastMessageAt) {
     const days = (Date.now() - new Date(input.lastMessageAt).getTime()) / (24 * 60 * 60 * 1000)
@@ -107,6 +121,7 @@ export function computeChatPriority(input: TelegramChatPriorityInput): TelegramC
 export const CHAT_PRIORITY_LABELS: Record<TelegramChatPriority, string> = {
   needs_reply: 'Требует ответа',
   new_unprocessed: 'Новый / не оформлен',
+  in_progress: 'В работе',
   inactive: 'Нет активности 7+ дней',
   normal: 'Обычный',
 }
@@ -115,6 +130,7 @@ export const CHAT_PRIORITY_LABELS: Record<TelegramChatPriority, string> = {
 export const CHAT_PRIORITY_BADGE_COLORS: Record<TelegramChatPriority, string> = {
   needs_reply: 'text-red-400 bg-red-950/40 border-red-700',
   new_unprocessed: 'text-amber-400 bg-amber-950/40 border-amber-700',
+  in_progress: 'text-blue-400 bg-blue-950/40 border-blue-700',
   inactive: 'text-emerald-400 bg-emerald-950/40 border-emerald-700',
   normal: 'text-zinc-500 bg-zinc-800/40 border-zinc-700',
 }
@@ -124,6 +140,7 @@ export const CHAT_PRIORITY_BADGE_COLORS: Record<TelegramChatPriority, string> = 
 export const CHAT_PRIORITY_ROW_ACCENT: Record<TelegramChatPriority, string> = {
   needs_reply: 'border-l-4 border-l-red-500 bg-red-500/[0.06]',
   new_unprocessed: 'border-l-4 border-l-amber-500 bg-amber-500/[0.06]',
+  in_progress: 'border-l-4 border-l-blue-500 bg-blue-500/[0.06]',
   inactive: 'border-l-4 border-l-emerald-500 bg-emerald-500/[0.05]',
   normal: 'border-l-4 border-l-transparent',
 }
