@@ -89,26 +89,6 @@ export function needsNoLinksWarning(input: MaterialsStatusInput): boolean {
   return !input.yandexDiskUrl && !input.nasBackupUrl
 }
 
-// Производный 3-значный статус ТОЛЬКО для строки "Статус ссылки" в карточке —
-// не хранится в БД, считается на лету из тех же двух полей.
-export type YandexLinkStatus = 'none' | 'active' | 'expired'
-
-export function computeYandexLinkStatus(
-  yandexDiskUrl: string | null | undefined,
-  yandexDiskUrlAddedAt: Date | null | undefined,
-  now: Date = new Date(),
-): YandexLinkStatus {
-  if (!yandexDiskUrl) return 'none'
-  if (!yandexDiskUrlAddedAt) return 'active'
-  return isYandexExpired(yandexDiskUrlAddedAt, now) ? 'expired' : 'active'
-}
-
-export const YANDEX_LINK_STATUS_LABELS: Record<YandexLinkStatus, string> = {
-  none:    'Нет ссылки',
-  active:  'Активна',
-  expired: 'Истекла',
-}
-
 // Мягкая информационная подсказка — показывается, только когда обе ссылки
 // заполнены (NAS есть), но срок Яндекс.Диска истёк. Не влияет на статус
 // "требует внимания" (NAS уже есть — критичной проблемы нет).
@@ -128,10 +108,14 @@ export interface MaterialsDisplay {
   severity: MaterialsSeverity
 }
 
-// NAS-бэкап важнее Яндекс.Диска: пока его нет, статус всегда danger, даже если
-// Яндекс.Диск заполнен (или когда-то был заполнен и истёк). В БД YANDEX_ACTIVE
-// не отличает "есть оба линка" от "есть только Яндекс.Диск" — здесь это
-// разделяем по факту наличия nasBackupUrl, не трогая сам enum.
+// Ссылка на Яндекс.Диск — главное условие: она одна снимает предупреждение
+// независимо от NAS. NAS-бэкап — это плюс сверху, а не обязательное условие
+// (явное решение владельца, 2026-07-06 — раньше было наоборот: NAS считался
+// критичным, а "Яндекс.Диск есть, NAS нет" показывалось как danger; это
+// мешало реальной работе — карточка оставалась в предупреждении даже когда
+// клиенту материалы уже фактически отданы через Яндекс.Диск). В БД
+// YANDEX_ACTIVE не отличает "есть оба линка" от "есть только Яндекс.Диск" —
+// здесь это разделяем по факту наличия nasBackupUrl, не трогая сам enum.
 export function getMaterialsDisplay(input: {
   materialsStatus: MaterialsStatus
   nasBackupUrl?: string | null
@@ -146,7 +130,7 @@ export function getMaterialsDisplay(input: {
     case 'YANDEX_ACTIVE':
       return input.nasBackupUrl
         ? { label: 'Материалы сохранены', severity: 'success' }
-        : { label: 'Нет NAS-бэкапа', severity: 'danger' }
+        : { label: 'Яндекс.Диск указан', severity: 'success' }
   }
 }
 
@@ -222,14 +206,13 @@ export function getBookingIssues(vm: ScheduleEventVM, now: Date = new Date()): B
   const hasYandex = !!a?.yandexDiskUrl
   const hasNas = !!a?.nasBackupUrl
 
-  // NAS и Яндекс.Диск проверяются раздельно — заполнение только одной из двух
-  // ссылок никогда не считается "материалы готовы". NAS-бэкап важнее: без
-  // него запись всегда красная (danger), даже если Яндекс.Диск заполнен.
-  // Если NAS есть, а Яндекс.Диска нет — это уже не критично, а предупреждение.
+  // Ссылка на Яндекс.Диск сама по себе закрывает проблему с материалами — NAS
+  // сверху не обязателен (см. комментарий у getMaterialsDisplay про решение
+  // от 2026-07-06). Единственные проблемные случаи: нет вообще ничего
+  // (danger) или есть только NAS без Яндекс.Диска (warning — клиенту всё ещё
+  // нечем ничего передать напрямую).
   if (!hasNas && !hasYandex) {
     issues.push({ type: 'materials_missing', label: 'Нет материалов', severity: 'danger' })
-  } else if (!hasNas) {
-    issues.push({ type: 'materials_missing', label: 'Нет NAS-бэкапа', severity: 'danger' })
   } else if (!hasYandex) {
     issues.push({ type: 'materials_missing', label: 'Нет Яндекс.Диска', severity: 'warning' })
   }

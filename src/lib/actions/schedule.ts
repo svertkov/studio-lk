@@ -5,7 +5,7 @@ import { prisma } from '@/lib/prisma'
 import { auth } from '@/auth'
 import {
   type ClientConfirmationStatus, type ScheduleEvent, type SubscriptionUsage, type ClientSubscription,
-  type EventType, type PaymentMethod,
+  type EventType, type PaymentMethod, type MaterialsStatus,
   Prisma,
 } from '@prisma/client'
 import {
@@ -115,6 +115,14 @@ function toDTO(row: ScheduleEventWithClient): ScheduleEventDTO {
 export async function getScheduleAnnotations(
   calendarEventIds: string[]
 ): Promise<{ ok: true; data: Record<string, ScheduleEventDTO> } | { ok: false; error: string; data: Record<string, ScheduleEventDTO> }> {
+  // Была без проверки сессии вообще — единственная функция в этом файле без
+  // requireStaffSession() (найдено при добавлении нового вызова из карточки
+  // клиента, см. security-проверку в отчёте). Возвращает имена/контакты
+  // клиентов, суммы и ссылки на материалы — не должна быть вызываемой без
+  // авторизации.
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, error: authResult.error, data: {} }
+
   if (calendarEventIds.length === 0) return { ok: true, data: {} }
 
   try {
@@ -304,6 +312,11 @@ export interface PendingScheduleEventDTO {
 export async function getPendingScheduleClients(): Promise<
   { ok: true; data: PendingScheduleEventDTO[] } | { ok: false; data: PendingScheduleEventDTO[]; error: string }
 > {
+  // См. заметку у getScheduleAnnotations выше — тот же пробел, тот же файл,
+  // тот же класс данных (контакты/суммы), исправлено в одном заходе.
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, data: [], error: authResult.error }
+
   try {
     const rows = await prisma.scheduleEvent.findMany({
       where: { clientConfirmationStatus: 'PENDING' },
@@ -352,6 +365,11 @@ export async function findSimilarClientsForEvent(input: {
   contact?: string
   company?: string
 }): Promise<{ ok: true; data: SimilarClientMatch[] } | { ok: false; data: SimilarClientMatch[]; error: string }> {
+  // См. заметку у getScheduleAnnotations выше. Эта функция особенно важна
+  // защитить: без сессии это фактически открытый поиск по базе клиентов.
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, data: [], error: authResult.error }
+
   try {
     const contact = input.contact?.trim() ?? ''
     const phoneMatch = contact.match(PHONE_RE)
@@ -474,6 +492,11 @@ export interface FlagPendingClientInput {
 export async function flagPendingClientFromEvent(
   input: FlagPendingClientInput
 ): Promise<{ ok: true } | { ok: false; error: string }> {
+  // См. заметку у getScheduleAnnotations выше — эта к тому же ЗАПИСЫВАЕТ в
+  // базу (upsert), без сессии это была открытая на запись форма.
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, error: authResult.error }
+
   try {
     const existing = await prisma.scheduleEvent.findUnique({ where: { calendarEventId: input.calendarEventId } })
     if (existing && existing.clientConfirmationStatus !== 'NOT_REQUIRED') return { ok: true }
@@ -527,11 +550,22 @@ export interface ClientBookingDTO {
   paymentMethod: PaymentMethod | null
   subscriptionUsedHours: number | null
   subscriptionPurchasedAt: string | null
+  // Добавлено для раздела "Записи" в карточке клиента — краткий список всех
+  // записей клиента должен показывать статус материалов и наличие ссылок,
+  // не только оплату (см. materialsStatus в ScheduleEvent).
+  yandexDiskUrl: string | null
+  nasBackupUrl: string | null
+  materialsStatus: MaterialsStatus
 }
 
 export async function getClientScheduleBookings(clientId: string): Promise<
   { ok: true; data: ClientBookingDTO[] } | { ok: false; data: ClientBookingDTO[]; error: string }
 > {
+  // Тоже была без проверки сессии (см. ту же заметку у getScheduleAnnotations
+  // выше) — отдаёт даты записей, суммы и статус материалов клиента.
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, data: [], error: authResult.error }
+
   try {
     const rows = await prisma.scheduleEvent.findMany({
       where: { clientId, eventType: 'STUDIO_BOOKING' },
@@ -551,6 +585,9 @@ export async function getClientScheduleBookings(clientId: string): Promise<
       paymentMethod: r.paymentMethod,
       subscriptionUsedHours: r.subscriptionUsage?.usedHours ?? null,
       subscriptionPurchasedAt: r.subscriptionUsage?.subscription.purchasedAt.toISOString() ?? null,
+      yandexDiskUrl: r.yandexDiskUrl,
+      nasBackupUrl: r.nasBackupUrl,
+      materialsStatus: r.materialsStatus,
     }))
 
     return { ok: true, data }

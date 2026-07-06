@@ -70,6 +70,15 @@ const SubscriptionPaymentBlock = forwardRef<SubscriptionPaymentHandle, Props>(fu
       } else if (active.length > 0) {
         setSelectedId(active[0].id)
       }
+      // Иначе (ни исходный абонемент этой записи, ни какой-либо другой не
+      // активны) — НЕ трогаем selectedId, оставляем его как есть (изначально
+      // это initialUsage?.subscriptionId ?? null). Он не найдётся среди
+      // activeSubscriptions ниже — и это специально: именно по этому
+      // совпадению (selectedId === initialUsage.subscriptionId, но вне
+      // активного списка) эффект валидности ниже понимает "это та же самая,
+      // ранее сохранённая оплата", а не "оплата не выбрана". Обнулять
+      // selectedId здесь — заманчивое "исправление одной строкой", которое на
+      // деле ломает именно эту проверку (найдено и исправлено при тестировании).
     })
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -87,6 +96,18 @@ const SubscriptionPaymentBlock = forwardRef<SubscriptionPaymentHandle, Props>(fu
     if (creatingNew) {
       const packageHours = parseInt(newPackageHours, 10)
       onValidityChange(Number.isFinite(packageHours) && packageHours > 0 && usedHoursNum <= packageHours)
+      return
+    }
+    // Запись уже была списана с этого абонемента раньше, и админ здесь ничего
+    // не поменял (не выбрал другой абонемент, не изменил списанные часы) —
+    // прежняя оплата остаётся валидной, даже если сам абонемент с тех пор
+    // закончился (стал USED_UP/EXPIRED). Без этой ветки любое редактирование
+    // карточки записи — например, просто добавление ссылки на Яндекс.Диск —
+    // молча блокировало «Сохранить», потому что абонемент, которым когда-то
+    // оплатили именно эту запись, к сегодняшнему дню исчерпан — при том что
+    // сам факт той оплаты никто не оспаривает и менять не пытается.
+    if (initialUsage && selectedId === initialUsage.subscriptionId && usedHoursNum === initialUsage.usedHours) {
+      onValidityChange(true)
       return
     }
     const sel = activeSubscriptions.find(s => s.id === selectedId)
@@ -150,7 +171,14 @@ const SubscriptionPaymentBlock = forwardRef<SubscriptionPaymentHandle, Props>(fu
 
               {!creatingNew && activeSubscriptions.length === 0 && (
                 <div className="text-center py-1">
-                  <p className="text-zinc-400 text-xs mb-2">У клиента нет активных абонементов.</p>
+                  {initialUsage && selectedId === initialUsage.subscriptionId ? (
+                    <p className="text-zinc-400 text-xs mb-2">
+                      Эта запись уже была оплачена абонементом от {format(parseISO(initialUsage.purchasedAt), 'dd.MM.yyyy')}
+                      {' '}({initialUsage.usedHours} ч) — он с тех пор закончился, но саму оплату менять не нужно, можно просто «Сохранить».
+                    </p>
+                  ) : (
+                    <p className="text-zinc-400 text-xs mb-2">У клиента нет активных абонементов.</p>
+                  )}
                   <button type="button" onClick={() => setCreatingNew(true)}
                     className="text-xs text-[#00c26b] hover:underline font-medium">
                     + Создать абонемент

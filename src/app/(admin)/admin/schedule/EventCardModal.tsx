@@ -11,7 +11,7 @@ import { chargeEventToSubscription, createSubscription, removeEventSubscriptionC
 import { parseEventTitle } from '@/lib/event-category'
 import type { ScheduleEventVM } from '@/lib/schedule-model'
 import {
-  computeYandexLinkStatus, YANDEX_LINK_STATUS_LABELS, MATERIALS_WARNING_TEXT,
+  MATERIALS_WARNING_TEXT,
   getEffectiveEventType, isPastBooking, shouldShowMaterialsBadge,
   type ClientConfirmationStatus,
 } from '@/lib/schedule-model'
@@ -79,15 +79,27 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
   const materialsStatus = annotation?.materialsStatus ?? 'NO_LINKS'
   const yandexAddedAt = annotation?.yandexDiskUrlAddedAt ? parseISO(annotation.yandexDiskUrlAddedAt) : null
   const yandexExpiresAt = annotation?.yandexDiskUrlExpiresAt ? parseISO(annotation.yandexDiskUrlExpiresAt) : null
-  const yandexLinkStatus = computeYandexLinkStatus(annotation?.yandexDiskUrl ?? null, yandexAddedAt)
   const warningText = MATERIALS_WARNING_TEXT[materialsStatus]
   const hasClient = !!clientId
   const eventDurationHours = Math.max(0, (new Date(calendarEvent.end).getTime() - new Date(calendarEvent.start).getTime()) / 3600000)
   const isBookingPast = isPastBooking(vm)
-  // NAS и Яндекс.Диск проверяются раздельно (NAS важнее) — см. Материалы ниже
+  // Лёгкая, СОВЕТУЮЩАЯ (не блокирующая) проверка формата — только для живой
+  // подсказки под полем; сохранить ссылку можно в любом случае, даже если она
+  // не похожа на Яндекс.Диск (см. ТЗ: "не должно быть ситуации, когда ссылка
+  // визуально введена, но форма считает поле невалидным без понятной причины").
+  const yandexUrlTrimmedLive = yandexDiskUrl.trim()
+  const looksLikeYandexLink = /^https?:\/\/(disk\.yandex\.[a-z.]+|yadi\.sk)\//i.test(yandexUrlTrimmedLive)
+  // Материалы: наличие ссылки на Яндекс.Диск снимает предупреждение само по
+  // себе — NAS-бэкап при этом просто дополнительный плюс, а не обязательное
+  // условие (см. Материалы ниже и schedule-model.ts: getMaterialsDisplay/getBookingIssues).
   const hasYandexNow = !!yandexDiskUrl
   const hasNasNow = !!nasBackupUrl
   const paymentMissingNow = paymentMode === 'ONE_TIME' && !estimatedPrice
+  // Единственная причина, по которой кнопка "Сохранить" может быть
+  // заблокирована помимо самого процесса сохранения — см. disabled на кнопке
+  // ниже. Вынесено в переменную, чтобы явно показать причину рядом с кнопкой,
+  // а не просто оставить её серой без объяснения.
+  const subscriptionBlocksSave = eventType === 'STUDIO_BOOKING' && hasClient && paymentMode === 'SUBSCRIPTION' && !subscriptionValid
 
   // Лучшая догадка об имени клиента: то, что вручную ввели в "Имя из
   // календаря", иначе — разбор названия/описания события Google Calendar
@@ -168,64 +180,75 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
   async function handleSave(confirmationOverride?: ClientConfirmationStatus) {
     setSaving(true)
     setError(null)
-    const result = await upsertScheduleEvent({
-      calendarEventId: calendarEvent.id,
-      title: calendarEvent.title,
-      description: calendarEvent.description,
-      startAt: calendarEvent.start,
-      endAt: calendarEvent.end,
-      eventType,
-      room,
-      format: formatValue,
-      camerasCount: camerasCount ? parseInt(camerasCount, 10) : null,
-      // Абонемент оплачивается один раз при покупке — отдельная запись не должна
-      // повторно создавать выручку, поэтому очищаем разовую цену.
-      estimatedPrice: paymentMode === 'SUBSCRIPTION' ? null : (estimatedPrice ? parseFloat(estimatedPrice) : null),
-      paymentMethod: paymentMode === 'SUBSCRIPTION' ? null : (paymentMethod || null),
-      notes,
-      yandexDiskUrl: yandexDiskUrl || null,
-      nasBackupUrl: nasBackupUrl || null,
-      materialsComment,
-      clientNameRaw,
-      contactRaw,
-      companyRaw,
-      ...(confirmationOverride && { clientConfirmationStatus: confirmationOverride }),
-    })
-    if (!result.ok) {
-      setSaving(false)
-      setError(result.error)
-      return
-    }
+    // Всё тело — в try/finally: раньше setSaving(false) вызывался отдельно
+    // перед каждым return, и если бы что-то неожиданно бросило исключение
+    // (а не просто вернуло {ok:false}) — например сетевой сбой посреди одного
+    // из последовательных вызовов ниже — кнопка "Сохранить" оставалась бы
+    // задизейбленной навсегда без единой видимой ошибки: saving так и не
+    // вернулся бы в false. finally гарантирует сброс при любом исходе.
+    try {
+      const result = await upsertScheduleEvent({
+        calendarEventId: calendarEvent.id,
+        title: calendarEvent.title,
+        description: calendarEvent.description,
+        startAt: calendarEvent.start,
+        endAt: calendarEvent.end,
+        eventType,
+        room,
+        format: formatValue,
+        camerasCount: camerasCount ? parseInt(camerasCount, 10) : null,
+        // Абонемент оплачивается один раз при покупке — отдельная запись не должна
+        // повторно создавать выручку, поэтому очищаем разовую цену.
+        estimatedPrice: paymentMode === 'SUBSCRIPTION' ? null : (estimatedPrice ? parseFloat(estimatedPrice) : null),
+        paymentMethod: paymentMode === 'SUBSCRIPTION' ? null : (paymentMethod || null),
+        notes,
+        yandexDiskUrl: yandexDiskUrl || null,
+        nasBackupUrl: nasBackupUrl || null,
+        materialsComment,
+        clientNameRaw,
+        contactRaw,
+        companyRaw,
+        ...(confirmationOverride && { clientConfirmationStatus: confirmationOverride }),
+      })
+      if (!result.ok) {
+        setError(result.error)
+        return
+      }
 
-    if (eventType === 'STUDIO_BOOKING' && clientId) {
-      if (paymentMode === 'ONE_TIME') {
-        if (annotation?.subscriptionUsage) {
-          const removed = await removeEventSubscriptionCharge(result.data.id)
-          if (!removed.ok) { setSaving(false); setError(removed.error); return }
-        }
-      } else {
-        const value = subscriptionRef.current?.getValue()
-        if (value?.paymentType === 'EXISTING') {
-          const charged = await chargeEventToSubscription({
-            scheduleEventId: result.data.id, subscriptionId: value.subscriptionId, usedHours: value.usedHours,
-          })
-          if (!charged.ok) { setSaving(false); setError(charged.error); return }
-        } else if (value?.paymentType === 'NEW') {
-          const created = await createSubscription({
-            clientId, packageHours: value.packageHours, paidAmount: value.paidAmount, purchasedAt: value.purchasedAt,
-          })
-          if (!created.ok) { setSaving(false); setError(created.error); return }
-          const charged = await chargeEventToSubscription({
-            scheduleEventId: result.data.id, subscriptionId: created.data.id, usedHours: value.usedHours,
-          })
-          if (!charged.ok) { setSaving(false); setError(charged.error); return }
+      if (eventType === 'STUDIO_BOOKING' && clientId) {
+        if (paymentMode === 'ONE_TIME') {
+          if (annotation?.subscriptionUsage) {
+            const removed = await removeEventSubscriptionCharge(result.data.id)
+            if (!removed.ok) { setError(removed.error); return }
+          }
+        } else {
+          const value = subscriptionRef.current?.getValue()
+          if (value?.paymentType === 'EXISTING') {
+            const charged = await chargeEventToSubscription({
+              scheduleEventId: result.data.id, subscriptionId: value.subscriptionId, usedHours: value.usedHours,
+            })
+            if (!charged.ok) { setError(charged.error); return }
+          } else if (value?.paymentType === 'NEW') {
+            const created = await createSubscription({
+              clientId, packageHours: value.packageHours, paidAmount: value.paidAmount, purchasedAt: value.purchasedAt,
+            })
+            if (!created.ok) { setError(created.error); return }
+            const charged = await chargeEventToSubscription({
+              scheduleEventId: result.data.id, subscriptionId: created.data.id, usedHours: value.usedHours,
+            })
+            if (!charged.ok) { setError(charged.error); return }
+          }
         }
       }
-    }
 
-    setSaving(false)
-    onSaved()
-    onOpenChange(false)
+      onSaved()
+      onOpenChange(false)
+    } catch (e) {
+      console.error('[EventCardModal.handleSave]', e)
+      setError('Не удалось сохранить запись из-за непредвиденной ошибки. Попробуйте ещё раз.')
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
@@ -449,16 +472,15 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
             <p className="text-zinc-500 text-xs">Материалы ещё не добавлены — проверка начнётся после завершения записи.</p>
           ) : (
             <>
+              {/* Ссылка на Яндекс.Диск сама по себе снимает предупреждение —
+                  NAS-бэкап только дополнительный плюс, а не обязательное
+                  условие (см. schedule-model.ts: getMaterialsDisplay/
+                  getBookingIssues). Поэтому блока "hasYandexNow && !hasNasNow"
+                  здесь больше нет — это больше не проблема, это норма. */}
               {!hasNasNow && !hasYandexNow && (
                 <div className="flex items-start gap-2 rounded-lg px-3 py-2.5 text-xs bg-red-950/40 border border-red-900 text-red-300">
                   <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
                   <p>Съёмка уже прошла, но ссылка на Яндекс.Диск и бэкап на NAS не указаны.</p>
-                </div>
-              )}
-              {!hasNasNow && hasYandexNow && (
-                <div className="flex items-start gap-2 rounded-lg px-3 py-2.5 text-xs bg-red-950/40 border border-red-900 text-red-300">
-                  <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                  <p>Съёмка уже прошла, но бэкап на NAS не указан. Это критично для сохранности материалов.</p>
                 </div>
               )}
               {hasNasNow && !hasYandexNow && (
@@ -499,7 +521,22 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
                 {yandexAddedAt && `Добавлена: ${format(yandexAddedAt, 'd MMM yyyy', { locale: ru })}`}
                 {yandexExpiresAt && ` · Истекает: ${format(yandexExpiresAt, 'd MMM yyyy', { locale: ru })}`}
               </p>
-              <span className="text-xs text-zinc-400">{YANDEX_LINK_STATUS_LABELS[yandexLinkStatus]}</span>
+              {/* Живая подсказка по формату — считается от того, что СЕЙЧАС
+                  введено в поле, а не от того, что уже сохранено (раньше
+                  здесь был YANDEX_LINK_STATUS_LABELS[yandexLinkStatus],
+                  который отражал только сохранённое значение и не менялся,
+                  пока набираешь новую ссылку). Только подсказка, никогда не
+                  блокирует "Сохранить" — если ссылка не похожа на
+                  Яндекс.Диск, это просто предупреждение, а не запрет. */}
+              <span className={`text-xs ${
+                !yandexUrlTrimmedLive ? 'text-zinc-500' : looksLikeYandexLink ? 'text-[#00c26b]' : 'text-amber-400'
+              }`}>
+                {!yandexUrlTrimmedLive
+                  ? 'Ссылка не указана'
+                  : looksLikeYandexLink
+                    ? 'Ссылка указана'
+                    : 'Не похоже на ссылку Яндекс.Диска — сохранить всё равно можно'}
+              </span>
             </div>
           </div>
 
@@ -533,8 +570,18 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
           )}
         </div>
 
+        {/* Причина блокировки "Сохранить" — вне скролл-области, всегда видна
+            рядом с самой кнопкой. Без этого администратор, редактируя
+            Материалы внизу формы, не видел бы, что кнопку заблокировал
+            совсем другой, не прокрученный в этот момент раздел "Оплата". */}
+        {subscriptionBlocksSave && (
+          <p className="px-6 pt-3 text-amber-400 text-xs flex-shrink-0">
+            Сохранение недоступно: в разделе «Оплата» выберите действующий абонемент или переключитесь на «Разовая оплата».
+          </p>
+        )}
+
         <div className="flex items-center gap-3 px-6 py-4 border-t border-zinc-800 flex-shrink-0">
-          <button type="button" onClick={() => handleSave()} disabled={saving || (eventType === 'STUDIO_BOOKING' && hasClient && paymentMode === 'SUBSCRIPTION' && !subscriptionValid)}
+          <button type="button" onClick={() => handleSave()} disabled={saving || subscriptionBlocksSave}
             className="flex-1 bg-[#00c26b] hover:bg-[#00b360] disabled:opacity-50 text-white font-semibold text-sm py-2.5 rounded-lg transition-colors">
             {saving ? 'Сохранение...' : 'Сохранить'}
           </button>

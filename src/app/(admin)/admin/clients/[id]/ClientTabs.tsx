@@ -2,19 +2,22 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { ShoppingBag, Film, DollarSign, FileText, HardDrive, Upload, Send, Calendar, Clock, Wallet, Receipt } from 'lucide-react'
+import { ShoppingBag, Film, DollarSign, FileText, Upload, Send, Calendar, Clock, Wallet, Receipt, Link2, HardDrive as NasIcon } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import {
   CLIENT_TYPE_LABELS, CLIENT_STATUS_LABELS, CLIENT_SOURCE_LABELS,
 } from '@/lib/client-model'
 import { addClientNote } from '@/lib/actions/clients'
 import type { ClientSubscriptionDTO } from '@/lib/actions/subscriptions'
-import type { ClientBookingDTO } from '@/lib/actions/schedule'
+import { getScheduleAnnotations, type ClientBookingDTO } from '@/lib/actions/schedule'
 import { SUBSCRIPTION_STATUS_LABELS, SUBSCRIPTION_STATUS_COLORS } from '@/lib/subscription-model'
-import { PAYMENT_METHOD_LABELS } from '@/lib/schedule-model'
+import { PAYMENT_METHOD_LABELS, mergeScheduleEvent, type ScheduleEventVM } from '@/lib/schedule-model'
 import { computeVisitStats } from '@/lib/visit-stats'
+import type { CalendarEvent } from '@/lib/google-calendar'
 import DonutChart from '@/components/ui/donut-chart'
 import MetricCard from '@/components/ui/metric-card'
+import MaterialsStatusBadge from '../../schedule/MaterialsStatusBadge'
+import EventCardModal from '../../schedule/EventCardModal'
 
 const CHART_COLORS = ['#00c26b', '#3b82f6', '#f59e0b', '#a855f7', '#ef4444', '#14b8a6']
 
@@ -102,7 +105,10 @@ const TABS = [
   { id: 'editing',    label: 'Монтаж' },
   { id: 'finance',    label: 'Финансы' },
   { id: 'documents',  label: 'Документы' },
-  { id: 'materials',  label: 'Материалы' },
+  // Раньше был плейсхолдером "Материалы" — теперь реальный список всех
+  // записей клиента (id оставлен прежним, он используется только для
+  // сравнения внутри этого файла, наружу нигде не торчит).
+  { id: 'materials',  label: 'Записи' },
   { id: 'notes',      label: 'Заметки' },
 ]
 
@@ -132,6 +138,15 @@ export default function ClientTabs({ client, subscriptions, bookings }: Props) {
   const [noteText, setNoteText] = useState('')
   const [savingNote, setSavingNote] = useState(false)
   const [noteError, setNoteError] = useState<string | null>(null)
+  // Карточка конкретной записи открывается прямо отсюда — переиспользует тот
+  // же EventCardModal, что и раздел "Расписание", а не отдельную заново
+  // собранную форму. calendarEvent для него строится из снэпшот-полей самой
+  // аннотации (тот же приём, что и в PendingScheduleClients.tsx на странице
+  // Клиентов) — с этой страницы нет доступа к живому Google Calendar, а он
+  // и не нужен: title/start/end уже сохранены в ScheduleEvent как раз для
+  // таких контекстов (см. комментарий в начале schedule-model.ts).
+  const [openVm, setOpenVm] = useState<ScheduleEventVM | null>(null)
+  const [openingBookingId, setOpeningBookingId] = useState<string | null>(null)
 
   const isLegal = client.type !== 'INDIVIDUAL' && client.type !== 'SELF_EMPLOYED'
   const visitStats = computeVisitStats(
@@ -140,6 +155,32 @@ export default function ClientTabs({ client, subscriptions, bookings }: Props) {
   // Записи, оплаченные по абонементу, уже показаны в истории списаний самого
   // абонемента ниже — здесь показываем только те, что оплачивались отдельно.
   const oneTimeBookings = bookings.filter(b => b.subscriptionUsedHours == null)
+
+  async function handleOpenBooking(booking: ClientBookingDTO) {
+    if (!booking.calendarEventId) return
+    setOpeningBookingId(booking.id)
+    const annResult = await getScheduleAnnotations([booking.calendarEventId])
+    setOpeningBookingId(null)
+    const annotation = annResult.data[booking.calendarEventId] ?? null
+    const calendarEvent: CalendarEvent = {
+      id: booking.calendarEventId,
+      title: booking.title ?? 'Без названия',
+      start: booking.startAt ?? new Date().toISOString(),
+      end: booking.endAt ?? new Date().toISOString(),
+      allDay: false,
+      description: annotation?.description ?? '',
+      location: '',
+      calendar: 'studio',
+      color: '#00c26b',
+    }
+    setOpenVm(mergeScheduleEvent(calendarEvent, annotation))
+  }
+
+  function formatBookingPayment(b: ClientBookingDTO): string {
+    if (b.subscriptionUsedHours != null) return `Абонемент · ${b.subscriptionUsedHours} ч`
+    if (b.estimatedPrice != null) return formatMoney(b.estimatedPrice) + (b.paymentMethod ? ` · ${PAYMENT_METHOD_LABELS[b.paymentMethod]}` : '')
+    return 'Не указана'
+  }
 
   async function handleSaveNote() {
     if (!noteText.trim()) return
@@ -431,11 +472,71 @@ export default function ClientTabs({ client, subscriptions, bookings }: Props) {
 
         {/* Материалы */}
         {activeTab === 'materials' && (
-          <PlaceholderTab
-            icon={HardDrive}
-            title="Материалы клиента"
-            description="Ссылки на исходники, готовые ролики и архивы по съёмкам этого клиента"
-          />
+          bookings.length === 0 ? (
+            <PlaceholderTab
+              icon={Calendar}
+              title="Записей пока нет"
+              description="Записи из календаря появятся здесь после первого сохранения карточки записи в разделе «Расписание»"
+            />
+          ) : (
+            <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
+              <div className="px-6 py-4 border-b border-zinc-800">
+                <h3 className="text-white font-semibold text-sm">Записи</h3>
+                <p className="text-zinc-500 text-xs mt-0.5">Нажмите на запись, чтобы открыть её карточку</p>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-zinc-800 bg-zinc-800/40">
+                      <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium">Дата</th>
+                      <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium">Название</th>
+                      <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium">Статус материалов</th>
+                      <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium">Яндекс.Диск</th>
+                      <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium">NAS</th>
+                      <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium">Оплата</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {bookings.map((b, i) => (
+                      <tr key={b.id}
+                        onClick={() => handleOpenBooking(b)}
+                        onKeyDown={e => {
+                          if ((e.key === 'Enter' || e.key === ' ') && b.calendarEventId) { e.preventDefault(); handleOpenBooking(b) }
+                        }}
+                        tabIndex={b.calendarEventId ? 0 : -1}
+                        title={b.calendarEventId ? undefined : 'У этой записи нет связанного события календаря'}
+                        className={`border-b border-zinc-800/60 transition-colors ${i === bookings.length - 1 ? 'border-b-0' : ''} ${
+                          b.calendarEventId
+                            ? 'cursor-pointer hover:bg-white/[0.04] focus:outline-none focus:bg-white/[0.04]'
+                            : 'opacity-50'
+                        }`}
+                      >
+                        <td className="px-4 py-3 text-zinc-300 text-sm whitespace-nowrap">
+                          {b.startAt ? formatDate(b.startAt) : '—'}
+                          {openingBookingId === b.id && <span className="text-zinc-500 text-xs ml-2">Открываем...</span>}
+                        </td>
+                        <td className="px-4 py-3 text-zinc-200 text-sm max-w-xs truncate">{b.title ?? 'Запись'}</td>
+                        <td className="px-4 py-3">
+                          <MaterialsStatusBadge status={b.materialsStatus} nasBackupUrl={b.nasBackupUrl} showLabel />
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className={`inline-flex items-center gap-1 text-xs ${b.yandexDiskUrl ? 'text-[#00c26b]' : 'text-zinc-600'}`}>
+                            <Link2 className="w-3.5 h-3.5" /> {b.yandexDiskUrl ? 'Есть' : 'Нет'}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className={`inline-flex items-center gap-1 text-xs ${b.nasBackupUrl ? 'text-[#00c26b]' : 'text-zinc-600'}`}>
+                            <NasIcon className="w-3.5 h-3.5" /> {b.nasBackupUrl ? 'Есть' : 'Нет'}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-zinc-400 text-xs whitespace-nowrap">{formatBookingPayment(b)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )
         )}
 
         {/* Заметки */}
@@ -484,6 +585,14 @@ export default function ClientTabs({ client, subscriptions, bookings }: Props) {
           </div>
         )}
       </div>
+
+      {openVm && (
+        <EventCardModal
+          vm={openVm}
+          onOpenChange={open => { if (!open) setOpenVm(null) }}
+          onSaved={() => { setOpenVm(null); router.refresh() }}
+        />
+      )}
     </div>
   )
 }
