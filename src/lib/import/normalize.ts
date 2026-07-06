@@ -70,6 +70,28 @@ export function parseAmount(raw: string): number | undefined {
   return Number.isFinite(num) ? num : undefined
 }
 
+const TIME_RANGE_RE = /(\d{1,2})(?::(\d{2}))?\s*[-–]\s*(\d{1,2})(?::(\d{2}))?/g
+
+// Число, явно подписанное как часы («2 часа», «5 часов»), отдельно от общей
+// parseDurationHours — нужно, чтобы отличить настоящий конфликт исходных данных
+// (стоит «3 часа», а диапазон в скобках даёт 2 часа — путаница у того, кто вёл
+// таблицу) от однозначной ошибки (ведущее число — это камеры/микрофоны, не часы).
+export function extractStatedHours(raw: string): number | undefined {
+  const v = raw.trim().toLowerCase()
+  const m = v.match(/(\d+(?:[.,]\d+)?)\s*(час|часа|часов)/)
+  return m ? parseFloat(m[1].replace(',', '.')) : undefined
+}
+
+// Реальные строки студийной таблицы бывают вида «2 часа (14-16)», «1 камера
+// (13-16)» (число перед скобкой — это камеры/микрофоны, НЕ часы!), «15-20»
+// (голый диапазон без слова "час"), «2 часа (12-14) + 2 часа (16-18)»
+// (несколько отрезков одной записи), «смена» (без числа вообще). Раньше
+// парсер брал первое попавшееся число в строке — для «1 камера (13-16)» это
+// значило бы "1 час" вместо реальных 3 часов по диапазону. Теперь: если в
+// строке есть диапазон времени — длительность считается по НЕМУ (сумма всех
+// найденных диапазонов, на случай нескольких отрезков), и только если диапазона
+// нет вообще — берётся ведущее число, но лишь когда оно стоит рядом со словом
+// "час"/"часа"/"часов"/"мин" (не рядом с "камера"/"микрофон" и т.п.).
 export function parseDurationHours(raw: string): number | undefined {
   const v = raw.trim().toLowerCase()
   if (!v) return undefined
@@ -77,13 +99,27 @@ export function parseDurationHours(raw: string): number | undefined {
   const hhmm = v.match(/^(\d{1,2}):(\d{2})$/)
   if (hhmm) return parseInt(hhmm[1], 10) + parseInt(hhmm[2], 10) / 60
 
-  const numMatch = v.match(/(\d+(?:[.,]\d+)?)/)
-  if (!numMatch) return undefined
-  const num = parseFloat(numMatch[1].replace(',', '.'))
-  if (!Number.isFinite(num)) return undefined
+  const ranges = Array.from(v.matchAll(TIME_RANGE_RE))
+  if (ranges.length > 0) {
+    let totalMinutes = 0
+    for (const r of ranges) {
+      const startMin = parseInt(r[1], 10) * 60 + (r[2] ? parseInt(r[2], 10) : 0)
+      const endMin = parseInt(r[3], 10) * 60 + (r[4] ? parseInt(r[4], 10) : 0)
+      const diff = endMin - startMin
+      if (diff > 0 && diff <= 16 * 60) totalMinutes += diff
+    }
+    if (totalMinutes > 0) return Math.round((totalMinutes / 60) * 100) / 100
+  }
 
-  if (/мин/.test(v)) return num / 60
-  return num
+  if (/смена/.test(v)) return undefined
+
+  const numWithUnit = v.match(/(\d+(?:[.,]\d+)?)\s*(час|часа|часов|мин)/)
+  if (numWithUnit) {
+    const num = parseFloat(numWithUnit[1].replace(',', '.'))
+    if (Number.isFinite(num)) return numWithUnit[2] === 'мин' ? num / 60 : num
+  }
+
+  return undefined
 }
 
 export function parseFlexibleDate(raw: string): Date | undefined {

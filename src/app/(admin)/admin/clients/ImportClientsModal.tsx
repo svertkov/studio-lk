@@ -52,7 +52,7 @@ export default function ImportClientsModal({ onSuccess }: Props) {
   const [parsing, setParsing] = useState(false)
 
   const [importing, setImporting] = useState(false)
-  const [importResult, setImportResult] = useState<{ createdClients: number; updatedClients: number; createdVisits: number } | null>(null)
+  const [importResult, setImportResult] = useState<{ createdClients: number; updatedClients: number; createdVisits: number; skippedVisits: number } | null>(null)
 
   function reset() {
     setFileName(null)
@@ -150,7 +150,7 @@ export default function ImportClientsModal({ onSuccess }: Props) {
     const res = await confirmImport(analysis.clients, IMPORT_SOURCE[mode])
     setImporting(false)
     if (res.ok) {
-      setImportResult({ createdClients: res.createdClients, updatedClients: res.updatedClients, createdVisits: res.createdVisits })
+      setImportResult({ createdClients: res.createdClients, updatedClients: res.updatedClients, createdVisits: res.createdVisits, skippedVisits: res.skippedVisits })
       setAnalysis(null)
       setFileName(null)
       setTable(null)
@@ -377,6 +377,7 @@ export default function ImportClientsModal({ onSuccess }: Props) {
               <CheckCircle2 className="w-4 h-4 flex-shrink-0 mt-0.5" />
               <p>
                 Новых клиентов: {importResult.createdClients}, обновлено существующих: {importResult.updatedClients}, добавлено визитов: {importResult.createdVisits}
+                {importResult.skippedVisits > 0 && <>, пропущено уже загруженных: {importResult.skippedVisits}</>}
               </p>
             </div>
           )}

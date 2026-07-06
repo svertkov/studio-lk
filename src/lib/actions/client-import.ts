@@ -324,7 +324,7 @@ function buildFullName(c: { firstName: string; lastName?: string; patronymic?: s
 export async function confirmImport(clients: PreviewClient[], importSource: 'GOOGLE_SHEET' | 'EXCEL' | 'PDF') {
   const authResult = await requireStaffSession()
   if (!authResult.ok) {
-    return { ok: false as const, error: authResult.error, createdClients: 0, updatedClients: 0, createdVisits: 0 }
+    return { ok: false as const, error: authResult.error, createdClients: 0, updatedClients: 0, createdVisits: 0, skippedVisits: 0 }
   }
   return runConfirmImport(clients, importSource, authResult.userId)
 }
@@ -342,6 +342,18 @@ export async function runConfirmImport(
     let createdClients = 0
     let updatedClients = 0
     let createdVisits = 0
+    let skippedVisits = 0
+
+    // sourceRowHash уникален — без этой проверки повторный импорт (например,
+    // повторная загрузка того же файла через модалку) упал бы с ошибкой
+    // уникальности на первой же уже существующей строке и откатил ВЕСЬ пакет,
+    // включая настоящие новые строки. Автосинхронизация выручки (revenue-sync.ts)
+    // уже фильтрует так на своей стороне — здесь та же защита работает всегда,
+    // независимо от вызывающего кода.
+    const allHashes = clients.flatMap(c => c.visits.map(v => v.sourceRowHash).filter((h): h is string => !!h))
+    const existingHashes = allHashes.length > 0
+      ? new Set((await prisma.clientVisit.findMany({ where: { sourceRowHash: { in: allHashes } }, select: { sourceRowHash: true } })).map(r => r.sourceRowHash))
+      : new Set<string>()
 
     await prisma.$transaction(async tx => {
       for (const c of clients) {
@@ -371,7 +383,12 @@ export async function runConfirmImport(
           createdClients++
         }
 
+        let actuallyCreatedForThisClient = 0
         for (const v of c.visits) {
+          if (v.sourceRowHash && existingHashes.has(v.sourceRowHash)) {
+            skippedVisits++
+            continue
+          }
           await tx.clientVisit.create({
             data: {
               clientId,
@@ -387,13 +404,16 @@ export async function runConfirmImport(
             },
           })
           createdVisits++
+          actuallyCreatedForThisClient++
         }
 
         // Для уже существующего клиента статус пересчитываем по итоговому числу визитов
-        if (c.status === 'existing' && c.visits.length > 0) {
+        // (по реально созданным, а не по всей пачке — иначе пропущенные из-за
+        // повторного импорта строки задвоились бы в счётчике статуса)
+        if (c.status === 'existing' && actuallyCreatedForThisClient > 0) {
           await tx.client.update({
             where: { id: clientId },
-            data: { status: computeStatusFromVisitCount(existingVisitCount + c.visits.length) },
+            data: { status: computeStatusFromVisitCount(existingVisitCount + actuallyCreatedForThisClient) },
           })
         }
       }
@@ -405,14 +425,14 @@ export async function runConfirmImport(
         action: 'CLIENTS_IMPORTED',
         entityType: 'Client',
         entityId: 'bulk',
-        metadata: { createdClients, updatedClients, createdVisits, importSource },
+        metadata: { createdClients, updatedClients, createdVisits, skippedVisits, importSource },
       },
     })
 
     revalidatePath('/admin/clients')
-    return { ok: true as const, createdClients, updatedClients, createdVisits }
+    return { ok: true as const, createdClients, updatedClients, createdVisits, skippedVisits }
   } catch (e) {
     console.error('[runConfirmImport]', e)
-    return { ok: false as const, error: 'Не удалось импортировать клиентов', createdClients: 0, updatedClients: 0, createdVisits: 0 }
+    return { ok: false as const, error: 'Не удалось импортировать клиентов', createdClients: 0, updatedClients: 0, createdVisits: 0, skippedVisits: 0 }
   }
 }

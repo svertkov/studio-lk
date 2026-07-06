@@ -3,7 +3,7 @@
 
 import {
   normalizePhone, normalizeTelegram, normalizeEmail, splitFullName,
-  parseAmount, parseDurationHours, parseFlexibleDate, normalizeRoom, normalizeFormat,
+  parseAmount, parseDurationHours, extractStatedHours, parseFlexibleDate, normalizeRoom, normalizeFormat,
   hashSheetRow,
 } from './normalize'
 
@@ -39,13 +39,18 @@ const FIELD_ALIASES: Record<string, ImportField> = {
   'дата визита': 'date', 'дата съёмки': 'date', 'дата съемки': 'date', 'дата записи': 'date', 'дата': 'date',
   'зал': 'room', 'студия': 'room', 'локация': 'room', 'помещение': 'room', 'room': 'room',
   'формат': 'format', 'формат записи': 'format', 'тип съёмки': 'format', 'тип съемки': 'format',
-  'вид записи': 'format', 'услуга': 'format', 'проект': 'format', 'recording type': 'format',
-  'часы': 'durationHours', 'кол-во часов': 'durationHours', 'количество часов': 'durationHours',
+  'вид записи': 'format', 'услуга': 'format', 'проект': 'format', 'recording type': 'format', 'заказ': 'format',
+  'часы': 'durationHours', 'кол-во часов': 'durationHours', 'количество часов': 'durationHours', 'кол-во': 'durationHours',
   'длительность': 'durationHours', 'время': 'durationHours', 'продолжительность': 'durationHours', 'duration': 'durationHours',
   'сумма': 'grossAmount', 'оплата': 'grossAmount', 'стоимость': 'grossAmount', 'доход': 'grossAmount',
   'выручка': 'grossAmount', 'грязными': 'grossAmount', 'gross': 'grossAmount',
   'чистыми': 'netAmount', 'прибыль': 'netAmount', 'net': 'netAmount', 'после расходов': 'netAmount', 'после налогов': 'netAmount',
-  'комментарий': 'comment', 'примечание': 'comment',
+  'комментарий': 'comment', 'примечание': 'comment', 'примечания': 'comment',
+  // "Затраты" — в ClientVisit нет отдельного поля под расходы по визиту, и
+  // исходный (первичный) импорт уже клал их текстом в comment ("0", "аренда
+  // микрофонов - 1500" и т.п.) — сохраняем то же поведение, иначе при новой
+  // синхронизации эта информация просто исчезала бы для новых строк.
+  'затраты': 'comment',
 }
 
 const PHONE_RE = /(\+?\d[\d\s\-()]{7,}\d)/
@@ -231,15 +236,32 @@ export function applyMapping(table: string[][], columns: DetectedColumn[]): { ro
     const roomRaw = get(idx.room)
     const formatRaw = get(idx.format)
     const commentRaw = getAllJoined(idx.comment)
+    const durationHours = durationRaw ? parseDurationHours(durationRaw) : undefined
+
+    // Если продолжительность не удалось разобрать однозначно (например «смена»,
+    // «1 камера» без диапазона) или в строке несколько отрезков/добавок («2 часа
+    // (12-14) + 2 часа (16-18)», «+ гримерка 1,5 часа») — исходный текст не
+    // теряется молча, а попадает в комментарий, чтобы его было видно в карточке.
+    const durationNeedsNote = !!durationRaw && (durationHours === undefined || durationRaw.includes('+'))
+    // Отдельный случай — не ошибка парсинга, а конфликт в самой таблице:
+    // написано «3 часа», а диапазон в скобках даёт 2 часа. Берём длительность
+    // по диапазону (более проверяемо, чем устный подсчёт), но не молчим об этом.
+    const statedHours = durationRaw ? extractStatedHours(durationRaw) : undefined
+    const hasConflict = statedHours !== undefined && durationHours !== undefined && Math.abs(statedHours - durationHours) >= 0.5
+    const comment = [
+      commentRaw,
+      durationNeedsNote ? `Исходная продолжительность: «${durationRaw}»` : '',
+      hasConflict ? `В таблице указано «${statedHours} ч», но по времени в скобках выходит ${durationHours} ч — использовано время в скобках` : '',
+    ].filter(Boolean).join('; ')
 
     const visit: VisitRecord = {
       date: dateRaw ? parseFlexibleDate(dateRaw) : undefined,
       room: roomRaw ? normalizeRoom(roomRaw) : undefined,
       format: formatRaw ? normalizeFormat(formatRaw) : undefined,
-      durationHours: durationRaw ? parseDurationHours(durationRaw) : undefined,
+      durationHours,
       grossAmount: grossRaw ? parseAmount(grossRaw) : undefined,
       netAmount: netRaw ? parseAmount(netRaw) : undefined,
-      comment: commentRaw || undefined,
+      comment: comment || undefined,
     }
     const hasVisitData = Object.values(visit).some(v => v !== undefined)
     if (hasVisitData) visit.sourceRowHash = hashSheetRow(r)
