@@ -15,7 +15,7 @@ import { PAYMENT_METHOD_LABELS, mergeScheduleEvent, type ScheduleEventVM } from 
 import { computeVisitStats } from '@/lib/visit-stats'
 import type { CalendarEvent } from '@/lib/google-calendar'
 import DonutChart from '@/components/ui/donut-chart'
-import MetricCard from '@/components/ui/metric-card'
+import MetricCard, { METRIC_GRID_CLASSNAME } from '@/components/ui/metric-card'
 import MaterialsStatusBadge from '../../schedule/MaterialsStatusBadge'
 import EventCardModal from '../../schedule/EventCardModal'
 
@@ -24,6 +24,15 @@ const CHART_COLORS = ['#00c26b', '#3b82f6', '#f59e0b', '#a855f7', '#ef4444', '#1
 function formatMoney(v: number | null) {
   if (v == null) return '—'
   return new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB', maximumFractionDigits: 0 }).format(v)
+}
+
+// Компактный формат (напр. "8,5 тыс. ₽") — только для маленьких карточек-метрик
+// во вкладке «Съёмки», где точная сумма и так обрезалась бы CSS-многоточием
+// при узкой колонке. Везде, где нужна точная сумма (таблица визитов, заказы,
+// абонементы), используется formatMoney — его не трогаем.
+function formatMoneyCompact(v: number | null) {
+  if (v == null) return '—'
+  return new Intl.NumberFormat('ru-RU', { notation: 'compact', style: 'currency', currency: 'RUB', maximumFractionDigits: 1 }).format(v)
 }
 
 function formatDate(v: string | Date | null) {
@@ -279,12 +288,12 @@ export default function ClientTabs({ client, subscriptions, bookings }: Props) {
           ) : (
             <div className="space-y-4">
               {/* Метрики */}
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
+              <div className={METRIC_GRID_CLASSNAME}>
                 <MetricCard icon={Calendar} label="Визитов" value={String(visitStats.totalVisits)} />
                 <MetricCard icon={Clock} label="Часов в студии" value={visitStats.totalHours.toFixed(1)} />
-                <MetricCard icon={Wallet} label="Выручка" value={formatMoney(visitStats.grossTotal)} />
-                <MetricCard icon={Receipt} label="Чистая прибыль" value={formatMoney(visitStats.netTotal)} />
-                <MetricCard icon={DollarSign} label="Средний чек" value={formatMoney(visitStats.avgCheck)} />
+                <MetricCard icon={Wallet} label="Выручка" value={formatMoneyCompact(visitStats.grossTotal)} />
+                <MetricCard icon={Receipt} label="Чистая прибыль" value={formatMoneyCompact(visitStats.netTotal)} />
+                <MetricCard icon={DollarSign} label="Средний чек" value={formatMoneyCompact(visitStats.avgCheck)} />
               </div>
 
               {/* Диаграммы */}

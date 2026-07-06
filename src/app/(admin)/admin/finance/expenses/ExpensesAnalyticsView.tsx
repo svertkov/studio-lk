@@ -6,7 +6,7 @@ import { ru } from 'date-fns/locale'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
 import { ArrowUp, ArrowDown, ArrowUpDown, Search, X } from 'lucide-react'
-import MetricCard from '@/components/ui/metric-card'
+import MetricCard, { METRIC_GRID_CLASSNAME } from '@/components/ui/metric-card'
 import DonutChart from '@/components/ui/donut-chart'
 import BarChart from '@/components/ui/bar-chart'
 import type { ExpenseRowDTO, ExpensesSummary, CategoryTotalDTO, MonthlyExpenseDTO } from '@/lib/actions/expenses'
@@ -167,7 +167,7 @@ export default function ExpensesAnalyticsView({
   return (
     <div className="space-y-6">
       {/* KPI */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+      <div className={METRIC_GRID_CLASSNAME}>
         <MetricCard padding="p-4" valueClassName="text-xl mt-1.5" label="Расходы факт" value={formatMoney(summary.actualTotal)} />
         <MetricCard padding="p-4" valueClassName="text-xl mt-1.5" label="Расходы план" value={formatMoney(summary.plannedTotal)} />
         <MetricCard padding="p-4" valueClassName="text-xl mt-1.5" label="Остаток к оплате" value={formatMoney(summary.remainingTotal)} />
@@ -288,7 +288,7 @@ export default function ExpensesAnalyticsView({
       </div>
 
       {/* Итоги по отфильтрованным данным */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+      <div className={METRIC_GRID_CLASSNAME}>
         <MetricCard padding="p-4" valueClassName="text-xl mt-1.5" label="Расходов" value={String(filteredTotals.count)} />
         <MetricCard padding="p-4" valueClassName="text-xl mt-1.5" label="План (по фильтру)" value={formatMoney(filteredTotals.planned)} />
         <MetricCard padding="p-4" valueClassName="text-xl mt-1.5" label="Факт (по фильтру)" value={formatMoney(filteredTotals.actual)} />

@@ -14,7 +14,7 @@ import {
   CLIENT_TYPE_LABELS, CLIENT_TYPE_COLORS,
   CLIENT_STATUS_LABELS, CLIENT_STATUS_COLORS,
 } from '@/lib/client-model'
-import MetricCard from '@/components/ui/metric-card'
+import MetricCard, { METRIC_GRID_CLASSNAME } from '@/components/ui/metric-card'
 import AddClientModal from './AddClientModal'
 import ImportClientsModal from './ImportClientsModal'
 import PendingScheduleClients from './PendingScheduleClients'
@@ -144,7 +144,7 @@ export default function ClientsSection({ initialClients, stats, dbConnected, pen
       )}
 
       {/* Stats */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
+      <div className={METRIC_GRID_CLASSNAME}>
         {[
           { label: 'Всего',      value: stats.total,  icon: Users,       hint: 'в базе студии' },
           { label: 'Активные',   value: stats.active, icon: UserCheck,   hint: 'текущие или недавние' },

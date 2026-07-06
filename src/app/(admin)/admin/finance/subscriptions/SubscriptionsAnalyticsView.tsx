@@ -9,7 +9,7 @@ import { Badge } from '@/components/ui/badge'
 import { ArrowUp, ArrowDown, ArrowUpDown, AlertTriangle, ExternalLink } from 'lucide-react'
 import type { SubscriptionRow } from '@/lib/actions/finance'
 import { SUBSCRIPTION_STATUS_LABELS, SUBSCRIPTION_STATUS_COLORS } from '@/lib/subscription-model'
-import MetricCard from '@/components/ui/metric-card'
+import MetricCard, { METRIC_GRID_CLASSNAME } from '@/components/ui/metric-card'
 import SubscriptionDetailModal from './SubscriptionDetailModal'
 
 const LOW_HOURS_THRESHOLD = 2
@@ -88,7 +88,7 @@ export default function SubscriptionsAnalyticsView({ summary, rows, initialLowOn
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+      <div className={METRIC_GRID_CLASSNAME}>
         <MetricCard padding="p-4" valueClassName="text-xl mt-1.5" label="Активных" value={String(summary.activeCount)} subtitle={`${summary.totalCount} всего продано`} />
         <MetricCard padding="p-4" valueClassName="text-xl mt-1.5" label="Использовано абонементов" value={String(summary.usedUpCount)} />
         <MetricCard padding="p-4" valueClassName="text-xl mt-1.5" label="Часов продано" value={formatHours(summary.hoursSoldTotal)} subtitle={`использовано ${formatHours(summary.hoursUsedTotal)} ч`} />

@@ -6,7 +6,7 @@ import { ru } from 'date-fns/locale'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
 import { ArrowUp, ArrowDown, ArrowUpDown, Search, X } from 'lucide-react'
 import type { RecentVisitDTO } from '@/lib/actions/finance'
-import MetricCard from '@/components/ui/metric-card'
+import MetricCard, { METRIC_GRID_CLASSNAME } from '@/components/ui/metric-card'
 import VisitDetailModal from './VisitDetailModal'
 
 type SortKey = 'date' | 'client' | 'room' | 'format' | 'hours' | 'gross' | 'net'
@@ -186,7 +186,7 @@ export default function VisitsReportTable({ visits, initialRoom, initialFormat }
       </div>
 
       {/* Итоги по отфильтрованным данным */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <div className={METRIC_GRID_CLASSNAME}>
         <MetricCard padding="p-4" valueClassName="text-xl mt-1.5" label="Записей" value={String(totals.count)} />
         <MetricCard padding="p-4" valueClassName="text-xl mt-1.5" label="Выручка" value={formatMoney(totals.gross)} />
         <MetricCard padding="p-4" valueClassName="text-xl mt-1.5" label="Чистая прибыль" value={formatMoney(totals.net)} />

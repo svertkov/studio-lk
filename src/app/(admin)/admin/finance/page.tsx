@@ -14,6 +14,15 @@ function formatMoney(v: number | null) {
   return new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB', maximumFractionDigits: 0 }).format(v)
 }
 
+// Компактный формат (напр. "6,1 млн ₽") — только для маленьких карточек-метрик
+// сверху страницы, где точная сумма при небольшой ширине окна обрезалась бы
+// CSS-многоточием. Для списка обязательств ниже нужна точная сумма — там
+// остаётся formatMoney.
+function formatMoneyCompact(v: number | null) {
+  if (v == null) return '—'
+  return new Intl.NumberFormat('ru-RU', { notation: 'compact', style: 'currency', currency: 'RUB', maximumFractionDigits: 1 }).format(v)
+}
+
 function formatDate(v: string | null) {
   if (!v) return '—'
   return new Date(v).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' })
@@ -57,15 +66,15 @@ export default async function FinancePage() {
       </div>
 
       <FinanceStatCards
-        grossTotal={formatMoney(grossTotal)}
-        actualExpensesTotal={formatMoney(expenses.actualTotal)}
-        plannedExpensesTotal={formatMoney(expenses.plannedTotal)}
-        netProfit={formatMoney(netProfit)}
+        grossTotal={formatMoneyCompact(grossTotal)}
+        actualExpensesTotal={formatMoneyCompact(expenses.actualTotal)}
+        plannedExpensesTotal={formatMoneyCompact(expenses.plannedTotal)}
+        netProfit={formatMoneyCompact(netProfit)}
         marginHint={margin != null ? `маржа ${margin.toFixed(0)}%` : 'по факт. расходам'}
-        outstandingTotal={formatMoney(expenses.remainingTotal)}
+        outstandingTotal={formatMoneyCompact(expenses.remainingTotal)}
         outstandingHint={expenses.partialCount + expenses.unpaidCount > 0 ? `${expenses.partialCount + expenses.unpaidCount} обязательств` : 'всё оплачено'}
         totalVisitsHint={`${stats.totalVisits} визитов`}
-        avgCheck={formatMoney(stats.avgCheck)}
+        avgCheck={formatMoneyCompact(stats.avgCheck)}
         activeSubscriptions={String(subs.activeCount)}
         remainingHoursHint={`осталось ${subs.remainingHoursTotal % 1 === 0 ? subs.remainingHoursTotal.toFixed(0) : subs.remainingHoursTotal.toFixed(1)} ч`}
       />

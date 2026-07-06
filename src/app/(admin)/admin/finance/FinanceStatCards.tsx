@@ -1,7 +1,7 @@
 'use client'
 
 import { Wallet, ArrowDownCircle, ClipboardList, PiggyBank, Hourglass, TrendingUp, CreditCard } from 'lucide-react'
-import MetricCard from '@/components/ui/metric-card'
+import MetricCard, { METRIC_GRID_CLASSNAME } from '@/components/ui/metric-card'
 
 interface Props {
   grossTotal: string
@@ -33,7 +33,7 @@ export default function FinanceStatCards({
   outstandingTotal, outstandingHint, totalVisitsHint, avgCheck, activeSubscriptions, remainingHoursHint,
 }: Props) {
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+    <div className={METRIC_GRID_CLASSNAME}>
       <MetricCard icon={Wallet} label="Выручка" value={grossTotal} subtitle="за всё время" href="/admin/finance/visits" />
       <MetricCard icon={ArrowDownCircle} label="Расходы факт" value={actualExpensesTotal} subtitle="реально оплачено" href="/admin/finance/expenses" />
       <MetricCard icon={ClipboardList} label="Расходы план" value={plannedExpensesTotal} subtitle="все обязательства" href="/admin/finance/expenses" />
