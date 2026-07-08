@@ -262,6 +262,7 @@ export interface ScheduleEventDTO {
   nasBackupUrl: string | null
   materialsComment: string | null
   materialsStatus: MaterialsStatus
+  editingRequired: boolean | null
   clientConfirmationStatus: ClientConfirmationStatus
   subscriptionUsage: ScheduleEventSubscriptionInfo | null
   eventType: EventType

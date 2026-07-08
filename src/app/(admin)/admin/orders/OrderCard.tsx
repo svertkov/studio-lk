@@ -3,7 +3,7 @@
 import type { CSSProperties } from 'react'
 import { format, parseISO } from 'date-fns'
 import { ru } from 'date-fns/locale'
-import { CalendarClock, UserX } from 'lucide-react'
+import { CalendarClock, UserX, Film, CheckCircle2, Paperclip } from 'lucide-react'
 import type { DraggableAttributes, DraggableSyntheticListeners } from '@dnd-kit/core'
 import type { OrderDTO } from '@/lib/actions/orders'
 import { ORDER_PAYMENT_STATUS_LABELS, ORDER_PAYMENT_STATUS_COLORS, ORDER_SOURCE_LABELS, getOrderStatusVars } from '@/lib/order-model'
@@ -35,7 +35,8 @@ const CARD_ELEVATED = 'border-[color:var(--status-border-strong)] shadow-[0_0_36
 
 export default function OrderCard({ order, onClick, dragAttributes, dragListeners, elevated }: Props) {
   const name = order.clientName || order.title || 'Без имени'
-  const subLine = [order.serviceType, order.room].filter(Boolean).join(' · ')
+  const subLine = [order.serviceType, order.room, order.camerasCount ? `${order.camerasCount} кам.` : null]
+    .filter(Boolean).join(' · ')
   const when = order.plannedStartTime && order.plannedEndTime
     ? `${format(parseISO(order.plannedStartTime), 'd MMMM', { locale: ru })}, ${format(parseISO(order.plannedStartTime), 'HH:mm')}–${format(parseISO(order.plannedEndTime), 'HH:mm')}`
     : null
@@ -63,7 +64,7 @@ export default function OrderCard({ order, onClick, dragAttributes, dragListener
           {amount ? `${amount} · ` : ''}{ORDER_PAYMENT_STATUS_LABELS[order.paymentStatus]}
         </span>
       </div>
-      {(order.source === 'GOOGLE_CALENDAR' || !order.clientId) && (
+      {(order.source === 'GOOGLE_CALENDAR' || !order.clientId || order.editingRequired !== null || order.hasMaterials) && (
         <div className="flex flex-wrap items-center gap-1.5 pt-1">
           {order.source === 'GOOGLE_CALENDAR' && (
             <span className="text-[11px] font-medium px-2 py-0.5 rounded-full border border-blue-800 text-blue-400 bg-blue-950/30">
@@ -74,6 +75,24 @@ export default function OrderCard({ order, onClick, dragAttributes, dragListener
             <span className="text-[11px] font-medium px-2 py-0.5 rounded-full border border-amber-800 text-amber-400 bg-amber-950/30 flex items-center gap-1">
               <UserX className="w-3 h-3" />
               Клиент не привязан
+            </span>
+          )}
+          {order.hasMaterials && (
+            <span className="text-[11px] font-medium px-2 py-0.5 rounded-full border border-emerald-800 text-emerald-400 bg-emerald-950/30 flex items-center gap-1">
+              <Paperclip className="w-3 h-3" />
+              Материалы добавлены
+            </span>
+          )}
+          {order.editingRequired === true && (
+            <span className="text-[11px] font-medium px-2 py-0.5 rounded-full border border-yellow-700 text-yellow-400 bg-yellow-950/30 flex items-center gap-1">
+              <Film className="w-3 h-3" />
+              Монтаж требуется
+            </span>
+          )}
+          {order.editingRequired === false && (
+            <span className="text-[11px] font-medium px-2 py-0.5 rounded-full border border-green-800 text-green-400 bg-green-950/30 flex items-center gap-1">
+              <CheckCircle2 className="w-3 h-3" />
+              Без монтажа
             </span>
           )}
         </div>

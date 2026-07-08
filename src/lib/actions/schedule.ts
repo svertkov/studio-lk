@@ -14,7 +14,7 @@ import {
 } from '@/lib/schedule-model'
 import { classifyEventType } from '@/lib/event-type'
 import { normalizePhone, normalizeEmail, normalizeTelegram } from '@/lib/import/normalize'
-import { ensureOrderForNewBooking } from '@/lib/actions/orders'
+import { ensureOrderForNewBooking, updateOrderStatus } from '@/lib/actions/orders'
 import { ORDERS_AUTO_IMPORT_LAUNCH_DATE } from '@/lib/order-model'
 
 // ============================================================
@@ -96,6 +96,7 @@ function toDTO(row: ScheduleEventWithClient): ScheduleEventDTO {
     nasBackupUrl: row.nasBackupUrl,
     materialsComment: row.materialsComment,
     materialsStatus: row.materialsStatus,
+    editingRequired: row.editingRequired,
     clientConfirmationStatus: row.clientConfirmationStatus,
     eventType: row.eventType,
     subscriptionUsage: su ? {
@@ -165,6 +166,7 @@ export interface UpsertScheduleEventInput {
   yandexDiskUrl?: string | null
   nasBackupUrl?: string | null
   materialsComment?: string
+  editingRequired?: boolean | null
   clientConfirmationStatus?: ClientConfirmationStatus
   eventType?: EventType
 }
@@ -248,6 +250,7 @@ export async function upsertScheduleEvent(
         nasBackupUrl: nextNasUrl,
         materialsComment: input.materialsComment?.trim() || null,
         materialsStatus,
+        editingRequired: input.editingRequired ?? null,
         clientConfirmationStatus: input.clientConfirmationStatus ?? 'NOT_REQUIRED',
         eventType: effectiveEventType,
         orderId: orderIdForCreate,
@@ -273,11 +276,25 @@ export async function upsertScheduleEvent(
         nasBackupUrl: nextNasUrl,
         ...(input.materialsComment !== undefined && { materialsComment: input.materialsComment?.trim() || null }),
         materialsStatus,
+        ...(input.editingRequired !== undefined && { editingRequired: input.editingRequired }),
         ...(input.clientConfirmationStatus !== undefined && { clientConfirmationStatus: input.clientConfirmationStatus }),
         ...(input.eventType !== undefined && { eventType: input.eventType }),
       },
       include: SCHEDULE_EVENT_INCLUDE,
     })
+
+    // Автоперевод связанного заказа по воронке — только когда решение по
+    // монтажу только что сохранено (true/false, не null) И заказ всё ещё в
+    // «Записан в студию». Второе условие — защита именно того, что просили:
+    // если заказ уже вручную продвинут дальше (Монтаж/Правки/Завершено/Отказ),
+    // повторное сохранение карточки записи (например, правка комментария)
+    // больше не должно его трогать.
+    if (row.orderId && (input.editingRequired === true || input.editingRequired === false)) {
+      const linkedOrder = await prisma.order.findUnique({ where: { id: row.orderId }, select: { status: true } })
+      if (linkedOrder?.status === 'BOOKED') {
+        await updateOrderStatus(row.orderId, input.editingRequired ? 'EDITING' : 'COMPLETED')
+      }
+    }
 
     revalidatePath('/admin/schedule')
     if (input.clientConfirmationStatus !== undefined || input.clientId !== undefined) {

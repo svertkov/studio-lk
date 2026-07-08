@@ -404,6 +404,10 @@ model ScheduleEvent {
   nasBackupUrl             String?                   @map("nas_backup_url")
   materialsComment         String?                   @map("materials_comment")
   materialsStatus          MaterialsStatus           @default(NO_LINKS) @map("materials_status")
+  // Нужен ли монтаж после съёмки — null, пока администратор не решил (карточка
+  // ещё не сохранялась с выбором); true/false после решения. Управляет
+  // автопереводом связанного заказа в «Монтаж»/«Завершено», см. upsertScheduleEvent.
+  editingRequired          Boolean?                  @map("editing_required")
   clientConfirmationStatus ClientConfirmationStatus  @default(NOT_REQUIRED) @map("client_confirmation_status")
   createdAt                DateTime                  @default(now()) @map("created_at")
   updatedAt                DateTime                  @updatedAt      @map("updated_at")

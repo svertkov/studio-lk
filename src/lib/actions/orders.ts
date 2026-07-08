@@ -29,11 +29,12 @@ async function requireStaffSession(): Promise<{ ok: true } | { ok: false; error:
 // ============================================================
 
 type OrderClient = Pick<Client, 'name' | 'phone' | 'telegram' | 'email' | 'type' | 'companyName'>
-type OrderWithRelations = Order & { client: OrderClient | null; scheduleEvent: Pick<ScheduleEvent, 'id'> | null }
+type OrderScheduleEvent = Pick<ScheduleEvent, 'id' | 'camerasCount' | 'editingRequired' | 'yandexDiskUrl' | 'nasBackupUrl'>
+type OrderWithRelations = Order & { client: OrderClient | null; scheduleEvent: OrderScheduleEvent | null }
 
 const ORDER_INCLUDE = {
   client: { select: { name: true, phone: true, telegram: true, email: true, type: true, companyName: true } },
-  scheduleEvent: { select: { id: true } },
+  scheduleEvent: { select: { id: true, camerasCount: true, editingRequired: true, yandexDiskUrl: true, nasBackupUrl: true } },
 } as const
 
 export interface OrderDTO {
@@ -59,6 +60,12 @@ export interface OrderDTO {
   comment: string | null
   googleEventId: string | null
   hasBooking: boolean
+  // Снимок части полей связанной записи расписания (см. ScheduleEvent) — их
+  // источник правды там, здесь только для отображения на карточке заказа,
+  // чтобы не открывать отдельно карточку записи ради зала/камер/монтажа.
+  camerasCount: number | null
+  editingRequired: boolean | null
+  hasMaterials: boolean
   createdAt: string
   updatedAt: string
   statusUpdatedAt: string
@@ -92,6 +99,9 @@ function toDTO(row: OrderWithRelations): OrderDTO {
     comment: row.comment,
     googleEventId: row.googleEventId,
     hasBooking: !!row.scheduleEvent,
+    camerasCount: row.scheduleEvent?.camerasCount ?? null,
+    editingRequired: row.scheduleEvent?.editingRequired ?? null,
+    hasMaterials: !!(row.scheduleEvent?.yandexDiskUrl || row.scheduleEvent?.nasBackupUrl),
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
     statusUpdatedAt: row.statusUpdatedAt.toISOString(),
@@ -106,6 +116,15 @@ function toDTO(row: OrderWithRelations): OrderDTO {
 export async function getOrders(): Promise<
   { ok: true; data: OrderDTO[] } | { ok: false; data: OrderDTO[]; error: string }
 > {
+  // Обнаружено при расширении OrderDTO (зал/камеры/статус монтажа из
+  // ScheduleEvent): у функции не было проверки сессии вовсе — 'use server' в
+  // начале файла делает её вызываемой напрямую как server action, в обход
+  // защиты уровня страницы /admin/orders. Раньше это уже отдавало имена,
+  // телефоны и выручку клиентов без авторизации; теперь ещё и зал/камеры/
+  // статус монтажа — повод исправить сейчас же, а не откладывать.
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, data: [], error: authResult.error }
+
   try {
     // CANCELLED теперь — видимая колонка канбана "Отказы" (см. order-model.ts),
     // поэтому больше не исключается. ARCHIVED по-прежнему скрыт — это не

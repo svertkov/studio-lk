@@ -87,6 +87,22 @@ export function parseEventTitle(title: string, description?: string | null): Par
   const descriptionClient = description?.split('\n').map(l => l.trim()).find(Boolean) ?? null
   const client = descriptionClient || clientTokens.join(' ').trim() || null
 
+  // Резервный разбор — студия обычно пишет коротко ("тз", "3к"), но иногда в
+  // названии/описании зал и камеры записаны словами ("Тёмный зал", "3 камеры",
+  // "2 кам") — токенный разбор выше их не ловит (там только точные "тз"/"Nк").
+  // Ищем по всему тексту, только если короткая форма не сработала.
+  if (!hall || cameras === null) {
+    const fullText = `${title} ${description ?? ''}`.toLowerCase()
+    if (!hall) {
+      if (/тёмный зал|темный зал/.test(fullText)) hall = 'Тёмный зал'
+      else if (/светлый зал/.test(fullText)) hall = 'Светлый зал'
+    }
+    if (cameras === null) {
+      const verboseCam = fullText.match(/(\d+)\s*кам/)
+      if (verboseCam) cameras = Number(verboseCam[1])
+    }
+  }
+
   return { category, hall, cameras, people, client }
 }
 

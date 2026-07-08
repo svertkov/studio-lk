@@ -43,16 +43,26 @@ function selectWithCustom(options: string[], current: string) {
 export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
   const { calendarEvent, annotation } = vm
 
+  // Зал/камеры из самого события Google Calendar ("тз, 3к" в названии или
+  // "Тёмный зал, 3 камеры" в описании) — используются как подсказка по
+  // умолчанию, только если администратор ещё не указал их сам в карточке.
+  // Once сохранено вручную, эта авто-подсказка больше не участвует (аннотация
+  // побеждает) — см. parseEventTitle в src/lib/event-category.ts.
+  const parsedFromCalendar = parseEventTitle(calendarEvent.title, calendarEvent.description)
+
   const [eventType, setEventType] = useState<EventType>(getEffectiveEventType(vm))
-  const [room, setRoom] = useState(annotation?.room ?? '')
+  const [room, setRoom] = useState(annotation?.room ?? parsedFromCalendar.hall ?? '')
   const [formatValue, setFormatValue] = useState(annotation?.format ?? '')
-  const [camerasCount, setCamerasCount] = useState(annotation?.camerasCount?.toString() ?? '')
+  const [camerasCount, setCamerasCount] = useState(
+    annotation?.camerasCount?.toString() ?? parsedFromCalendar.cameras?.toString() ?? '',
+  )
   const [estimatedPrice, setEstimatedPrice] = useState(annotation?.estimatedPrice?.toString() ?? '')
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | ''>(annotation?.paymentMethod ?? '')
   const [notes, setNotes] = useState(annotation?.notes ?? '')
   const [yandexDiskUrl, setYandexDiskUrl] = useState(annotation?.yandexDiskUrl ?? '')
   const [nasBackupUrl, setNasBackupUrl] = useState(annotation?.nasBackupUrl ?? '')
   const [materialsComment, setMaterialsComment] = useState(annotation?.materialsComment ?? '')
+  const [editingRequired, setEditingRequired] = useState<boolean | null>(annotation?.editingRequired ?? null)
   const [clientNameRaw, setClientNameRaw] = useState(annotation?.clientNameRaw ?? '')
   const [contactRaw, setContactRaw] = useState(annotation?.contactRaw ?? '')
   const [companyRaw, setCompanyRaw] = useState(annotation?.companyRaw ?? '')
@@ -104,7 +114,7 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
   // Лучшая догадка об имени клиента: то, что вручную ввели в "Имя из
   // календаря", иначе — разбор названия/описания события Google Calendar
   // (например «Подкаст, тз, 3к, Соломатин» → «Соломатин»).
-  const guessedClientName = clientNameRaw.trim() || parseEventTitle(calendarEvent.title, calendarEvent.description).client || ''
+  const guessedClientName = clientNameRaw.trim() || parsedFromCalendar.client || ''
 
   // Пытаемся сами найти клиента по имени из названия/описания события в Google
   // Calendar — та же функция поиска, что и в блоке "Клиенты из расписания" на
@@ -205,6 +215,7 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
         yandexDiskUrl: yandexDiskUrl || null,
         nasBackupUrl: nasBackupUrl || null,
         materialsComment,
+        editingRequired,
         clientNameRaw,
         contactRaw,
         companyRaw,
@@ -556,6 +567,29 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
               <span className="text-xs text-zinc-400">{hasNasNow ? 'Бэкап указан' : 'Нет NAS-бэкапа'}</span>
             </div>
           </div>
+
+          {isBookingPast && (
+            <div>
+              <label className={LABEL}>Монтаж</label>
+              <div className="flex gap-2">
+                <button type="button" onClick={() => setEditingRequired(true)}
+                  className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                    editingRequired === true ? 'bg-[#FACC15] text-black' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-white'
+                  }`}>
+                  Монтаж требуется
+                </button>
+                <button type="button" onClick={() => setEditingRequired(false)}
+                  className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                    editingRequired === false ? 'bg-[#00c26b] text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-white'
+                  }`}>
+                  Монтаж не требуется
+                </button>
+              </div>
+              <p className="text-zinc-500 text-xs mt-1.5">
+                После сохранения заказ автоматически перейдёт в «Монтаж», если монтаж требуется, или в «Завершено», если монтаж не требуется.
+              </p>
+            </div>
+          )}
 
           <div>
             <label className={LABEL}>Комментарий по материалам</label>
