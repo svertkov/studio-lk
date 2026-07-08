@@ -90,7 +90,7 @@ export interface TelegramMessageAttachmentDTO {
 export interface TelegramMessageDTO {
   id: string
   // Telegram-овский message_id (не наш cuid) — нужен ConversationView, чтобы
-  // найти среди сообщений то самое, где была кнопка «Согласиться»
+  // найти среди сообщений то самое, где была кнопка «Принять согласие»
   // (сверяется с TelegramConversationDetailDTO.consentRequestMessageId).
   telegramMessageId: string | null
   direction: TelegramMessageDirection
@@ -161,7 +161,7 @@ export interface TelegramConversationDetailDTO extends TelegramConversationListI
   telegramFirstName: string | null
   telegramLastName: string | null
   consentRequestVersion: string | null
-  // Telegram message_id сообщения с кнопкой «Согласиться» — ConversationView
+  // Telegram message_id сообщения с кнопкой «Принять согласие» — ConversationView
   // сверяет его с TelegramMessageDTO.telegramMessageId, чтобы нарисовать
   // визуальный предпросмотр кнопки под нужным сообщением в ленте.
   consentRequestMessageId: string | null

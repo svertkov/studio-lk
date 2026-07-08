@@ -94,7 +94,7 @@ function isAttachmentTypeAllowed(settings: TelegramSettings, type: TelegramMessa
 
 // Приём входящих сообщений и нажатий inline-кнопок от Telegram.
 //
-// Consent-first: пока клиент не нажал единственную кнопку «Согласиться», бот
+// Consent-first: пока клиент не нажал единственную кнопку «Принять согласие», бот
 // не задаёт никаких вопросов о заявке — только присылает запрос согласия
 // (один раз на версию текста). После согласия бот отправляет ровно одну
 // фразу про менеджера и дальше молчит — переписку продолжает только
@@ -150,7 +150,16 @@ async function getSettings() {
 }
 
 function renderConsentText(template: string, policyUrl: string | null): string {
-  return template.replace('{{privacy_policy_url}}', policyUrl || '(уточните у менеджера)')
+  // Ссылка теперь подставляется прямо в href (см. DEFAULT_CONSENT_TEXT) —
+  // сообщение отправляется с parse_mode: 'HTML', поэтому '&' в URL обязан
+  // быть экранирован как '&amp;', иначе Telegram отклонит всё сообщение
+  // ошибкой парсинга entity. Если ссылка вообще не настроена, подстановка
+  // текстом внутрь href дала бы невалидную разметку — вместо этого убираем
+  // саму ссылку, оставляя обычный текст.
+  if (!policyUrl) {
+    return template.replace(/<a href="\{\{privacy_policy_url\}\}">(.*?)<\/a>/, '$1')
+  }
+  return template.replace('{{privacy_policy_url}}', policyUrl.replace(/&/g, '&amp;'))
 }
 
 // Подпись для сообщений без собственного текста (просто фото/голосовое и
@@ -299,14 +308,15 @@ async function ensureConsentRequested(conversationId: string, telegramChatId: st
   }
 
   const text = renderConsentText(settings.consentText, settings.privacyPolicyUrl)
-  // Единственная кнопка — «Согласиться». Ссылка на согласие уже встроена в
-  // текст сообщения (не отдельной url-кнопкой), поэтому предпросмотр этой
-  // ссылки отключаем через disableLinkPreview — иначе Telegram разворачивает
-  // под текстом большую карточку документа.
+  // Единственная кнопка — «Принять согласие». Ссылка на согласие уже встроена
+  // кликабельным текстом внутри сообщения (parse_mode: 'HTML', не отдельной
+  // url-кнопкой), поэтому превью этой ссылки отключаем через
+  // disableLinkPreview — иначе Telegram разворачивает под текстом большую
+  // карточку документа.
   const result = await sendTelegramMessageWithButtons(
     telegramChatId, text,
-    [[{ text: 'Согласиться', callback_data: 'consent_given' }]],
-    { disableLinkPreview: true },
+    [[{ text: 'Принять согласие', callback_data: 'consent_given' }]],
+    { disableLinkPreview: true, parseMode: 'HTML' },
   )
 
   if (result.ok) {

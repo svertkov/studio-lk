@@ -141,12 +141,12 @@ function MessageAttachment({ message, onOpenLightbox, onMediaLoad }: {
   return null
 }
 
-// Визуальное эхо inline-кнопки «Согласиться», которую реально видит клиент в
-// Telegram — не интерактивный элемент (клик тут ничего не делает: согласие
-// может дать только сам клиент нажатием в Telegram), просто помогает
-// администратору увидеть, отправлена ли кнопка и нажал ли клиент её, не
-// открывая сам Telegram. cursor-default вместо pointer — намеренно, чтобы не
-// создавать видимость кликабельности.
+// Визуальное эхо inline-кнопки «Принять согласие», которую реально видит
+// клиент в Telegram — не интерактивный элемент (клик тут ничего не делает:
+// согласие может дать только сам клиент нажатием в Telegram), просто
+// помогает администратору увидеть, отправлена ли кнопка и нажал ли клиент
+// её, не открывая сам Telegram. cursor-default вместо pointer — намеренно,
+// чтобы не создавать видимость кликабельности.
 function ConsentButtonPreview({ given }: { given: boolean }) {
   return (
     <button
@@ -159,9 +159,20 @@ function ConsentButtonPreview({ given }: { given: boolean }) {
       }`}
     >
       {given && <Check className="w-3.5 h-3.5" />}
-      Согласиться
+      Принять согласие
     </button>
   )
+}
+
+// Текст согласия — единственное место в проекте, отправляемое с
+// parse_mode: 'HTML' (см. ensureConsentRequested в webhook/route.ts), и
+// поэтому единственное, чей сохранённый text может содержать разметку вроде
+// <a href="...">. Здесь, в собственной ленте админа, разметку не
+// рендерим (не dangerouslySetInnerHTML — исходный текст хоть и наш, но не
+// стоит заводить для этого привычку) — просто убираем теги, чтобы
+// администратор не видел литеральные символы "<a href=...>" в переписке.
+function stripHtmlTags(text: string | null): string | null {
+  return text ? text.replace(/<[^>]+>/g, '') : text
 }
 
 function groupByDate(messages: TelegramMessageDTO[]) {
@@ -304,7 +315,9 @@ export default function TelegramMessageThread({
                       </div>
                     )}
                     {(!m.attachment || (m.text && !ATTACHMENT_PLACEHOLDER_TEXTS.includes(m.text))) && (
-                      <p className="whitespace-pre-wrap break-words">{m.text || '(без текста)'}</p>
+                      <p className="whitespace-pre-wrap break-words">
+                        {(m.senderType === 'BOT' ? stripHtmlTags(m.text) : m.text) || '(без текста)'}
+                      </p>
                     )}
                     {m.telegramMessageId && m.telegramMessageId === consentRequestMessageId && (
                       <ConsentButtonPreview given={consentGiven} />

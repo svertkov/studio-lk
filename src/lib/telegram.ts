@@ -119,7 +119,7 @@ export interface TelegramMessagePayload {
   audio?: TelegramAudio
 }
 
-// callback_query приходит при нажатии inline-кнопки («Согласиться») — своя
+// callback_query приходит при нажатии inline-кнопки («Принять согласие») — своя
 // структура, у неё нет chat напрямую, только через message.
 export interface TelegramCallbackQuery {
   id: string
@@ -134,6 +134,12 @@ export interface SendTelegramMessageOptions {
   // link_preview_options — актуальный (Bot API 7.0+) способ отключения,
   // пришедший на смену устаревшему disable_web_page_preview.
   disableLinkPreview?: boolean
+  // Не выставлен по умолчанию нигде — обычные сообщения (в т.ч. написанные
+  // администратором вручную) остаются чистым текстом, чтобы случайные '<'/'&'
+  // в переписке не парсились как разметка. Явно указываем 'HTML' только там,
+  // где текст сам гарантированно наш (текст согласия), см.
+  // ensureConsentRequested в webhook/route.ts.
+  parseMode?: 'HTML'
 }
 
 export async function sendTelegramMessage(
@@ -143,6 +149,7 @@ export async function sendTelegramMessage(
     chat_id: chatId,
     text,
     ...(options?.disableLinkPreview ? { link_preview_options: { is_disabled: true } } : {}),
+    ...(options?.parseMode ? { parse_mode: options.parseMode } : {}),
   })
 }
 
@@ -162,6 +169,7 @@ export async function sendTelegramMessageWithButtons(
     text,
     reply_markup: { inline_keyboard: buttons },
     ...(options?.disableLinkPreview ? { link_preview_options: { is_disabled: true } } : {}),
+    ...(options?.parseMode ? { parse_mode: options.parseMode } : {}),
   })
 }
 
@@ -187,7 +195,7 @@ async function sendTelegramMessageRaw(
 }
 
 // Убирает inline-кнопку(и) из уже отправленного сообщения — вызывается сразу
-// после того, как клиент нажал «Согласиться», чтобы кнопка не оставалась
+// после того, как клиент нажал «Принять согласие», чтобы кнопка не оставалась
 // кликабельной в Telegram-клиенте (повторное нажатие иначе создавало бы
 // видимость, что можно "согласиться" ещё раз). Не критично для основного
 // потока, если Telegram вернёт ошибку (например, сообщению больше 48 часов) —
