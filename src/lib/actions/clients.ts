@@ -234,6 +234,16 @@ export async function createClient(input: CreateClientInput) {
         if (linked.count === 0) {
           throw new Error('TELEGRAM_CONVERSATION_ALREADY_LINKED')
         }
+
+        // У диалога уже может быть заявка в «Заказы» (заведённая автоматически
+        // на первое сообщение, или вручную кнопкой «Создать заказ» ДО того, как
+        // появилась карточка клиента) — привязываем её к только что созданному
+        // клиенту, если она ещё ни к кому не привязана. Сама заявка не создаётся
+        // здесь заново — только дописывается clientId к уже существующей.
+        await tx.order.updateMany({
+          where: { telegramConversationId: input.telegramConversationId, clientId: null },
+          data: { clientId: created.id },
+        })
       }
 
       return created
@@ -250,6 +260,7 @@ export async function createClient(input: CreateClientInput) {
     if (input.telegramConversationId) {
       revalidatePath('/admin/telegram')
       revalidatePath(`/admin/telegram/${input.telegramConversationId}`)
+      revalidatePath('/admin/orders')
     }
     return { ok: true as const, data: client }
   } catch (e) {

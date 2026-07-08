@@ -7,6 +7,7 @@ import {
 } from '@/lib/telegram'
 import { REVOKE_CONSENT_PHRASES, DEFAULT_CONSENT_TEXT, DEFAULT_MANAGER_HANDOFF_MESSAGE } from '@/lib/telegram-model'
 import { revokeConsent } from '@/lib/telegram-consent'
+import { createLeadOrderFromTelegramConversation } from '@/lib/telegram-order-sync'
 
 interface DetectedAttachment {
   messageType: TelegramMessageType
@@ -172,6 +173,11 @@ async function handleMessage(update: TelegramUpdate) {
   const attachment = detectAttachment(message)
   const text = message.text ?? message.caption ?? (attachment ? ATTACHMENT_FALLBACK_LABEL[attachment.messageType] : null)
 
+  // Проверяем ДО upsert-а, был ли диалог уже — нужно, чтобы понять, действительно
+  // ли это первое сообщение нового чата (и тогда сразу завести заявку в «Заказы»),
+  // а не просто n-е сообщение существующего.
+  const existedBefore = !!(await prisma.telegramConversation.findUnique({ where: { telegramChatId }, select: { id: true } }))
+
   const conversation = await prisma.telegramConversation.upsert({
     where: { telegramChatId },
     create: {
@@ -190,6 +196,17 @@ async function handleMessage(update: TelegramUpdate) {
       lastMessageAt: new Date(message.date * 1000),
     },
   })
+
+  // Новый диалог — сразу заявка (LEAD) в «Заказы», ещё без карточки клиента.
+  // Раньше это происходило только после ручного нажатия «Создать заказ».
+  if (!existedBefore) {
+    await createLeadOrderFromTelegramConversation({
+      id: conversation.id,
+      clientNameGuess: conversation.clientNameGuess,
+      telegramUsername: conversation.telegramUsername,
+      phone: conversation.phone,
+    })
+  }
 
   // Лёгкий guard от потока сообщений одного чата — не настоящий rate limit
   // уровня инфраструктуры (для этого нет общей памяти между serverless-
