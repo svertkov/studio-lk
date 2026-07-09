@@ -1,8 +1,9 @@
 'use client'
 
 import { useMemo, useState } from 'react'
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { Plus, Search, ShoppingBag } from 'lucide-react'
+import { Plus, Search, ShoppingBag, Archive } from 'lucide-react'
 import {
   DndContext, DragOverlay, PointerSensor, closestCenter, useSensor, useSensors, useDraggable, useDroppable,
   type DragEndEvent, type DragStartEvent,
@@ -117,14 +118,23 @@ export default function OrdersBoard({ initialOrders }: Props) {
             className="w-full bg-zinc-900 border border-zinc-800 text-zinc-100 placeholder-zinc-600 rounded-lg pl-9 pr-3 py-2 text-sm outline-none focus:border-[#00c26b] transition-colors"
           />
         </div>
-        <button
-          type="button"
-          onClick={() => setCreating(true)}
-          className="flex items-center gap-1.5 bg-[#00c26b] hover:bg-[#00b360] text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors flex-shrink-0"
-        >
-          <Plus className="w-4 h-4" />
-          Создать заказ
-        </button>
+        <div className="flex items-center gap-2.5 flex-shrink-0">
+          <Link
+            href="/admin/orders/archive"
+            className="flex items-center gap-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-200 text-sm font-semibold px-4 py-2 rounded-lg transition-colors"
+          >
+            <Archive className="w-4 h-4" />
+            Архив
+          </Link>
+          <button
+            type="button"
+            onClick={() => setCreating(true)}
+            className="flex items-center gap-1.5 bg-[#00c26b] hover:bg-[#00b360] text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors"
+          >
+            <Plus className="w-4 h-4" />
+            Создать заказ
+          </button>
+        </div>
       </div>
 
       {orders.length === 0 ? (

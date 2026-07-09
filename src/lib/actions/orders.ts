@@ -7,8 +7,9 @@ import type {
   Order, Client, ScheduleEvent,
   OrderStatus, OrderSource, OrderPaymentStatus, PaymentMethod, ClientType,
 } from '@prisma/client'
-import { computeDurationMinutes } from '@/lib/order-model'
+import { computeDurationMinutes, isOrderReadyForArchive, archiveReasonForStatus } from '@/lib/order-model'
 import { parseEventTitle } from '@/lib/event-category'
+import type { ArchiveReason } from '@prisma/client'
 
 // ============================================================
 // АВТОРИЗАЦИЯ
@@ -70,6 +71,10 @@ export interface OrderDTO {
   updatedAt: string
   statusUpdatedAt: string
   completedAt: string | null
+  rejectedAt: string | null
+  isArchived: boolean
+  archivedAt: string | null
+  archiveReason: ArchiveReason | null
 }
 
 function toDTO(row: OrderWithRelations): OrderDTO {
@@ -106,14 +111,73 @@ function toDTO(row: OrderWithRelations): OrderDTO {
     updatedAt: row.updatedAt.toISOString(),
     statusUpdatedAt: row.statusUpdatedAt.toISOString(),
     completedAt: row.completedAt ? row.completedAt.toISOString() : null,
+    rejectedAt: row.rejectedAt ? row.rejectedAt.toISOString() : null,
+    isArchived: row.isArchived,
+    archivedAt: row.archivedAt ? row.archivedAt.toISOString() : null,
+    archiveReason: row.archiveReason,
   }
 }
 
 // ============================================================
-// СПИСОК ЗАКАЗОВ
+// АРХИВАЦИЯ — единственное место, где isArchived реально проставляется.
+// Вызывается в начале getActiveOrders/getArchivedOrders (вариант 1 из ТЗ:
+// проверка при загрузке раздела), поэтому отдельный cron не нужен — свежесть
+// не критична (7 дней — не секунды), а свип идёт от чтения самого частого
+// экрана. isOrderReadyForArchive (order-model.ts) — тот же порог 7 дней,
+// здесь просто транслируется в Prisma-условие для bulk-update.
+//
+// isArchived: false в WHERE — единственная защита от того, чтобы вручную
+// возвращённый ("Вернуть из архива") заказ тут же не улетел обратно: пока
+// пользователь не поменяет статус ещё раз, isArchived остаётся false и этот
+// where больше не совпадает, даже если completedAt/rejectedAt всё ещё старше
+// 7 дней (см. unarchiveOrder и manuallyUnarchivedAt в схеме).
 // ============================================================
 
-export async function getOrders(): Promise<
+// Prisma не умеет сравнивать две колонки одной строки в where, а без этого
+// сравнения (manuallyUnarchivedAt vs statusUpdatedAt) вручную возвращённый
+// заказ тут же попал бы обратно под updateMany ниже, стоит только
+// completedAt/rejectedAt остаться старше 7 дней. Поэтому кандидатов сначала
+// выбираем обычным findMany (их всегда мало — не полнотабличный скан) и
+// фильтруем в JS, и только оставшихся — одним updateMany.
+// Кандидатов на архивацию всегда мало (только COMPLETED/CANCELLED, ещё не
+// заархивированные — это и так узкий "хвост" воронки), поэтому дешевле
+// вытащить их все и прогнать через isOrderReadyForArchive (единственный
+// источник правды про порог 7 дней, order-model.ts), чем повторять расчёт
+// порога отдельно в Prisma where.
+async function archiveEligibleIds(status: 'COMPLETED' | 'CANCELLED'): Promise<string[]> {
+  const candidates = await prisma.order.findMany({
+    where: { isArchived: false, status },
+    select: { id: true, status: true, completedAt: true, rejectedAt: true, statusUpdatedAt: true, manuallyUnarchivedAt: true },
+  })
+  return candidates
+    .filter(o => isOrderReadyForArchive(o))
+    .filter(o => !o.manuallyUnarchivedAt || o.statusUpdatedAt > o.manuallyUnarchivedAt)
+    .map(o => o.id)
+}
+
+async function archiveEligibleOrders(): Promise<void> {
+  const completedIds = await archiveEligibleIds('COMPLETED')
+  if (completedIds.length > 0) {
+    await prisma.order.updateMany({
+      where: { id: { in: completedIds } },
+      data: { isArchived: true, archivedAt: new Date(), archiveReason: 'COMPLETED' },
+    })
+  }
+
+  const cancelledIds = await archiveEligibleIds('CANCELLED')
+  if (cancelledIds.length > 0) {
+    await prisma.order.updateMany({
+      where: { id: { in: cancelledIds } },
+      data: { isArchived: true, archivedAt: new Date(), archiveReason: 'REJECTED' },
+    })
+  }
+}
+
+// ============================================================
+// СПИСОК ЗАКАЗОВ — АКТИВНАЯ ВОРОНКА
+// ============================================================
+
+export async function getActiveOrders(): Promise<
   { ok: true; data: OrderDTO[] } | { ok: false; data: OrderDTO[]; error: string }
 > {
   // Обнаружено при расширении OrderDTO (зал/камеры/статус монтажа из
@@ -126,18 +190,43 @@ export async function getOrders(): Promise<
   if (!authResult.ok) return { ok: false, data: [], error: authResult.error }
 
   try {
-    // CANCELLED теперь — видимая колонка канбана "Отказы" (см. order-model.ts),
-    // поэтому больше не исключается. ARCHIVED по-прежнему скрыт — это не
-    // колонка воронки, а отдельный будущий архивный статус.
+    await archiveEligibleOrders()
+    // CANCELLED — видимая колонка канбана "Отказы" (см. order-model.ts).
+    // ARCHIVED (статус) по-прежнему исключён на всякий случай — ему никогда
+    // ничего не присваивается, но это не то же самое, что isArchived: false.
     const rows = await prisma.order.findMany({
-      where: { status: { not: 'ARCHIVED' } },
+      where: { status: { not: 'ARCHIVED' }, isArchived: false },
       orderBy: { createdAt: 'desc' },
       include: ORDER_INCLUDE,
     })
     return { ok: true, data: rows.map(toDTO) }
   } catch (e) {
-    console.error('[getOrders]', e)
+    console.error('[getActiveOrders]', e)
     return { ok: false, data: [], error: 'Не удалось загрузить заказы' }
+  }
+}
+
+// ============================================================
+// СПИСОК ЗАКАЗОВ — АРХИВ
+// ============================================================
+
+export async function getArchivedOrders(): Promise<
+  { ok: true; data: OrderDTO[] } | { ok: false; data: OrderDTO[]; error: string }
+> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, data: [], error: authResult.error }
+
+  try {
+    await archiveEligibleOrders()
+    const rows = await prisma.order.findMany({
+      where: { isArchived: true },
+      orderBy: { archivedAt: 'desc' },
+      include: ORDER_INCLUDE,
+    })
+    return { ok: true, data: rows.map(toDTO) }
+  } catch (e) {
+    console.error('[getArchivedOrders]', e)
+    return { ok: false, data: [], error: 'Не удалось загрузить архив заказов' }
   }
 }
 
@@ -353,10 +442,21 @@ export async function updateOrderStatus(
     if (!existing) return { ok: false, error: 'Заказ не найден' }
 
     const completedAt = status === 'COMPLETED' ? (existing.completedAt ?? new Date()) : existing.completedAt
+    // rejectedAt — тот же принцип, что у completedAt: выставляется один раз
+    // при первом переходе в CANCELLED, дальше не трогается.
+    const rejectedAt = status === 'CANCELLED' ? (existing.rejectedAt ?? new Date()) : existing.rejectedAt
+    // Заказ покидает финальный статус (COMPLETED/CANCELLED) — архивный оверлей
+    // больше не может быть актуален, иначе он завис бы "заархивированным" в
+    // активной колонке канбана. Для самих COMPLETED/CANCELLED isArchived не
+    // трогаем здесь вовсе — им управляет только archiveEligibleOrders
+    // (см. getActiveOrders/getArchivedOrders) и unarchiveOrder.
+    const archiveReset = archiveReasonForStatus(status) === null
+      ? { isArchived: false, archivedAt: null, archiveReason: null }
+      : {}
 
     const updated = await prisma.order.update({
       where: { id },
-      data: { status, completedAt, statusUpdatedAt: new Date() },
+      data: { status, completedAt, rejectedAt, statusUpdatedAt: new Date(), ...archiveReset },
       include: ORDER_INCLUDE,
     })
 
@@ -365,6 +465,43 @@ export async function updateOrderStatus(
   } catch (e) {
     console.error('[updateOrderStatus]', e)
     return { ok: false, error: 'Не удалось изменить статус заказа' }
+  }
+}
+
+// ============================================================
+// ВЕРНУТЬ ЗАКАЗ ИЗ АРХИВА (вручную, на случай ошибки автосвипа)
+// ============================================================
+
+export async function unarchiveOrder(
+  id: string
+): Promise<{ ok: true; data: OrderDTO } | { ok: false; error: string }> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, error: authResult.error }
+
+  try {
+    const existing = await prisma.order.findUnique({ where: { id } })
+    if (!existing) return { ok: false, error: 'Заказ не найден' }
+    if (!existing.isArchived) return { ok: false, error: 'Заказ не находится в архиве' }
+
+    // manuallyUnarchivedAt — единственное, что мешает archiveEligibleOrders
+    // тут же снова заархивировать этот же заказ на следующей загрузке страницы
+    // (см. комментарий у archiveEligibleOrders и у Order.manuallyUnarchivedAt
+    // в схеме): свип матчит только isArchived: false, но заказ статуса
+    // COMPLETED/CANCELLED старше 7 дней сам по себе всегда будет "подходить"
+    // под правило — единственное, что реально меняется после ручного
+    // возврата, это факт наличия manuallyUnarchivedAt позже statusUpdatedAt.
+    const updated = await prisma.order.update({
+      where: { id },
+      data: { isArchived: false, archivedAt: null, archiveReason: null, manuallyUnarchivedAt: new Date() },
+      include: ORDER_INCLUDE,
+    })
+
+    revalidatePath('/admin/orders')
+    revalidatePath('/admin/orders/archive')
+    return { ok: true, data: toDTO(updated) }
+  } catch (e) {
+    console.error('[unarchiveOrder]', e)
+    return { ok: false, error: 'Не удалось вернуть заказ из архива' }
   }
 }
 

@@ -1,6 +1,6 @@
-import type { OrderStatus, OrderSource, OrderPaymentStatus, PaymentMethod } from '@prisma/client'
+import type { OrderStatus, OrderSource, OrderPaymentStatus, PaymentMethod, ArchiveReason } from '@prisma/client'
 
-export type { OrderStatus, OrderSource, OrderPaymentStatus }
+export type { OrderStatus, OrderSource, OrderPaymentStatus, ArchiveReason }
 
 // ============================================================
 // ЦЕНТРАЛИЗОВАННАЯ КОНФИГУРАЦИЯ СТАТУСОВ ЗАКАЗА — единственный источник
@@ -262,4 +262,48 @@ export function computeDurationMinutes(start: string | null | undefined, end: st
   const ms = new Date(end).getTime() - new Date(start).getTime()
   if (!Number.isFinite(ms) || ms <= 0) return null
   return Math.round(ms / 60000)
+}
+
+// ============================================================
+// АРХИВ ЗАКАЗОВ — заказ остаётся в финальном статусе COMPLETED/CANCELLED
+// навсегда, isArchived лишь скрывает старую карточку из основной CRM-воронки
+// (см. Order.isArchived/archivedAt/archiveReason в схеме и getActiveOrders/
+// getArchivedOrders/archiveEligibleOrders в src/lib/actions/orders.ts —
+// единственное место, где isArchived реально проставляется). Эта функция —
+// единственный источник правды для "должен ли заказ считаться архивным по
+// правилу 7 дней"; ей не важно текущее значение isArchived в БД, только
+// статус и completedAt/rejectedAt — так тест/просмотр правила не зависит от
+// того, прошёл ли уже фактический свип (владелец, 2026-07-10).
+// ============================================================
+
+export const ORDER_ARCHIVE_AFTER_DAYS = 7
+const ARCHIVE_AFTER_MS = ORDER_ARCHIVE_AFTER_DAYS * 24 * 60 * 60 * 1000
+
+export const ARCHIVE_REASON_LABELS: Record<ArchiveReason, string> = {
+  COMPLETED: 'Завершено',
+  REJECTED:  'Отказ',
+}
+
+export interface ArchivableOrder {
+  status: OrderStatus
+  completedAt: string | Date | null
+  rejectedAt: string | Date | null
+}
+
+export function isOrderReadyForArchive(order: ArchivableOrder, now: Date = new Date()): boolean {
+  if (order.status === 'COMPLETED' && order.completedAt) {
+    return now.getTime() - new Date(order.completedAt).getTime() > ARCHIVE_AFTER_MS
+  }
+  if (order.status === 'CANCELLED' && order.rejectedAt) {
+    return now.getTime() - new Date(order.rejectedAt).getTime() > ARCHIVE_AFTER_MS
+  }
+  return false
+}
+
+// Какую archiveReason проставить заказу этого статуса при архивации — только
+// для COMPLETED/CANCELLED, для остальных архивация не имеет смысла.
+export function archiveReasonForStatus(status: OrderStatus): ArchiveReason | null {
+  if (status === 'COMPLETED') return 'COMPLETED'
+  if (status === 'CANCELLED') return 'REJECTED'
+  return null
 }

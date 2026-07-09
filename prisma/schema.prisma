@@ -108,6 +108,15 @@ enum OrderStatus {
   ARCHIVED
 }
 
+// Почему заказ попал в архив (см. Order.isArchived) — не путать с самим
+// OrderStatus.ARCHIVED (тот статус существовал и раньше, но никогда никому не
+// присваивается: архивация в этой фиче — отдельный boolean-оверлей поверх
+// финального статуса COMPLETED/CANCELLED, а не смена статуса на третий).
+enum ArchiveReason {
+  COMPLETED
+  REJECTED
+}
+
 enum OrderSource {
   MANUAL
   GOOGLE_CALENDAR
@@ -468,11 +477,29 @@ model Order {
   createdAt         DateTime           @default(now()) @map("created_at")
   updatedAt         DateTime           @updatedAt      @map("updated_at")
   completedAt       DateTime?          @map("completed_at")
+  // Момент перевода в CANCELLED ("Отказ") — тот же принцип, что у completedAt
+  // выше: выставляется один раз в updateOrderStatus и больше не трогается,
+  // даже если заказ потом вернули из "Отказа" в другой статус.
+  rejectedAt        DateTime?          @map("rejected_at")
   // Момент последней смены status (не путать с updatedAt — тот меняется при
   // любом редактировании заказа). Используется для сортировки карточек внутри
   // колонок канбана "по недавности изменения статуса". Обновляется явно в
   // updateOrderStatus/updateOrder — см. src/lib/actions/orders.ts.
   statusUpdatedAt   DateTime           @default(now()) @map("status_updated_at")
+  // ---- Архив (см. src/lib/order-model.ts: isOrderReadyForArchive,
+  // ORDER_ARCHIVE_AFTER_DAYS) — статус COMPLETED/CANCELLED остаётся финальным
+  // навсегда, isArchived лишь скрывает старую (>7 дней) карточку из основной
+  // CRM-воронки в отдельный экран. Не путать со старым OrderStatus.ARCHIVED,
+  // которому никогда ничего не присваивается.
+  isArchived        Boolean            @default(false) @map("is_archived")
+  archivedAt        DateTime?          @map("archived_at")
+  archiveReason     ArchiveReason?     @map("archive_reason")
+  // Момент ручного "Вернуть из архива" — пока он позже statusUpdatedAt,
+  // автосвип (archiveEligibleOrders) не трогает заказ повторно, даже если
+  // completedAt/rejectedAt всё ещё старше 7 дней. Как только статус реально
+  // меняется ещё раз, statusUpdatedAt обгоняет эту метку и заказ снова
+  // становится кандидатом на архивацию по обычному правилу.
+  manuallyUnarchivedAt DateTime?       @map("manually_unarchived_at")
   // Telegram-диалог, из переписки которого создан заказ (кнопка "Создать
   // заказ из переписки") — тот же принцип, что и googleEventId выше: поле,
   // отслеживающее источник, живёт на Order, а не на самом источнике.
@@ -484,6 +511,7 @@ model Order {
 
   @@index([clientId])
   @@index([status])
+  @@index([isArchived])
   @@map("cms_order")
 }
 

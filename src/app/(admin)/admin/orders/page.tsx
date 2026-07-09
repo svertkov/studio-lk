@@ -1,8 +1,8 @@
-import { getOrders } from '@/lib/actions/orders'
+import { getActiveOrders } from '@/lib/actions/orders'
 import OrdersBoard from './OrdersBoard'
 
 export default async function OrdersPage() {
-  const result = await getOrders()
+  const result = await getActiveOrders()
 
   return (
     <div className="p-8 space-y-6">

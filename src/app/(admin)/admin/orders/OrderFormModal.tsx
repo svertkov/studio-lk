@@ -3,11 +3,11 @@
 import { useState, type ReactNode, type SelectHTMLAttributes } from 'react'
 import Link from 'next/link'
 import { format, parseISO } from 'date-fns'
-import { Search, Link2, UserPlus, ChevronDown } from 'lucide-react'
+import { Search, Link2, UserPlus, ChevronDown, ArchiveRestore } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { createOrder, updateOrder, updateOrderStatus, type OrderDTO, type OrderInput } from '@/lib/actions/orders'
+import { createOrder, updateOrder, updateOrderStatus, unarchiveOrder, type OrderDTO, type OrderInput } from '@/lib/actions/orders'
 import { getClients } from '@/lib/actions/clients'
-import { ORDER_BOARD_COLUMNS, ORDER_STATUS_LABELS, ORDER_PAYMENT_STATUS_LABELS, ORDER_PAYMENT_METHOD_LABELS } from '@/lib/order-model'
+import { ORDER_BOARD_COLUMNS, ORDER_STATUS_LABELS, ORDER_PAYMENT_STATUS_LABELS, ORDER_PAYMENT_METHOD_LABELS, ARCHIVE_REASON_LABELS } from '@/lib/order-model'
 import { CLIENT_TYPE_LABELS } from '@/lib/client-model'
 import { ROOM_DICTIONARY, FORMAT_DICTIONARY } from '@/lib/import/normalize'
 import type { ClientType, OrderStatus, OrderPaymentStatus, PaymentMethod } from '@prisma/client'
@@ -119,6 +119,18 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
 
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [unarchiving, setUnarchiving] = useState(false)
+
+  async function handleUnarchive() {
+    if (!order) return
+    setUnarchiving(true)
+    setError(null)
+    const result = await unarchiveOrder(order.id)
+    setUnarchiving(false)
+    if (!result.ok) { setError(result.error); return }
+    onSaved()
+    onOpenChange(false)
+  }
 
   async function handleClientSearch(value: string) {
     setSearchQuery(value)
@@ -199,6 +211,22 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
             <DialogTitle className="text-white text-lg font-semibold">
               {isEdit ? 'Заказ' : 'Новый заказ'}
             </DialogTitle>
+            {order?.isArchived && (
+              <div className="flex items-center gap-1.5 pt-1">
+                <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-zinc-800 border border-zinc-700 text-zinc-400">
+                  В архиве
+                </span>
+                {order.archiveReason && (
+                  <span className={`text-[11px] font-medium px-2 py-0.5 rounded-full ${
+                    order.archiveReason === 'COMPLETED'
+                      ? 'bg-green-950/40 border border-green-800 text-green-400'
+                      : 'bg-red-950/40 border border-red-900 text-red-300'
+                  }`}>
+                    {ARCHIVE_REASON_LABELS[order.archiveReason]}
+                  </span>
+                )}
+              </div>
+            )}
           </DialogHeader>
 
           <div className="flex-1 overflow-y-auto px-6 py-4 space-y-3">
@@ -374,6 +402,13 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
           </div>
 
           <div className="flex items-center gap-3 px-6 py-4 border-t border-zinc-800 flex-shrink-0">
+            {order?.isArchived && (
+              <button type="button" onClick={handleUnarchive} disabled={unarchiving}
+                className="flex items-center gap-1.5 flex-shrink-0 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-semibold text-sm px-3.5 py-2.5 rounded-lg transition-colors">
+                <ArchiveRestore className="w-4 h-4" />
+                {unarchiving ? 'Возвращаем...' : 'Вернуть из архива'}
+              </button>
+            )}
             <button type="button" onClick={handleSave} disabled={saving}
               className="flex-1 bg-[#00c26b] hover:bg-[#00b360] disabled:opacity-50 text-white font-semibold text-sm py-2.5 rounded-lg transition-colors">
               {saving ? 'Сохранение...' : 'Сохранить'}
