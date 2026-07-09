@@ -2,17 +2,20 @@
 
 import { useMemo, useState } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { format, parseISO } from 'date-fns'
 import { ru } from 'date-fns/locale'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
 import { ArrowUp, ArrowDown, ArrowUpDown, AlertTriangle, ExternalLink } from 'lucide-react'
 import type { SubscriptionRow } from '@/lib/actions/finance'
-import { SUBSCRIPTION_STATUS_LABELS, SUBSCRIPTION_STATUS_COLORS } from '@/lib/subscription-model'
+import {
+  SUBSCRIPTION_DISPLAY_STATUS_LABELS, SUBSCRIPTION_DISPLAY_STATUS_COLORS, SUBSCRIPTION_LOW_HOURS_THRESHOLD,
+  getSubscriptionDisplayStatus, type SubscriptionDisplayStatus,
+} from '@/lib/subscription-model'
 import MetricCard, { METRIC_GRID_CLASSNAME } from '@/components/ui/metric-card'
+import SubscriptionActionsMenu from '@/components/subscriptions/SubscriptionActionsMenu'
 import SubscriptionDetailModal from './SubscriptionDetailModal'
-
-const LOW_HOURS_THRESHOLD = 2
 
 type SortKey = 'client' | 'purchasedAt' | 'packageHours' | 'paidAmount' | 'usedHours' | 'remainingHours' | 'status'
 const TEXT_SORT_KEYS: SortKey[] = ['client', 'status']
@@ -27,6 +30,22 @@ const COLUMNS: { key: SortKey; label: string }[] = [
   { key: 'status', label: 'Статус' },
 ]
 
+// 'ALL' — единственная вкладка, где архивные абонементы намеренно скрыты по
+// умолчанию (см. ТЗ: "архивные можно скрывать по умолчанию, но показывать
+// через фильтр «Архив»"). Остальные вкладки — непересекающиеся разделы по
+// getSubscriptionDisplayStatus, плюс отдельная 'ARCHIVED' по isArchived.
+type Tab = 'ALL' | SubscriptionDisplayStatus
+
+const TABS: { value: Tab; label: string }[] = [
+  { value: 'ALL',       label: 'Все' },
+  { value: 'ACTIVE',    label: 'Активные' },
+  { value: 'LOW',       label: 'Заканчиваются' },
+  { value: 'USED_UP',   label: 'Использованные' },
+  { value: 'CANCELLED', label: 'Аннулированные' },
+  { value: 'REFUNDED',  label: 'Возвраты' },
+  { value: 'ARCHIVED',  label: 'Архив' },
+]
+
 function formatMoney(v: number | null) {
   if (v == null) return '—'
   return new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB', maximumFractionDigits: 0 }).format(v)
@@ -38,7 +57,8 @@ function formatHours(v: number) {
 
 interface Props {
   summary: {
-    activeCount: number; usedUpCount: number; cancelledCount: number; totalCount: number
+    activeCount: number; usedUpCount: number; cancelledCount: number; refundedCount: number; archivedCount: number
+    totalCount: number
     hoursSoldTotal: number; hoursUsedTotal: number; hoursRemainingTotal: number
     paidTotal: number; avgRemainingActive: number | null
   }
@@ -47,15 +67,29 @@ interface Props {
 }
 
 export default function SubscriptionsAnalyticsView({ summary, rows, initialLowOnly }: Props) {
-  const [lowOnly, setLowOnly] = useState(initialLowOnly)
+  const router = useRouter()
+  const [tab, setTab] = useState<Tab>(initialLowOnly ? 'LOW' : 'ALL')
   const [sortKey, setSortKey] = useState<SortKey>('purchasedAt')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
   const [selected, setSelected] = useState<SubscriptionRow | null>(null)
 
-  const lowRows = useMemo(
-    () => rows.filter(r => r.status === 'ACTIVE' && r.remainingHours <= LOW_HOURS_THRESHOLD),
-    [rows],
-  )
+  const displayStatusOf = (r: SubscriptionRow) =>
+    getSubscriptionDisplayStatus({ status: r.status, isArchived: r.isArchived, remainingHours: r.remainingHours })
+
+  const lowRows = useMemo(() => rows.filter(r => displayStatusOf(r) === 'LOW'), [rows])
+
+  const tabCounts = useMemo(() => {
+    const nonArchived = rows.filter(r => !r.isArchived)
+    return {
+      ALL: nonArchived.length,
+      ACTIVE: nonArchived.filter(r => displayStatusOf(r) === 'ACTIVE').length,
+      LOW: lowRows.length,
+      USED_UP: rows.filter(r => r.status === 'USED_UP').length,
+      CANCELLED: rows.filter(r => r.status === 'CANCELLED').length,
+      REFUNDED: rows.filter(r => r.status === 'REFUNDED').length,
+      ARCHIVED: rows.filter(r => r.isArchived).length,
+    }
+  }, [rows, lowRows])
 
   function toggleSort(key: SortKey) {
     if (key === sortKey) {
@@ -66,7 +100,11 @@ export default function SubscriptionsAnalyticsView({ summary, rows, initialLowOn
     }
   }
 
-  const visibleRows = lowOnly ? lowRows : rows
+  const visibleRows = useMemo(() => {
+    if (tab === 'ALL') return rows.filter(r => !r.isArchived)
+    if (tab === 'ARCHIVED') return rows.filter(r => r.isArchived)
+    return rows.filter(r => displayStatusOf(r) === tab)
+  }, [rows, tab])
 
   const sorted = useMemo(() => {
     const copy = [...visibleRows]
@@ -102,38 +140,40 @@ export default function SubscriptionsAnalyticsView({ summary, rows, initialLowOn
         />
       </div>
 
-      {lowRows.length > 0 && (
+      {lowRows.length > 0 && tab !== 'LOW' && (
         <div className="border border-amber-600/50 bg-amber-950/20 rounded-xl overflow-hidden">
           <button
-            onClick={() => setLowOnly(v => !v)}
+            onClick={() => setTab('LOW')}
             className="w-full px-5 py-3.5 flex items-center gap-2.5 text-left hover:bg-amber-950/30 transition-colors"
           >
             <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0" />
             <span className="text-amber-200 text-sm">
-              {lowRows.length} {lowRows.length === 1 ? 'абонемент заканчивается' : 'абонемента(ов) заканчиваются'} (осталось ≤ {LOW_HOURS_THRESHOLD} ч)
+              {lowRows.length} {lowRows.length === 1 ? 'абонемент заканчивается' : 'абонемента(ов) заканчиваются'} (осталось ≤ {SUBSCRIPTION_LOW_HOURS_THRESHOLD} ч)
             </span>
-            <span className="ml-auto text-amber-400/70 text-xs underline flex-shrink-0">
-              {lowOnly ? 'показать все' : 'показать только их'}
-            </span>
+            <span className="ml-auto text-amber-400/70 text-xs underline flex-shrink-0">показать</span>
           </button>
         </div>
       )}
 
-      <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
-        <div className="px-5 py-3.5 border-b border-zinc-800 flex items-center justify-between">
-          <h3 className="text-white font-semibold text-sm">
-            {lowOnly ? 'Заканчивающиеся абонементы' : 'Все абонементы'}
-          </h3>
-          {lowOnly && (
-            <button onClick={() => setLowOnly(false)} className="text-zinc-500 hover:text-zinc-300 text-xs underline">
-              Сбросить фильтр
-            </button>
-          )}
-        </div>
+      <div className="flex items-center gap-1.5 bg-zinc-900 border border-zinc-800 rounded-lg p-1 overflow-x-auto">
+        {TABS.map(t => (
+          <button
+            key={t.value}
+            type="button"
+            onClick={() => setTab(t.value)}
+            className={`px-3.5 py-1.5 rounded-md text-sm font-medium transition-colors whitespace-nowrap ${
+              tab === t.value ? 'bg-zinc-700 text-white' : 'text-zinc-400 hover:text-zinc-200'
+            }`}
+          >
+            {t.label} <span className="text-zinc-500">· {tabCounts[t.value]}</span>
+          </button>
+        ))}
+      </div>
 
+      <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
         {sorted.length === 0 ? (
           <div className="p-12 text-center">
-            <p className="text-zinc-400 text-sm">Абонементов пока нет</p>
+            <p className="text-zinc-400 text-sm">Абонементов по этому фильтру нет</p>
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -159,33 +199,41 @@ export default function SubscriptionsAnalyticsView({ summary, rows, initialLowOn
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {sorted.map(r => (
-                  <TableRow key={r.id} onClick={() => setSelected(r)} className="border-zinc-800 hover:bg-zinc-800/50 cursor-pointer">
-                    <TableCell className="text-zinc-100">{r.clientName}</TableCell>
-                    <TableCell className="text-zinc-400 whitespace-nowrap">
-                      {format(parseISO(r.purchasedAt), 'd MMM yyyy', { locale: ru })}
-                    </TableCell>
-                    <TableCell className="text-zinc-400">{formatHours(r.packageHours)} ч</TableCell>
-                    <TableCell className="text-zinc-300">{formatMoney(r.paidAmount)}</TableCell>
-                    <TableCell className="text-zinc-400">{formatHours(r.usedHours)} ч</TableCell>
-                    <TableCell className="text-white font-medium">{formatHours(r.remainingHours)} ч</TableCell>
-                    <TableCell>
-                      <Badge variant="outline" className={`text-xs ${SUBSCRIPTION_STATUS_COLORS[r.status]}`}>
-                        {SUBSCRIPTION_STATUS_LABELS[r.status]}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>
-                      <Link
-                        href={`/admin/clients/${r.clientId}`}
-                        onClick={e => e.stopPropagation()}
-                        className="flex items-center justify-center w-7 h-7 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-white transition-colors"
-                        title="Открыть клиента"
-                      >
-                        <ExternalLink className="w-3.5 h-3.5" />
-                      </Link>
-                    </TableCell>
-                  </TableRow>
-                ))}
+                {sorted.map(r => {
+                  const displayStatus = displayStatusOf(r)
+                  return (
+                    <TableRow key={r.id} onClick={() => setSelected(r)} className="border-zinc-800 hover:bg-zinc-800/50 cursor-pointer">
+                      <TableCell className="text-zinc-100">{r.clientName}</TableCell>
+                      <TableCell className="text-zinc-400 whitespace-nowrap">
+                        {format(parseISO(r.purchasedAt), 'd MMM yyyy', { locale: ru })}
+                      </TableCell>
+                      <TableCell className="text-zinc-400">{formatHours(r.packageHours)} ч</TableCell>
+                      <TableCell className="text-zinc-300">{formatMoney(r.paidAmount)}</TableCell>
+                      <TableCell className="text-zinc-400">{formatHours(r.usedHours)} ч</TableCell>
+                      <TableCell className="text-white font-medium">{formatHours(r.remainingHours)} ч</TableCell>
+                      <TableCell>
+                        <Badge variant="outline" className={`text-xs whitespace-nowrap ${SUBSCRIPTION_DISPLAY_STATUS_COLORS[displayStatus]}`}>
+                          {SUBSCRIPTION_DISPLAY_STATUS_LABELS[displayStatus]}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-1.5 justify-end">
+                          <Link
+                            href={`/admin/clients/${r.clientId}`}
+                            onClick={e => e.stopPropagation()}
+                            className="flex items-center justify-center w-7 h-7 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-white transition-colors flex-shrink-0"
+                            title="Открыть клиента"
+                          >
+                            <ExternalLink className="w-3.5 h-3.5" />
+                          </Link>
+                          <div onClick={e => e.stopPropagation()}>
+                            <SubscriptionActionsMenu subscription={r} onChanged={() => router.refresh()} />
+                          </div>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  )
+                })}
               </TableBody>
             </Table>
           </div>
@@ -193,7 +241,11 @@ export default function SubscriptionsAnalyticsView({ summary, rows, initialLowOn
       </div>
 
       {selected && (
-        <SubscriptionDetailModal subscription={selected} onOpenChange={open => { if (!open) setSelected(null) }} />
+        <SubscriptionDetailModal
+          subscription={selected}
+          onOpenChange={open => { if (!open) setSelected(null) }}
+          onChanged={() => router.refresh()}
+        />
       )}
     </div>
   )

@@ -2,6 +2,8 @@
 
 import { prisma } from '@/lib/prisma'
 import { computeVisitStats, type VisitStats } from '@/lib/visit-stats'
+import type { SubscriptionStatus } from '@prisma/client'
+import { SUBSCRIPTION_LOW_HOURS_THRESHOLD, displayRemainingHours } from '@/lib/subscription-model'
 
 // ============================================================
 // СВОДКА ПО ВЫРУЧКЕ (управленческая, не бухгалтерская)
@@ -39,15 +41,17 @@ export interface SubscriptionsSummary {
   soonToExpireCount: number // осталось ≤ 2 часов — стоит предупредить клиента заранее
 }
 
-const LOW_HOURS_THRESHOLD = 2
-
 export async function getSubscriptionsSummary(): Promise<
   { ok: true; data: SubscriptionsSummary } | { ok: false; data: SubscriptionsSummary; error: string }
 > {
   const empty: SubscriptionsSummary = { activeCount: 0, remainingHoursTotal: 0, soonToExpireCount: 0 }
   try {
+    // isArchived: false — заархивированный ACTIVE-абонемент (архивация не
+    // трогает status, см. subscription-model.ts) не должен ни считаться в
+    // сводке, ни триггерить предупреждение "скоро закончится": он уже скрыт
+    // из активных списков, к нему нет смысла привлекать внимание.
     const rows = await prisma.clientSubscription.findMany({
-      where: { status: 'ACTIVE' },
+      where: { status: 'ACTIVE', isArchived: false },
       include: { usages: true },
     })
 
@@ -57,7 +61,7 @@ export async function getSubscriptionsSummary(): Promise<
       const used = row.openingUsedHours + row.usages.reduce((sum, u) => sum + u.usedHours, 0)
       const remaining = row.packageHours - used
       remainingHoursTotal += remaining
-      if (remaining <= LOW_HOURS_THRESHOLD) soonToExpireCount++
+      if (remaining <= SUBSCRIPTION_LOW_HOURS_THRESHOLD) soonToExpireCount++
     }
 
     return { ok: true, data: { activeCount: rows.length, remainingHoursTotal, soonToExpireCount } }
@@ -147,7 +151,17 @@ export interface SubscriptionRow {
   packageHours: number
   paidAmount: number | null
   purchasedAt: string
-  status: 'ACTIVE' | 'USED_UP' | 'CANCELLED'
+  status: SubscriptionStatus
+  statusUpdatedAt: string
+  usedAt: string | null
+  cancelledAt: string | null
+  refundedAt: string | null
+  cancellationReason: string | null
+  refundAmount: number | null
+  refundReason: string | null
+  adminComment: string | null
+  isArchived: boolean
+  archivedAt: string | null
   usedHours: number
   remainingHours: number
   usagesCount: number
@@ -170,7 +184,10 @@ export async function getAllSubscriptions(): Promise<
 
 function toSubscriptionRow(r: {
   id: string; clientId: string; packageHours: number; openingUsedHours: number; paidAmount: number | null
-  purchasedAt: Date; status: 'ACTIVE' | 'USED_UP' | 'CANCELLED'
+  purchasedAt: Date; status: SubscriptionStatus; statusUpdatedAt: Date
+  usedAt: Date | null; cancelledAt: Date | null; refundedAt: Date | null
+  cancellationReason: string | null; refundAmount: number | null; refundReason: string | null
+  adminComment: string | null; isArchived: boolean; archivedAt: Date | null
   usages: { usedHours: number }[]; client: { name: string }
 }): SubscriptionRow {
   const usedHours = r.openingUsedHours + r.usages.reduce((sum, u) => sum + u.usedHours, 0)
@@ -182,8 +199,18 @@ function toSubscriptionRow(r: {
     paidAmount: r.paidAmount,
     purchasedAt: r.purchasedAt.toISOString(),
     status: r.status,
+    statusUpdatedAt: r.statusUpdatedAt.toISOString(),
+    usedAt: r.usedAt ? r.usedAt.toISOString() : null,
+    cancelledAt: r.cancelledAt ? r.cancelledAt.toISOString() : null,
+    refundedAt: r.refundedAt ? r.refundedAt.toISOString() : null,
+    cancellationReason: r.cancellationReason,
+    refundAmount: r.refundAmount,
+    refundReason: r.refundReason,
+    adminComment: r.adminComment,
+    isArchived: r.isArchived,
+    archivedAt: r.archivedAt ? r.archivedAt.toISOString() : null,
     usedHours,
-    remainingHours: r.packageHours - usedHours,
+    remainingHours: displayRemainingHours(r.status, r.packageHours - usedHours),
     usagesCount: r.usages.length,
   }
 }
@@ -194,13 +221,15 @@ function toSubscriptionRow(r: {
 // ============================================================
 
 export interface SubscriptionsAnalytics {
-  activeCount: number
+  activeCount: number // ACTIVE и не в архиве — реально доступные для выбора
   usedUpCount: number
   cancelledCount: number
+  refundedCount: number
+  archivedCount: number // isArchived, независимо от status
   totalCount: number
   hoursSoldTotal: number
   hoursUsedTotal: number
-  hoursRemainingTotal: number // только у активных
+  hoursRemainingTotal: number // только у активных (не архивных)
   paidTotal: number
   avgRemainingActive: number | null
 }
@@ -210,7 +239,7 @@ export async function getSubscriptionsAnalytics(): Promise<
   | { ok: false; data: { summary: SubscriptionsAnalytics; rows: SubscriptionRow[] }; error: string }
 > {
   const emptySummary: SubscriptionsAnalytics = {
-    activeCount: 0, usedUpCount: 0, cancelledCount: 0, totalCount: 0,
+    activeCount: 0, usedUpCount: 0, cancelledCount: 0, refundedCount: 0, archivedCount: 0, totalCount: 0,
     hoursSoldTotal: 0, hoursUsedTotal: 0, hoursRemainingTotal: 0, paidTotal: 0, avgRemainingActive: null,
   }
   try {
@@ -220,11 +249,13 @@ export async function getSubscriptionsAnalytics(): Promise<
     })
     const rows = rawRows.map(toSubscriptionRow)
 
-    const activeRows = rows.filter(r => r.status === 'ACTIVE')
+    const activeRows = rows.filter(r => r.status === 'ACTIVE' && !r.isArchived)
     const summary: SubscriptionsAnalytics = {
       activeCount: activeRows.length,
       usedUpCount: rows.filter(r => r.status === 'USED_UP').length,
       cancelledCount: rows.filter(r => r.status === 'CANCELLED').length,
+      refundedCount: rows.filter(r => r.status === 'REFUNDED').length,
+      archivedCount: rows.filter(r => r.isArchived).length,
       totalCount: rows.length,
       hoursSoldTotal: rows.reduce((sum, r) => sum + r.packageHours, 0),
       hoursUsedTotal: rows.reduce((sum, r) => sum + r.usedHours, 0),
@@ -263,7 +294,17 @@ export interface SubscriptionDetailDTO {
   packageHours: number
   paidAmount: number | null
   purchasedAt: string
-  status: 'ACTIVE' | 'USED_UP' | 'CANCELLED'
+  status: SubscriptionStatus
+  statusUpdatedAt: string
+  usedAt: string | null
+  cancelledAt: string | null
+  refundedAt: string | null
+  cancellationReason: string | null
+  refundAmount: number | null
+  refundReason: string | null
+  adminComment: string | null
+  isArchived: boolean
+  archivedAt: string | null
   notes: string | null
   usedHours: number
   remainingHours: number
@@ -297,9 +338,19 @@ export async function getSubscriptionDetail(id: string): Promise<
         paidAmount: row.paidAmount,
         purchasedAt: row.purchasedAt.toISOString(),
         status: row.status,
+        statusUpdatedAt: row.statusUpdatedAt.toISOString(),
+        usedAt: row.usedAt ? row.usedAt.toISOString() : null,
+        cancelledAt: row.cancelledAt ? row.cancelledAt.toISOString() : null,
+        refundedAt: row.refundedAt ? row.refundedAt.toISOString() : null,
+        cancellationReason: row.cancellationReason,
+        refundAmount: row.refundAmount,
+        refundReason: row.refundReason,
+        adminComment: row.adminComment,
+        isArchived: row.isArchived,
+        archivedAt: row.archivedAt ? row.archivedAt.toISOString() : null,
         notes: row.notes,
         usedHours,
-        remainingHours: row.packageHours - usedHours,
+        remainingHours: displayRemainingHours(row.status, row.packageHours - usedHours),
         usages: row.usages.map(u => ({
           id: u.id,
           usedHours: u.usedHours,

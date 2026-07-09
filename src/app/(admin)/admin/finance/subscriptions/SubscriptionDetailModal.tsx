@@ -8,12 +8,14 @@ import { AlertTriangle } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Badge } from '@/components/ui/badge'
 import { getSubscriptionDetail, type SubscriptionDetailDTO } from '@/lib/actions/finance'
-import { SUBSCRIPTION_STATUS_LABELS, SUBSCRIPTION_STATUS_COLORS } from '@/lib/subscription-model'
+import { SUBSCRIPTION_DISPLAY_STATUS_LABELS, SUBSCRIPTION_DISPLAY_STATUS_COLORS, getSubscriptionDisplayStatus } from '@/lib/subscription-model'
+import SubscriptionActionsMenu from '@/components/subscriptions/SubscriptionActionsMenu'
 import type { SubscriptionRow } from '@/lib/actions/finance'
 
 interface Props {
   subscription: SubscriptionRow
   onOpenChange: (open: boolean) => void
+  onChanged?: () => void
 }
 
 function formatMoney(v: number | null) {
@@ -25,11 +27,15 @@ function formatHours(v: number) {
   return v % 1 === 0 ? v.toFixed(0) : v.toFixed(1)
 }
 
+function formatDate(v: string) {
+  return format(parseISO(v), 'd MMM yyyy', { locale: ru })
+}
+
 const ROW = 'flex items-center justify-between py-2.5 border-b border-zinc-800/60 last:border-0'
 const LABEL = 'text-zinc-500 text-xs'
 const VALUE = 'text-zinc-100 text-sm text-right'
 
-export default function SubscriptionDetailModal({ subscription, onOpenChange }: Props) {
+export default function SubscriptionDetailModal({ subscription, onOpenChange, onChanged }: Props) {
   const [detail, setDetail] = useState<SubscriptionDetailDTO | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
 
@@ -44,7 +50,10 @@ export default function SubscriptionDetailModal({ subscription, onOpenChange }: 
   }, [subscription.id])
 
   const remaining = detail?.remainingHours ?? subscription.remainingHours
-  const isLow = subscription.status === 'ACTIVE' && remaining <= 2
+  const displayStatus = getSubscriptionDisplayStatus({
+    status: subscription.status, isArchived: subscription.isArchived, remainingHours: remaining,
+  })
+  const isLow = displayStatus === 'LOW'
 
   return (
     <Dialog open onOpenChange={onOpenChange}>
@@ -52,12 +61,12 @@ export default function SubscriptionDetailModal({ subscription, onOpenChange }: 
         <DialogHeader className="px-6 pt-6 pb-4 border-b border-zinc-800 flex-shrink-0">
           <div className="flex items-center justify-between gap-3">
             <DialogTitle className="text-white text-lg font-semibold">Абонемент</DialogTitle>
-            <Badge variant="outline" className={`text-xs ${SUBSCRIPTION_STATUS_COLORS[subscription.status]}`}>
-              {SUBSCRIPTION_STATUS_LABELS[subscription.status]}
+            <Badge variant="outline" className={`text-xs ${SUBSCRIPTION_DISPLAY_STATUS_COLORS[displayStatus]}`}>
+              {SUBSCRIPTION_DISPLAY_STATUS_LABELS[displayStatus]}
             </Badge>
           </div>
           <p className="text-zinc-400 text-sm">
-            {subscription.clientName} · от {format(parseISO(subscription.purchasedAt), 'd MMMM yyyy', { locale: ru })}
+            {subscription.clientName} · от {formatDate(subscription.purchasedAt)}
           </p>
         </DialogHeader>
 
@@ -79,7 +88,33 @@ export default function SubscriptionDetailModal({ subscription, onOpenChange }: 
           <div className={ROW}><span className={LABEL}>Оплачено</span><span className={VALUE}>{formatMoney(subscription.paidAmount)}</span></div>
           <div className={ROW}><span className={LABEL}>Использовано</span><span className={VALUE}>{formatHours(subscription.usedHours)} ч</span></div>
           <div className={ROW}><span className={LABEL}>Осталось</span><span className={VALUE}>{formatHours(remaining)} ч</span></div>
+          <div className={ROW}><span className={LABEL}>Статус изменён</span><span className={VALUE}>{formatDate(subscription.statusUpdatedAt)}</span></div>
 
+          {subscription.cancellationReason && (
+            <div className="pt-3">
+              <p className={`${LABEL} mb-1`}>Причина аннулирования</p>
+              <p className="text-zinc-300 text-sm whitespace-pre-wrap">{subscription.cancellationReason}</p>
+            </div>
+          )}
+          {subscription.status === 'REFUNDED' && (
+            <div className="pt-3 space-y-1">
+              {subscription.refundAmount != null && (
+                <div className={ROW}><span className={LABEL}>Сумма возврата</span><span className={VALUE}>{formatMoney(subscription.refundAmount)}</span></div>
+              )}
+              {subscription.refundReason && (
+                <div>
+                  <p className={`${LABEL} mb-1`}>Причина возврата</p>
+                  <p className="text-zinc-300 text-sm whitespace-pre-wrap">{subscription.refundReason}</p>
+                </div>
+              )}
+            </div>
+          )}
+          {subscription.adminComment && (
+            <div className="pt-3">
+              <p className={`${LABEL} mb-1`}>Комментарий администратора</p>
+              <p className="text-zinc-300 text-sm whitespace-pre-wrap">{subscription.adminComment}</p>
+            </div>
+          )}
           {detail?.notes && (
             <div className="pt-3">
               <p className={`${LABEL} mb-1`}>Заметки</p>
@@ -114,14 +149,18 @@ export default function SubscriptionDetailModal({ subscription, onOpenChange }: 
           )}
         </div>
 
-        <div className="px-6 py-4 border-t border-zinc-800 flex-shrink-0">
+        <div className="flex items-center gap-3 px-6 py-4 border-t border-zinc-800 flex-shrink-0">
           <button
             type="button"
             onClick={() => onOpenChange(false)}
-            className="w-full px-4 py-2.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-sm rounded-lg transition-colors"
+            className="flex-1 px-4 py-2.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-sm rounded-lg transition-colors"
           >
             Закрыть
           </button>
+          <SubscriptionActionsMenu
+            subscription={subscription}
+            onChanged={() => { onChanged?.(); onOpenChange(false) }}
+          />
         </div>
       </DialogContent>
     </Dialog>

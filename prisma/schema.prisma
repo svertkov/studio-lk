@@ -67,6 +67,7 @@ enum SubscriptionStatus {
   ACTIVE
   USED_UP
   CANCELLED
+  REFUNDED
 }
 
 enum EventType {
@@ -737,6 +738,29 @@ model ClientSubscription {
   paidAmount   Float?             @map("paid_amount")
   purchasedAt  DateTime           @default(now()) @map("purchased_at")
   status       SubscriptionStatus @default(ACTIVE)
+  // Момент последней смены status — параллель Order.statusUpdatedAt. Меняется
+  // и автопереходами ACTIVE⇄USED_UP (списание/возврат часов), и ручными
+  // действиями ниже — единственный источник правды здесь и там, и там —
+  // updateSubscriptionStatus/chargeEventToSubscription (src/lib/actions/subscriptions.ts).
+  statusUpdatedAt DateTime         @default(now()) @map("status_updated_at")
+  // ---- Даты переходов в каждый терминальный статус — по одному разу
+  // (сохраняются при первом переходе, дальше не трогаются даже если статус
+  // потом меняют ещё раз вручную) ----
+  usedAt       DateTime?          @map("used_at")
+  cancelledAt  DateTime?          @map("cancelled_at")
+  refundedAt   DateTime?          @map("refunded_at")
+  cancellationReason String?      @map("cancellation_reason")
+  refundAmount Float?             @map("refund_amount")
+  refundReason String?            @map("refund_reason")
+  // Комментарий администратора — не привязан к конкретному статусу, можно
+  // оставить/обновить при любом ручном действии (см. updateSubscriptionStatus).
+  adminComment String?            @map("admin_comment")
+  // ---- Архив — оверлей ПОВЕРХ status, не замена ему (тот же принцип, что у
+  // Order.isArchived): архивный абонемент сохраняет свой реальный статус
+  // (used/cancelled/refunded/даже active), просто скрыт из активных списков и
+  // недоступен для выбора в заказе. ----
+  isArchived   Boolean            @default(false) @map("is_archived")
+  archivedAt   DateTime?          @map("archived_at")
   notes        String?
   createdAt    DateTime           @default(now()) @map("created_at")
   updatedAt    DateTime           @updatedAt      @map("updated_at")
@@ -746,6 +770,7 @@ model ClientSubscription {
 
   @@index([clientId])
   @@index([status])
+  @@index([isArchived])
   @@map("cms_client_subscription")
 }
 

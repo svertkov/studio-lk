@@ -10,7 +10,7 @@ import {
 import { addClientNote } from '@/lib/actions/clients'
 import type { ClientSubscriptionDTO } from '@/lib/actions/subscriptions'
 import { getScheduleAnnotations, type ClientBookingDTO } from '@/lib/actions/schedule'
-import { SUBSCRIPTION_STATUS_LABELS, SUBSCRIPTION_STATUS_COLORS } from '@/lib/subscription-model'
+import { SUBSCRIPTION_DISPLAY_STATUS_LABELS, SUBSCRIPTION_DISPLAY_STATUS_COLORS, getSubscriptionDisplayStatus } from '@/lib/subscription-model'
 import { PAYMENT_METHOD_LABELS, mergeScheduleEvent, type ScheduleEventVM } from '@/lib/schedule-model'
 import { computeVisitStats } from '@/lib/visit-stats'
 import type { CalendarEvent } from '@/lib/google-calendar'
@@ -18,6 +18,7 @@ import DonutChart from '@/components/ui/donut-chart'
 import MetricCard, { METRIC_GRID_CLASSNAME } from '@/components/ui/metric-card'
 import MaterialsStatusBadge from '../../schedule/MaterialsStatusBadge'
 import EventCardModal from '../../schedule/EventCardModal'
+import SubscriptionActionsMenu from '@/components/subscriptions/SubscriptionActionsMenu'
 
 const CHART_COLORS = ['#00c26b', '#3b82f6', '#f59e0b', '#a855f7', '#ef4444', '#14b8a6']
 
@@ -403,7 +404,9 @@ export default function ClientTabs({ client, subscriptions, bookings }: Props) {
                   </div>
                 </div>
               )}
-              {subscriptions.map(sub => (
+              {subscriptions.map(sub => {
+                const displayStatus = getSubscriptionDisplayStatus(sub)
+                return (
                 <div key={sub.id} className="bg-zinc-900 border border-zinc-800 rounded-xl p-6">
                   <div className="flex items-start justify-between gap-4 flex-wrap">
                     <div>
@@ -413,9 +416,12 @@ export default function ClientTabs({ client, subscriptions, bookings }: Props) {
                         {sub.paidAmount != null && ` · оплачено ${formatMoney(sub.paidAmount)}`}
                       </p>
                     </div>
-                    <Badge variant="outline" className={`text-xs ${SUBSCRIPTION_STATUS_COLORS[sub.status]}`}>
-                      {SUBSCRIPTION_STATUS_LABELS[sub.status]}
-                    </Badge>
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      <Badge variant="outline" className={`text-xs ${SUBSCRIPTION_DISPLAY_STATUS_COLORS[displayStatus]}`}>
+                        {SUBSCRIPTION_DISPLAY_STATUS_LABELS[displayStatus]}
+                      </Badge>
+                      <SubscriptionActionsMenu subscription={sub} onChanged={() => router.refresh()} />
+                    </div>
                   </div>
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mt-4">
                     <div>
@@ -426,7 +432,30 @@ export default function ClientTabs({ client, subscriptions, bookings }: Props) {
                       <p className="text-zinc-500 text-xs">Осталось</p>
                       <p className="text-white font-semibold mt-0.5">{sub.remainingHours} ч</p>
                     </div>
+                    <div>
+                      <p className="text-zinc-500 text-xs">Статус изменён</p>
+                      <p className="text-white font-semibold mt-0.5">{formatDate(sub.statusUpdatedAt)}</p>
+                    </div>
                   </div>
+                  {(sub.adminComment || sub.cancellationReason || sub.status === 'REFUNDED') && (
+                    <div className="mt-4 pt-4 border-t border-zinc-800 space-y-2 text-sm">
+                      {sub.cancellationReason && (
+                        <p><span className="text-zinc-500">Причина аннулирования: </span><span className="text-zinc-300">{sub.cancellationReason}</span></p>
+                      )}
+                      {sub.status === 'REFUNDED' && (
+                        <p>
+                          <span className="text-zinc-500">Возврат: </span>
+                          <span className="text-zinc-300">
+                            {sub.refundAmount != null ? formatMoney(sub.refundAmount) : '—'}
+                            {sub.refundReason && ` · ${sub.refundReason}`}
+                          </span>
+                        </p>
+                      )}
+                      {sub.adminComment && (
+                        <p><span className="text-zinc-500">Комментарий администратора: </span><span className="text-zinc-300">{sub.adminComment}</span></p>
+                      )}
+                    </div>
+                  )}
                   {sub.usages.length > 0 && (
                     <div className="mt-4 pt-4 border-t border-zinc-800 space-y-1.5">
                       <p className="text-zinc-500 text-xs uppercase tracking-wider mb-2">История списаний</p>
@@ -439,7 +468,8 @@ export default function ClientTabs({ client, subscriptions, bookings }: Props) {
                     </div>
                   )}
                 </div>
-              ))}
+                )
+              })}
             </div>
           )
         )}

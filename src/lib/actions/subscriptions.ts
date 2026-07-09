@@ -3,20 +3,47 @@
 import { revalidatePath } from 'next/cache'
 import { prisma } from '@/lib/prisma'
 import { auth } from '@/auth'
-import type { ClientSubscription, SubscriptionStatus, SubscriptionUsage } from '@prisma/client'
+import type { ClientSubscription, SubscriptionStatus, SubscriptionUsage, Prisma } from '@prisma/client'
+import { canAutoRecomputeStatus, displayRemainingHours } from '@/lib/subscription-model'
 
 // ============================================================
 // АВТОРИЗАЦИЯ
 // ============================================================
 
-async function requireStaffSession(): Promise<{ ok: true } | { ok: false; error: string }> {
+async function requireStaffSession(): Promise<{ ok: true; userId: string | null } | { ok: false; error: string }> {
   try {
     const session = await auth()
     if (!session?.user) return { ok: false, error: 'Требуется авторизация' }
-    return { ok: true }
+    return { ok: true, userId: session.user.id ?? null }
   } catch {
     return { ok: false, error: 'Требуется авторизация' }
   }
+}
+
+async function writeAuditLog(params: { userId: string | null; action: string; entityId: string; metadata?: Record<string, unknown> }) {
+  try {
+    await prisma.auditLog.create({
+      data: {
+        userId: params.userId,
+        action: params.action,
+        entityType: 'ClientSubscription',
+        entityId: params.entityId,
+        metadata: (params.metadata ?? {}) as Prisma.InputJsonValue,
+      },
+    })
+  } catch {
+    // Не блокируем основную операцию, если лог не записался
+  }
+}
+
+// Ревалидация всех разделов, где отображается этот же абонемент — единая
+// точка, чтобы не забывать какой-то из путей при добавлении нового потребителя
+// (см. ТЗ: "не должно быть отдельных копий абонемента в разных разделах").
+function revalidateSubscriptionConsumers(clientId: string) {
+  revalidatePath(`/admin/clients/${clientId}`)
+  revalidatePath('/admin/finance/subscriptions')
+  revalidatePath('/admin/schedule')
+  revalidatePath('/admin/orders')
 }
 
 // ============================================================
@@ -41,6 +68,16 @@ export interface ClientSubscriptionDTO {
   paidAmount: number | null
   purchasedAt: string
   status: SubscriptionStatus
+  statusUpdatedAt: string
+  usedAt: string | null
+  cancelledAt: string | null
+  refundedAt: string | null
+  cancellationReason: string | null
+  refundAmount: number | null
+  refundReason: string | null
+  adminComment: string | null
+  isArchived: boolean
+  archivedAt: string | null
   notes: string | null
   usedHours: number
   remainingHours: number
@@ -56,9 +93,19 @@ function toDTO(row: SubscriptionWithUsages): ClientSubscriptionDTO {
     paidAmount: row.paidAmount,
     purchasedAt: row.purchasedAt.toISOString(),
     status: row.status,
+    statusUpdatedAt: row.statusUpdatedAt.toISOString(),
+    usedAt: row.usedAt ? row.usedAt.toISOString() : null,
+    cancelledAt: row.cancelledAt ? row.cancelledAt.toISOString() : null,
+    refundedAt: row.refundedAt ? row.refundedAt.toISOString() : null,
+    cancellationReason: row.cancellationReason,
+    refundAmount: row.refundAmount,
+    refundReason: row.refundReason,
+    adminComment: row.adminComment,
+    isArchived: row.isArchived,
+    archivedAt: row.archivedAt ? row.archivedAt.toISOString() : null,
     notes: row.notes,
     usedHours,
-    remainingHours: row.packageHours - usedHours,
+    remainingHours: displayRemainingHours(row.status, row.packageHours - usedHours),
     usages: row.usages
       .slice()
       .sort((a, b) => b.usedAt.getTime() - a.usedAt.getTime())
@@ -127,7 +174,7 @@ export async function createSubscription(
       },
       include: USAGE_INCLUDE,
     })
-    revalidatePath(`/admin/clients/${input.clientId}`)
+    revalidateSubscriptionConsumers(input.clientId)
     return { ok: true, data: toDTO(row) }
   } catch (e) {
     console.error('[createSubscription]', e)
@@ -147,8 +194,28 @@ export interface ChargeEventInput {
   usedHours: number
 }
 
-function isCancellable(status: SubscriptionStatus) {
-  return status !== 'CANCELLED'
+// Пересчёт status после изменения списаний (списание/освобождение часов) —
+// единственное место, где статус меняется АВТОМАТИЧЕСКИ, без участия
+// администратора. canAutoRecomputeStatus (subscription-model.ts) не даёт
+// этому тронуть CANCELLED/REFUNDED — они меняются только вручную через
+// updateSubscriptionStatus ниже. usedAt проставляется/очищается вместе со
+// статусом: абонемент либо "использован сейчас", либо нет.
+async function applyAutoStatus(
+  tx: Prisma.TransactionClient,
+  subscription: ClientSubscription & { usages: { usedHours: number }[] },
+): Promise<void> {
+  if (!canAutoRecomputeStatus(subscription.status)) return
+  const used = subscription.openingUsedHours + subscription.usages.reduce((sum, u) => sum + u.usedHours, 0)
+  const newStatus: SubscriptionStatus = used >= subscription.packageHours ? 'USED_UP' : 'ACTIVE'
+  if (newStatus === subscription.status) return
+  await tx.clientSubscription.update({
+    where: { id: subscription.id },
+    data: {
+      status: newStatus,
+      statusUpdatedAt: new Date(),
+      usedAt: newStatus === 'USED_UP' ? (subscription.usedAt ?? new Date()) : null,
+    },
+  })
 }
 
 export async function chargeEventToSubscription(
@@ -189,12 +256,7 @@ export async function chargeEventToSubscription(
         },
       })
 
-      if (isCancellable(subscription.status)) {
-        const newStatus: SubscriptionStatus = alreadyUsed + input.usedHours >= subscription.packageHours ? 'USED_UP' : 'ACTIVE'
-        if (newStatus !== subscription.status) {
-          await tx.clientSubscription.update({ where: { id: subscription.id }, data: { status: newStatus } })
-        }
-      }
+      await applyAutoStatus(tx, { ...subscription, usages: [...subscription.usages, { usedHours: input.usedHours }] })
 
       // Если освобождённое списание было с ДРУГОГО абонемента — пересчитать и его статус
       if (existing && existing.subscriptionId !== input.subscriptionId) {
@@ -202,13 +264,7 @@ export async function chargeEventToSubscription(
           where: { id: existing.subscriptionId },
           include: { usages: true },
         })
-        if (otherSub && isCancellable(otherSub.status)) {
-          const otherUsed = otherSub.openingUsedHours + otherSub.usages.reduce((sum, u) => sum + u.usedHours, 0)
-          const otherStatus: SubscriptionStatus = otherUsed >= otherSub.packageHours ? 'USED_UP' : 'ACTIVE'
-          if (otherStatus !== otherSub.status) {
-            await tx.clientSubscription.update({ where: { id: otherSub.id }, data: { status: otherStatus } })
-          }
-        }
+        if (otherSub) await applyAutoStatus(tx, otherSub)
       }
 
       return tx.clientSubscription.findUniqueOrThrow({
@@ -217,8 +273,7 @@ export async function chargeEventToSubscription(
       })
     })
 
-    revalidatePath(`/admin/clients/${result.clientId}`)
-    revalidatePath('/admin/schedule')
+    revalidateSubscriptionConsumers(result.clientId)
     return { ok: true, data: toDTO(result) }
   } catch (e) {
     if (e instanceof Error && e.message.startsWith('OVERSPEND:')) {
@@ -247,6 +302,7 @@ export async function removeEventSubscriptionCharge(
     const existing = await prisma.subscriptionUsage.findUnique({ where: { scheduleEventId } })
     if (!existing) return { ok: true }
 
+    let clientId: string | null = null
     await prisma.$transaction(async tx => {
       await tx.subscriptionUsage.delete({ where: { id: existing.id } })
 
@@ -254,19 +310,104 @@ export async function removeEventSubscriptionCharge(
         where: { id: existing.subscriptionId },
         include: { usages: true },
       })
-      if (sub && isCancellable(sub.status)) {
-        const used = sub.openingUsedHours + sub.usages.reduce((sum, u) => sum + u.usedHours, 0)
-        const status: SubscriptionStatus = used >= sub.packageHours ? 'USED_UP' : 'ACTIVE'
-        if (status !== sub.status) {
-          await tx.clientSubscription.update({ where: { id: sub.id }, data: { status } })
-        }
+      if (sub) {
+        clientId = sub.clientId
+        await applyAutoStatus(tx, sub)
       }
     })
 
-    revalidatePath('/admin/schedule')
+    if (clientId) revalidateSubscriptionConsumers(clientId)
+    else revalidatePath('/admin/schedule')
     return { ok: true }
   } catch (e) {
     console.error('[removeEventSubscriptionCharge]', e)
     return { ok: false, error: 'Не удалось отвязать абонемент от записи' }
+  }
+}
+
+// ============================================================
+// ЕДИНЫЙ ХЕЛПЕР ОБНОВЛЕНИЯ СТАТУСА — единственная точка входа для всех
+// ручных действий над абонементом (отметить использованным, аннулировать,
+// оформить возврат, архивировать/разархивировать, обновить комментарий).
+// Используется из Финансов, карточки клиента и карточки заказа — везде один
+// и тот же вызов, поэтому статус не может разъехаться между разделами (см.
+// ТЗ: "не нужно писать отдельные независимые функции").
+// ============================================================
+
+export interface UpdateSubscriptionStatusInput {
+  // Отсутствует — статус не меняется (например, чистое архивирование:
+  // isArchived меняется, а used/cancelled/refunded остаётся как было).
+  status?: SubscriptionStatus
+  isArchived?: boolean
+  cancellationReason?: string | null
+  refundAmount?: number | null
+  refundReason?: string | null
+  adminComment?: string | null
+}
+
+export async function updateSubscriptionStatus(
+  subscriptionId: string, input: UpdateSubscriptionStatusInput
+): Promise<{ ok: true; data: ClientSubscriptionDTO } | { ok: false; error: string }> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, error: authResult.error }
+
+  try {
+    const existing = await prisma.clientSubscription.findUnique({ where: { id: subscriptionId } })
+    if (!existing) return { ok: false, error: 'Абонемент не найден' }
+
+    const now = new Date()
+    const data: Prisma.ClientSubscriptionUpdateInput = {}
+    let auditAction = 'SUBSCRIPTION_UPDATED'
+
+    if (input.status !== undefined && input.status !== existing.status) {
+      data.status = input.status
+      data.statusUpdatedAt = now
+      if (input.status === 'USED_UP') {
+        data.usedAt = existing.usedAt ?? now
+        auditAction = 'SUBSCRIPTION_MARKED_USED'
+      } else if (input.status === 'CANCELLED') {
+        data.cancelledAt = existing.cancelledAt ?? now
+        auditAction = 'SUBSCRIPTION_CANCELLED'
+      } else if (input.status === 'REFUNDED') {
+        data.refundedAt = existing.refundedAt ?? now
+        auditAction = 'SUBSCRIPTION_REFUNDED'
+      } else if (input.status === 'ACTIVE') {
+        auditAction = 'SUBSCRIPTION_REACTIVATED'
+      }
+    }
+    if (input.cancellationReason !== undefined) data.cancellationReason = input.cancellationReason?.trim() || null
+    if (input.refundAmount !== undefined) data.refundAmount = input.refundAmount
+    if (input.refundReason !== undefined) data.refundReason = input.refundReason?.trim() || null
+    if (input.adminComment !== undefined) data.adminComment = input.adminComment?.trim() || null
+    if (input.isArchived !== undefined && input.isArchived !== existing.isArchived) {
+      data.isArchived = input.isArchived
+      data.archivedAt = input.isArchived ? now : null
+      auditAction = input.isArchived ? 'SUBSCRIPTION_ARCHIVED' : 'SUBSCRIPTION_UNARCHIVED'
+    }
+
+    if (Object.keys(data).length === 0) {
+      // Нечего менять — но всё равно вернуть актуальные данные вызывающей стороне.
+      const row = await prisma.clientSubscription.findUniqueOrThrow({ where: { id: subscriptionId }, include: USAGE_INCLUDE })
+      return { ok: true, data: toDTO(row) }
+    }
+
+    const updated = await prisma.clientSubscription.update({
+      where: { id: subscriptionId },
+      data,
+      include: USAGE_INCLUDE,
+    })
+
+    await writeAuditLog({
+      userId: authResult.userId,
+      action: auditAction,
+      entityId: subscriptionId,
+      metadata: { ...input },
+    })
+
+    revalidateSubscriptionConsumers(updated.clientId)
+    return { ok: true, data: toDTO(updated) }
+  } catch (e) {
+    console.error('[updateSubscriptionStatus]', e)
+    return { ok: false, error: 'Не удалось обновить статус абонемента' }
   }
 }

@@ -1,9 +1,14 @@
 'use client'
 
-import { forwardRef, useEffect, useImperativeHandle, useState } from 'react'
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useState } from 'react'
 import { format, parseISO } from 'date-fns'
 import { AlertTriangle } from 'lucide-react'
 import { getClientSubscriptions, type ClientSubscriptionDTO } from '@/lib/actions/subscriptions'
+import {
+  isSubscriptionSelectable, getSubscriptionDisplayStatus,
+  SUBSCRIPTION_DISPLAY_STATUS_LABELS, SUBSCRIPTION_DISPLAY_STATUS_COLORS,
+} from '@/lib/subscription-model'
+import SubscriptionActionsMenu from '@/components/subscriptions/SubscriptionActionsMenu'
 import type { ScheduleEventSubscriptionInfo } from '@/lib/schedule-model'
 
 export type SubscriptionPaymentValue =
@@ -46,6 +51,7 @@ const SubscriptionPaymentBlock = forwardRef<SubscriptionPaymentHandle, Props>(fu
   const [mode, setMode] = useState<'ONE_TIME' | 'SUBSCRIPTION'>(initialUsage ? 'SUBSCRIPTION' : 'ONE_TIME')
   const [subscriptions, setSubscriptions] = useState<ClientSubscriptionDTO[] | null>(null)
   const [creatingNew, setCreatingNew] = useState(false)
+  const [showOld, setShowOld] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(initialUsage?.subscriptionId ?? null)
   const [usedHours, setUsedHours] = useState(
     initialUsage ? initialUsage.usedHours.toString() : defaultUsedHours(eventDurationHours),
@@ -54,17 +60,22 @@ const SubscriptionPaymentBlock = forwardRef<SubscriptionPaymentHandle, Props>(fu
   const [newPaidAmount, setNewPaidAmount] = useState('')
   const [newPurchasedAt, setNewPurchasedAt] = useState(format(new Date(), 'yyyy-MM-dd'))
 
+  const fetchSubscriptions = useCallback(async () => {
+    const res = await getClientSubscriptions(clientId)
+    setSubscriptions(res.data)
+    return res.data
+  }, [clientId])
+
   useEffect(() => {
     let cancelled = false
-    getClientSubscriptions(clientId).then(res => {
+    fetchSubscriptions().then(data => {
       if (cancelled) return
-      setSubscriptions(res.data)
       // Если активных абонементов нет, НЕ переключаем форму в "создать новый"
       // автоматически — иначе достаточно нажать "Сохранить", ничего не меняя,
       // чтобы случайно купить клиенту новый абонемент по умолчанию (реальный
       // случай: старый абонемент закончился, форма молча создала лишний новый
       // на 6ч). Пользователь должен сам нажать "Создать абонемент".
-      const active = res.data.filter(s => s.status === 'ACTIVE' && s.remainingHours > 0)
+      const active = data.filter(isSubscriptionSelectable)
       if (initialUsage && active.some(s => s.id === initialUsage.subscriptionId)) {
         setSelectedId(initialUsage.subscriptionId)
       } else if (active.length > 0) {
@@ -84,7 +95,12 @@ const SubscriptionPaymentBlock = forwardRef<SubscriptionPaymentHandle, Props>(fu
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clientId])
 
-  const activeSubscriptions = (subscriptions ?? []).filter(s => s.status === 'ACTIVE' && s.remainingHours > 0)
+  const activeSubscriptions = (subscriptions ?? []).filter(isSubscriptionSelectable)
+  // "Старые" — всё, что нельзя выбрать для списания (used/cancelled/refunded/
+  // архивные), но их всё ещё можно открыть/посмотреть/вернуть из архива —
+  // см. ТЗ: "чтобы администратор видел историю и мог вручную отправить
+  // старый абонемент в архив или проверить его".
+  const oldSubscriptions = (subscriptions ?? []).filter(s => !isSubscriptionSelectable(s))
   const selected = activeSubscriptions.find(s => s.id === selectedId) ?? null
   const usedHoursNum = parseFloat(usedHours)
   const overspend = mode === 'SUBSCRIPTION' && !creatingNew && !!selected && Number.isFinite(usedHoursNum) && usedHoursNum > selected.remainingHours
@@ -136,6 +152,19 @@ const SubscriptionPaymentBlock = forwardRef<SubscriptionPaymentHandle, Props>(fu
     onModeChange(next)
   }
 
+  // После любого действия (отметить использованным/аннулировать/возврат/
+  // архив) над абонементом этого клиента — перезапросить список: тот же
+  // updateSubscriptionStatus, что и в Финансах/карточке клиента, поэтому
+  // изменение сразу видно и здесь, без отдельной логики синхронизации.
+  async function handleSubscriptionChanged() {
+    const data = await fetchSubscriptions()
+    const stillSelectable = data.find(s => s.id === selectedId && isSubscriptionSelectable(s))
+    if (!stillSelectable) {
+      const active = data.filter(isSubscriptionSelectable)
+      setSelectedId(active[0]?.id ?? null)
+    }
+  }
+
   return (
     <div className="space-y-3">
       <div className="flex gap-2">
@@ -154,16 +183,39 @@ const SubscriptionPaymentBlock = forwardRef<SubscriptionPaymentHandle, Props>(fu
           ) : (
             <>
               {!creatingNew && activeSubscriptions.length > 0 && (
-                <div>
-                  <label className={LABEL}>Абонемент</label>
-                  <select className={SELECT} value={selectedId ?? ''} onChange={e => setSelectedId(e.target.value)}>
-                    {activeSubscriptions.map((s, idx) => (
-                      <option key={s.id} value={s.id}>
-                        №{idx + 1} · от {format(parseISO(s.purchasedAt), 'dd.MM.yyyy')} · {s.packageHours} ч, осталось {s.remainingHours} ч
-                      </option>
-                    ))}
-                  </select>
-                  <button type="button" onClick={() => setCreatingNew(true)} className="text-xs text-zinc-400 hover:text-white underline mt-1.5">
+                <div className="space-y-2">
+                  <label className={LABEL}>Активные абонементы</label>
+                  {activeSubscriptions.map((s, idx) => {
+                    const displayStatus = getSubscriptionDisplayStatus(s)
+                    const isSelected = s.id === selectedId
+                    return (
+                      <div key={s.id} className={`rounded-lg border p-2.5 transition-colors ${
+                        isSelected ? 'border-[#00c26b] bg-[#00c26b]/5' : 'border-zinc-700 bg-zinc-900/40'
+                      }`}>
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="text-zinc-100 text-sm font-medium">Абонемент №{idx + 1} · {s.packageHours} ч</p>
+                            <p className="text-zinc-400 text-xs mt-0.5">
+                              Осталось: {s.remainingHours} ч · Дата покупки: {format(parseISO(s.purchasedAt), 'd MMM yyyy')}
+                            </p>
+                            <span className={`inline-block mt-1 text-[10px] font-medium px-1.5 py-0.5 rounded border ${SUBSCRIPTION_DISPLAY_STATUS_COLORS[displayStatus]}`}>
+                              {SUBSCRIPTION_DISPLAY_STATUS_LABELS[displayStatus]}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1.5 flex-shrink-0">
+                            <button type="button" onClick={() => setSelectedId(s.id)}
+                              className={`text-xs font-semibold px-2.5 py-1.5 rounded-lg transition-colors ${
+                                isSelected ? 'bg-[#00c26b] text-white' : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'
+                              }`}>
+                              {isSelected ? 'Выбран' : 'Выбрать'}
+                            </button>
+                            <SubscriptionActionsMenu subscription={s} onChanged={handleSubscriptionChanged} />
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  })}
+                  <button type="button" onClick={() => setCreatingNew(true)} className="text-xs text-zinc-400 hover:text-white underline">
                     + Создать новый абонемент
                   </button>
                 </div>
@@ -236,6 +288,35 @@ const SubscriptionPaymentBlock = forwardRef<SubscriptionPaymentHandle, Props>(fu
                     )
                   )}
                 </>
+              )}
+
+              {oldSubscriptions.length > 0 && (
+                <div className="pt-2 border-t border-zinc-700/60">
+                  <button type="button" onClick={() => setShowOld(v => !v)} className="text-xs text-zinc-400 hover:text-white underline">
+                    {showOld ? 'Скрыть старые абонементы' : `Старые абонементы (${oldSubscriptions.length})`}
+                  </button>
+                  {showOld && (
+                    <div className="space-y-2 mt-2">
+                      {oldSubscriptions.map((s, idx) => {
+                        const displayStatus = getSubscriptionDisplayStatus(s)
+                        return (
+                          <div key={s.id} className="rounded-lg border border-zinc-700/60 bg-zinc-900/30 p-2.5 flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="text-zinc-300 text-xs font-medium">Абонемент №{idx + 1} · {s.packageHours} ч</p>
+                              <p className="text-zinc-500 text-[11px] mt-0.5">
+                                Осталось: {s.remainingHours} ч · от {format(parseISO(s.purchasedAt), 'd MMM yyyy')}
+                              </p>
+                              <span className={`inline-block mt-1 text-[10px] font-medium px-1.5 py-0.5 rounded border ${SUBSCRIPTION_DISPLAY_STATUS_COLORS[displayStatus]}`}>
+                                {SUBSCRIPTION_DISPLAY_STATUS_LABELS[displayStatus]}
+                              </span>
+                            </div>
+                            <SubscriptionActionsMenu subscription={s} onChanged={handleSubscriptionChanged} />
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
               )}
             </>
           )}
