@@ -25,14 +25,17 @@ export const SUBSCRIPTION_STATUS_COLORS: Record<SubscriptionStatus, string> = {
 // ============================================================
 // "ВИЗУАЛЬНЫЙ" СТАТУС ДЛЯ БЕЙДЖА — шире, чем сырой status в БД: добавляет
 // LOW (активен, но осталось мало часов — не отдельный статус в БД, просто
-// визуальное предупреждение) и ARCHIVED (isArchived поверх любого статуса,
-// см. схему: архивация не переписывает status, только скрывает из списков).
+// визуальное предупреждение). Архив теперь НЕ схлопывает реальный статус —
+// isArchived показывается ОТДЕЛЬНЫМ доп. бейджем "В архиве" рядом с настоящим
+// статусом (владелец, 2026-07-10: "если абонемент в архиве, дополнительно
+// показывать бейдж «В архиве»" — раньше архивный абонемент терял из вида,
+// был ли он used/cancelled/refunded, теперь оба бейджа видны одновременно).
 // Единственный источник правды для того, какой бейдж/цвет показать — везде,
 // где сейчас отображается статус абонемента (Финансы, карточка клиента,
 // карточка заказа).
 // ============================================================
 
-export type SubscriptionDisplayStatus = SubscriptionStatus | 'LOW' | 'ARCHIVED'
+export type SubscriptionDisplayStatus = SubscriptionStatus | 'LOW'
 
 export interface SubscriptionStatusInput {
   status: SubscriptionStatus
@@ -41,22 +44,27 @@ export interface SubscriptionStatusInput {
 }
 
 export function getSubscriptionDisplayStatus(input: SubscriptionStatusInput): SubscriptionDisplayStatus {
-  if (input.isArchived) return 'ARCHIVED'
-  if (input.status === 'ACTIVE' && input.remainingHours <= SUBSCRIPTION_LOW_HOURS_THRESHOLD) return 'LOW'
+  // "Заканчивается" — предупреждение по смыслу актуально только для
+  // реально видимых активных абонементов; для архивных просто показываем
+  // настоящий статус (ACTIVE) без "срочности".
+  if (input.status === 'ACTIVE' && !input.isArchived && input.remainingHours <= SUBSCRIPTION_LOW_HOURS_THRESHOLD) return 'LOW'
   return input.status
 }
 
 export const SUBSCRIPTION_DISPLAY_STATUS_LABELS: Record<SubscriptionDisplayStatus, string> = {
   ...SUBSCRIPTION_STATUS_LABELS,
-  LOW:      'Заканчивается',
-  ARCHIVED: 'В архиве',
+  LOW: 'Заканчивается',
 }
 
 export const SUBSCRIPTION_DISPLAY_STATUS_COLORS: Record<SubscriptionDisplayStatus, string> = {
   ...SUBSCRIPTION_STATUS_COLORS,
-  LOW:      'border-amber-600 text-amber-400',
-  ARCHIVED: 'border-zinc-700 text-zinc-500',
+  LOW: 'border-amber-600 text-amber-400',
 }
+
+// Отдельный доп. бейдж "В архиве" — рисуется РЯДОМ с обычным статусным
+// бейджем (не вместо него), см. комментарий у getSubscriptionDisplayStatus.
+export const SUBSCRIPTION_ARCHIVED_BADGE_LABEL = 'В архиве'
+export const SUBSCRIPTION_ARCHIVED_BADGE_CLASS = 'border-zinc-700 text-zinc-500'
 
 // ============================================================
 // БИЗНЕС-ПРАВИЛА
@@ -75,6 +83,16 @@ export function isSubscriptionSelectable(input: SubscriptionStatusInput): boolea
 // трогает (см. chargeEventToSubscription/removeEventSubscriptionCharge).
 export function canAutoRecomputeStatus(status: SubscriptionStatus): boolean {
   return status === 'ACTIVE' || status === 'USED_UP'
+}
+
+// "Вернуть в активные" — безопасно только для USED_UP/CANCELLED: остаток в
+// обоих случаях просто пересчитывается из реальных SubscriptionUsage при
+// следующем списании/просмотре, ничего не искажается. Для REFUNDED сознательно
+// не предлагается — деньги уже возвращены клиенту, повторная активация означала
+// бы списывать часы с абонемента, за который студия больше не удерживает
+// оплату (см. ТЗ, Задача 5: для refunded доступно только "Отправить в архив").
+export function canReactivate(status: SubscriptionStatus): boolean {
+  return status === 'USED_UP' || status === 'CANCELLED'
 }
 
 // "Отметить использованным" (updateSubscriptionStatus) — административное

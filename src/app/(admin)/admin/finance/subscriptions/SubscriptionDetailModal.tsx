@@ -8,7 +8,11 @@ import { AlertTriangle } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Badge } from '@/components/ui/badge'
 import { getSubscriptionDetail, type SubscriptionDetailDTO } from '@/lib/actions/finance'
-import { SUBSCRIPTION_DISPLAY_STATUS_LABELS, SUBSCRIPTION_DISPLAY_STATUS_COLORS, getSubscriptionDisplayStatus } from '@/lib/subscription-model'
+import {
+  SUBSCRIPTION_DISPLAY_STATUS_LABELS, SUBSCRIPTION_DISPLAY_STATUS_COLORS,
+  SUBSCRIPTION_ARCHIVED_BADGE_LABEL, SUBSCRIPTION_ARCHIVED_BADGE_CLASS,
+  getSubscriptionDisplayStatus,
+} from '@/lib/subscription-model'
 import SubscriptionActionsMenu from '@/components/subscriptions/SubscriptionActionsMenu'
 import type { SubscriptionRow } from '@/lib/actions/finance'
 
@@ -58,14 +62,28 @@ export default function SubscriptionDetailModal({ subscription, onOpenChange, on
   return (
     <Dialog open onOpenChange={onOpenChange}>
       <DialogContent className="bg-zinc-900 border-zinc-800 text-white max-w-lg max-h-[85vh] flex flex-col p-0">
-        <DialogHeader className="px-6 pt-6 pb-4 border-b border-zinc-800 flex-shrink-0">
-          <div className="flex items-center justify-between gap-3">
-            <DialogTitle className="text-white text-lg font-semibold">Абонемент</DialogTitle>
+        {/* Управление статусом — наверху, рядом с бейджем, а не спрятано
+            внизу возле "Закрыть" (владелец, 2026-07-10: старое расположение
+            читалось как второстепенное действие). pr-8 держит ряд в стороне
+            от закрывающего "X", который DialogContent рисует поверх, всегда
+            в правом верхнем углу самого окна. */}
+        <DialogHeader className="px-6 pt-6 pb-4 border-b border-zinc-800 flex-shrink-0 pr-8">
+          <DialogTitle className="text-white text-lg font-semibold">Абонемент</DialogTitle>
+          <div className="flex items-center gap-2 flex-wrap mt-1">
             <Badge variant="outline" className={`text-xs ${SUBSCRIPTION_DISPLAY_STATUS_COLORS[displayStatus]}`}>
               {SUBSCRIPTION_DISPLAY_STATUS_LABELS[displayStatus]}
             </Badge>
+            {subscription.isArchived && (
+              <Badge variant="outline" className={`text-xs ${SUBSCRIPTION_ARCHIVED_BADGE_CLASS}`}>
+                {SUBSCRIPTION_ARCHIVED_BADGE_LABEL}
+              </Badge>
+            )}
+            <SubscriptionActionsMenu
+              subscription={subscription}
+              onChanged={() => { onChanged?.(); onOpenChange(false) }}
+            />
           </div>
-          <p className="text-zinc-400 text-sm">
+          <p className="text-zinc-400 text-sm mt-2">
             {subscription.clientName} · от {formatDate(subscription.purchasedAt)}
           </p>
         </DialogHeader>
@@ -90,7 +108,7 @@ export default function SubscriptionDetailModal({ subscription, onOpenChange, on
           <div className={ROW}><span className={LABEL}>Осталось</span><span className={VALUE}>{formatHours(remaining)} ч</span></div>
           <div className={ROW}><span className={LABEL}>Статус изменён</span><span className={VALUE}>{formatDate(subscription.statusUpdatedAt)}</span></div>
 
-          {subscription.cancellationReason && (
+          {subscription.status === 'CANCELLED' && subscription.cancellationReason && (
             <div className="pt-3">
               <p className={`${LABEL} mb-1`}>Причина аннулирования</p>
               <p className="text-zinc-300 text-sm whitespace-pre-wrap">{subscription.cancellationReason}</p>
@@ -149,18 +167,15 @@ export default function SubscriptionDetailModal({ subscription, onOpenChange, on
           )}
         </div>
 
-        <div className="flex items-center gap-3 px-6 py-4 border-t border-zinc-800 flex-shrink-0">
+        {/* Только "Закрыть" — управление статусом больше не живёт здесь. */}
+        <div className="px-6 py-4 border-t border-zinc-800 flex-shrink-0">
           <button
             type="button"
             onClick={() => onOpenChange(false)}
-            className="flex-1 px-4 py-2.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-sm rounded-lg transition-colors"
+            className="w-full px-4 py-2.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-sm rounded-lg transition-colors"
           >
             Закрыть
           </button>
-          <SubscriptionActionsMenu
-            subscription={subscription}
-            onChanged={() => { onChanged?.(); onOpenChange(false) }}
-          />
         </div>
       </DialogContent>
     </Dialog>

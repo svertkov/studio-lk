@@ -10,7 +10,11 @@ import {
 import { addClientNote } from '@/lib/actions/clients'
 import type { ClientSubscriptionDTO } from '@/lib/actions/subscriptions'
 import { getScheduleAnnotations, type ClientBookingDTO } from '@/lib/actions/schedule'
-import { SUBSCRIPTION_DISPLAY_STATUS_LABELS, SUBSCRIPTION_DISPLAY_STATUS_COLORS, getSubscriptionDisplayStatus } from '@/lib/subscription-model'
+import {
+  SUBSCRIPTION_DISPLAY_STATUS_LABELS, SUBSCRIPTION_DISPLAY_STATUS_COLORS,
+  SUBSCRIPTION_ARCHIVED_BADGE_LABEL, SUBSCRIPTION_ARCHIVED_BADGE_CLASS,
+  getSubscriptionDisplayStatus,
+} from '@/lib/subscription-model'
 import { PAYMENT_METHOD_LABELS, mergeScheduleEvent, type ScheduleEventVM } from '@/lib/schedule-model'
 import { computeVisitStats } from '@/lib/visit-stats'
 import type { CalendarEvent } from '@/lib/google-calendar'
@@ -416,10 +420,15 @@ export default function ClientTabs({ client, subscriptions, bookings }: Props) {
                         {sub.paidAmount != null && ` · оплачено ${formatMoney(sub.paidAmount)}`}
                       </p>
                     </div>
-                    <div className="flex items-center gap-2 flex-shrink-0">
+                    <div className="flex items-center gap-2 flex-shrink-0 flex-wrap justify-end">
                       <Badge variant="outline" className={`text-xs ${SUBSCRIPTION_DISPLAY_STATUS_COLORS[displayStatus]}`}>
                         {SUBSCRIPTION_DISPLAY_STATUS_LABELS[displayStatus]}
                       </Badge>
+                      {sub.isArchived && (
+                        <Badge variant="outline" className={`text-xs ${SUBSCRIPTION_ARCHIVED_BADGE_CLASS}`}>
+                          {SUBSCRIPTION_ARCHIVED_BADGE_LABEL}
+                        </Badge>
+                      )}
                       <SubscriptionActionsMenu subscription={sub} onChanged={() => router.refresh()} />
                     </div>
                   </div>
@@ -437,9 +446,9 @@ export default function ClientTabs({ client, subscriptions, bookings }: Props) {
                       <p className="text-white font-semibold mt-0.5">{formatDate(sub.statusUpdatedAt)}</p>
                     </div>
                   </div>
-                  {(sub.adminComment || sub.cancellationReason || sub.status === 'REFUNDED') && (
+                  {(sub.adminComment || (sub.status === 'CANCELLED' && sub.cancellationReason) || sub.status === 'REFUNDED') && (
                     <div className="mt-4 pt-4 border-t border-zinc-800 space-y-2 text-sm">
-                      {sub.cancellationReason && (
+                      {sub.status === 'CANCELLED' && sub.cancellationReason && (
                         <p><span className="text-zinc-500">Причина аннулирования: </span><span className="text-zinc-300">{sub.cancellationReason}</span></p>
                       )}
                       {sub.status === 'REFUNDED' && (

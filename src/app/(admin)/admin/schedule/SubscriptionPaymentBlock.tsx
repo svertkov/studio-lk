@@ -7,6 +7,7 @@ import { getClientSubscriptions, type ClientSubscriptionDTO } from '@/lib/action
 import {
   isSubscriptionSelectable, getSubscriptionDisplayStatus,
   SUBSCRIPTION_DISPLAY_STATUS_LABELS, SUBSCRIPTION_DISPLAY_STATUS_COLORS,
+  SUBSCRIPTION_ARCHIVED_BADGE_LABEL, SUBSCRIPTION_ARCHIVED_BADGE_CLASS,
 } from '@/lib/subscription-model'
 import SubscriptionActionsMenu from '@/components/subscriptions/SubscriptionActionsMenu'
 import type { ScheduleEventSubscriptionInfo } from '@/lib/schedule-model'
@@ -209,7 +210,7 @@ const SubscriptionPaymentBlock = forwardRef<SubscriptionPaymentHandle, Props>(fu
                               }`}>
                               {isSelected ? 'Выбран' : 'Выбрать'}
                             </button>
-                            <SubscriptionActionsMenu subscription={s} onChanged={handleSubscriptionChanged} />
+                            <SubscriptionActionsMenu subscription={s} onChanged={handleSubscriptionChanged} variant="compact" />
                           </div>
                         </div>
                       </div>
@@ -306,11 +307,18 @@ const SubscriptionPaymentBlock = forwardRef<SubscriptionPaymentHandle, Props>(fu
                               <p className="text-zinc-500 text-[11px] mt-0.5">
                                 Осталось: {s.remainingHours} ч · от {format(parseISO(s.purchasedAt), 'd MMM yyyy')}
                               </p>
-                              <span className={`inline-block mt-1 text-[10px] font-medium px-1.5 py-0.5 rounded border ${SUBSCRIPTION_DISPLAY_STATUS_COLORS[displayStatus]}`}>
-                                {SUBSCRIPTION_DISPLAY_STATUS_LABELS[displayStatus]}
-                              </span>
+                              <div className="flex items-center gap-1 flex-wrap mt-1">
+                                <span className={`inline-block text-[10px] font-medium px-1.5 py-0.5 rounded border ${SUBSCRIPTION_DISPLAY_STATUS_COLORS[displayStatus]}`}>
+                                  {SUBSCRIPTION_DISPLAY_STATUS_LABELS[displayStatus]}
+                                </span>
+                                {s.isArchived && (
+                                  <span className={`inline-block text-[10px] font-medium px-1.5 py-0.5 rounded border ${SUBSCRIPTION_ARCHIVED_BADGE_CLASS}`}>
+                                    {SUBSCRIPTION_ARCHIVED_BADGE_LABEL}
+                                  </span>
+                                )}
+                              </div>
                             </div>
-                            <SubscriptionActionsMenu subscription={s} onChanged={handleSubscriptionChanged} />
+                            <SubscriptionActionsMenu subscription={s} onChanged={handleSubscriptionChanged} variant="compact" />
                           </div>
                         )
                       })}

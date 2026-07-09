@@ -11,6 +11,7 @@ import { ArrowUp, ArrowDown, ArrowUpDown, AlertTriangle, ExternalLink } from 'lu
 import type { SubscriptionRow } from '@/lib/actions/finance'
 import {
   SUBSCRIPTION_DISPLAY_STATUS_LABELS, SUBSCRIPTION_DISPLAY_STATUS_COLORS, SUBSCRIPTION_LOW_HOURS_THRESHOLD,
+  SUBSCRIPTION_ARCHIVED_BADGE_LABEL, SUBSCRIPTION_ARCHIVED_BADGE_CLASS,
   getSubscriptionDisplayStatus, type SubscriptionDisplayStatus,
 } from '@/lib/subscription-model'
 import MetricCard, { METRIC_GRID_CLASSNAME } from '@/components/ui/metric-card'
@@ -30,11 +31,11 @@ const COLUMNS: { key: SortKey; label: string }[] = [
   { key: 'status', label: 'Статус' },
 ]
 
-// 'ALL' — единственная вкладка, где архивные абонементы намеренно скрыты по
-// умолчанию (см. ТЗ: "архивные можно скрывать по умолчанию, но показывать
-// через фильтр «Архив»"). Остальные вкладки — непересекающиеся разделы по
-// getSubscriptionDisplayStatus, плюс отдельная 'ARCHIVED' по isArchived.
-type Tab = 'ALL' | SubscriptionDisplayStatus
+// 'ALL' и 'ARCHIVED' — не значения SubscriptionDisplayStatus (тот описывает
+// только бейдж), а отдельные вкладочные срезы: 'ALL' — всё, кроме архивных
+// (архивные скрыты по умолчанию, см. ТЗ, показываются только через вкладку
+// «Архив»), 'ARCHIVED' — только isArchived, независимо от их статуса.
+type Tab = 'ALL' | 'ARCHIVED' | SubscriptionDisplayStatus
 
 const TABS: { value: Tab; label: string }[] = [
   { value: 'ALL',       label: 'Все' },
@@ -78,15 +79,19 @@ export default function SubscriptionsAnalyticsView({ summary, rows, initialLowOn
 
   const lowRows = useMemo(() => rows.filter(r => displayStatusOf(r) === 'LOW'), [rows])
 
+  // Все вкладки, кроме 'ARCHIVED' (и 'ALL', который сам исключает архивные),
+  // считаются только по неархивным строкам — иначе архивный, например,
+  // аннулированный абонемент утекал бы одновременно и во вкладку
+  // «Аннулированные», и в «Архив», путая счётчики.
   const tabCounts = useMemo(() => {
     const nonArchived = rows.filter(r => !r.isArchived)
     return {
       ALL: nonArchived.length,
       ACTIVE: nonArchived.filter(r => displayStatusOf(r) === 'ACTIVE').length,
       LOW: lowRows.length,
-      USED_UP: rows.filter(r => r.status === 'USED_UP').length,
-      CANCELLED: rows.filter(r => r.status === 'CANCELLED').length,
-      REFUNDED: rows.filter(r => r.status === 'REFUNDED').length,
+      USED_UP: nonArchived.filter(r => r.status === 'USED_UP').length,
+      CANCELLED: nonArchived.filter(r => r.status === 'CANCELLED').length,
+      REFUNDED: nonArchived.filter(r => r.status === 'REFUNDED').length,
       ARCHIVED: rows.filter(r => r.isArchived).length,
     }
   }, [rows, lowRows])
@@ -101,9 +106,10 @@ export default function SubscriptionsAnalyticsView({ summary, rows, initialLowOn
   }
 
   const visibleRows = useMemo(() => {
-    if (tab === 'ALL') return rows.filter(r => !r.isArchived)
     if (tab === 'ARCHIVED') return rows.filter(r => r.isArchived)
-    return rows.filter(r => displayStatusOf(r) === tab)
+    const nonArchived = rows.filter(r => !r.isArchived)
+    if (tab === 'ALL') return nonArchived
+    return nonArchived.filter(r => displayStatusOf(r) === tab)
   }, [rows, tab])
 
   const sorted = useMemo(() => {
@@ -212,12 +218,20 @@ export default function SubscriptionsAnalyticsView({ summary, rows, initialLowOn
                       <TableCell className="text-zinc-400">{formatHours(r.usedHours)} ч</TableCell>
                       <TableCell className="text-white font-medium">{formatHours(r.remainingHours)} ч</TableCell>
                       <TableCell>
-                        <Badge variant="outline" className={`text-xs whitespace-nowrap ${SUBSCRIPTION_DISPLAY_STATUS_COLORS[displayStatus]}`}>
-                          {SUBSCRIPTION_DISPLAY_STATUS_LABELS[displayStatus]}
-                        </Badge>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <Badge variant="outline" className={`text-xs whitespace-nowrap ${SUBSCRIPTION_DISPLAY_STATUS_COLORS[displayStatus]}`}>
+                            {SUBSCRIPTION_DISPLAY_STATUS_LABELS[displayStatus]}
+                          </Badge>
+                          {r.isArchived && (
+                            <Badge variant="outline" className={`text-xs whitespace-nowrap ${SUBSCRIPTION_ARCHIVED_BADGE_CLASS}`}>
+                              {SUBSCRIPTION_ARCHIVED_BADGE_LABEL}
+                            </Badge>
+                          )}
+                        </div>
                       </TableCell>
                       <TableCell>
                         <div className="flex items-center gap-1.5 justify-end">
+                          <SubscriptionActionsMenu subscription={r} onChanged={() => router.refresh()} variant="compact" />
                           <Link
                             href={`/admin/clients/${r.clientId}`}
                             onClick={e => e.stopPropagation()}
@@ -226,9 +240,6 @@ export default function SubscriptionsAnalyticsView({ summary, rows, initialLowOn
                           >
                             <ExternalLink className="w-3.5 h-3.5" />
                           </Link>
-                          <div onClick={e => e.stopPropagation()}>
-                            <SubscriptionActionsMenu subscription={r} onChanged={() => router.refresh()} />
-                          </div>
                         </div>
                       </TableCell>
                     </TableRow>

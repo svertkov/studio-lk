@@ -4,7 +4,7 @@ import { useState } from 'react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { updateSubscriptionStatus } from '@/lib/actions/subscriptions'
 
-export type SubscriptionActionKind = 'markUsed' | 'cancel' | 'refund' | 'archive' | 'unarchive'
+export type SubscriptionActionKind = 'markUsed' | 'cancel' | 'refund' | 'archive' | 'unarchive' | 'reactivate'
 
 interface CopyEntry {
   title: string
@@ -40,9 +40,15 @@ const COPY: Record<SubscriptionActionKind, CopyEntry> = {
   },
   unarchive: {
     title: 'Вернуть из архива',
-    message: 'Абонемент снова станет виден в активных списках. Если его статус — «Активен», его снова можно будет выбрать для оплаты.',
-    confirmLabel: 'Вернуть из архива',
+    message: 'Абонемент снова будет отображаться в списках клиента и финансов.',
+    confirmLabel: 'Вернуть',
     confirmClass: 'bg-indigo-600 hover:bg-indigo-500',
+  },
+  reactivate: {
+    title: 'Вернуть в активные',
+    message: 'Абонемент снова станет активным, а его часы — доступны для списания в заказах.',
+    confirmLabel: 'Вернуть в активные',
+    confirmClass: 'bg-green-600 hover:bg-green-500',
   },
 }
 
@@ -84,7 +90,8 @@ export default function SubscriptionActionModal({ subscriptionId, action, onOpen
           adminComment: adminComment.trim() || undefined,
         }
       : action === 'archive' ? { isArchived: true }
-      : { isArchived: false },
+      : action === 'unarchive' ? { isArchived: false }
+      : { status: 'ACTIVE' },
     )
 
     setSaving(false)
