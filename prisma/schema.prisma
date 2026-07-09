@@ -783,6 +783,9 @@ model SubscriptionUsage {
   scheduleEventId String   @unique @map("schedule_event_id")
   usedHours       Float    @map("used_hours")
   usedAt          DateTime @default(now()) @map("used_at")
+  // Комментарий к конкретному списанию — заполняется вручную при переносе
+  // оплаты между абонементами или ручной корректировке (см. Часть 4 ТЗ).
+  comment         String?
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt      @map("updated_at")
 

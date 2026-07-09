@@ -58,6 +58,8 @@ export interface SubscriptionUsageDTO {
   scheduleEventId: string
   usedHours: number
   usedAt: string
+  updatedAt: string
+  comment: string | null
   eventTitle: string | null
 }
 
@@ -114,6 +116,8 @@ function toDTO(row: SubscriptionWithUsages): ClientSubscriptionDTO {
         scheduleEventId: u.scheduleEventId,
         usedHours: u.usedHours,
         usedAt: u.usedAt.toISOString(),
+        updatedAt: u.updatedAt.toISOString(),
+        comment: u.comment,
         eventTitle: u.scheduleEvent?.title ?? null,
       })),
   }
@@ -192,6 +196,7 @@ export interface ChargeEventInput {
   scheduleEventId: string
   subscriptionId: string
   usedHours: number
+  comment?: string | null
 }
 
 // Пересчёт status после изменения списаний (списание/освобождение часов) —
@@ -253,28 +258,61 @@ export async function chargeEventToSubscription(
           subscriptionId: input.subscriptionId,
           scheduleEventId: input.scheduleEventId,
           usedHours: input.usedHours,
+          comment: input.comment?.trim() || null,
         },
       })
 
       await applyAutoStatus(tx, { ...subscription, usages: [...subscription.usages, { usedHours: input.usedHours }] })
 
-      // Если освобождённое списание было с ДРУГОГО абонемента — пересчитать и его статус
+      // Если освобождённое списание было с ДРУГОГО абонемента — пересчитать
+      // его статус (часы вернулись) и записать это как перенос оплаты в
+      // "Историю корректировок" обоих абонементов (ТЗ, Часть 4/9, пример
+      // "Перенесено списание на другой абонемент") — единственный случай,
+      // когда chargeEventToSubscription пишет в AuditLog: обычное первое
+      // списание — это просто нормальная оплата, не "корректировка".
+      let transferredFromSubscriptionId: string | null = null
       if (existing && existing.subscriptionId !== input.subscriptionId) {
         const otherSub = await tx.clientSubscription.findUnique({
           where: { id: existing.subscriptionId },
           include: { usages: true },
         })
-        if (otherSub) await applyAutoStatus(tx, otherSub)
+        if (otherSub) {
+          await applyAutoStatus(tx, otherSub)
+          transferredFromSubscriptionId = otherSub.id
+        }
       }
 
-      return tx.clientSubscription.findUniqueOrThrow({
-        where: { id: input.subscriptionId },
-        include: USAGE_INCLUDE,
-      })
+      return {
+        subscription: await tx.clientSubscription.findUniqueOrThrow({
+          where: { id: input.subscriptionId },
+          include: USAGE_INCLUDE,
+        }),
+        transferredFromSubscriptionId,
+      }
     })
 
-    revalidateSubscriptionConsumers(result.clientId)
-    return { ok: true, data: toDTO(result) }
+    if (result.transferredFromSubscriptionId) {
+      const transferMeta = {
+        scheduleEventId: input.scheduleEventId,
+        hours: input.usedHours,
+        manual: true as const,
+      }
+      await writeAuditLog({
+        userId: authResult.userId,
+        action: 'SUBSCRIPTION_HOURS_TRANSFERRED_OUT',
+        entityId: result.transferredFromSubscriptionId,
+        metadata: { ...transferMeta, toSubscriptionId: input.subscriptionId },
+      })
+      await writeAuditLog({
+        userId: authResult.userId,
+        action: 'SUBSCRIPTION_HOURS_TRANSFERRED_IN',
+        entityId: input.subscriptionId,
+        metadata: { ...transferMeta, fromSubscriptionId: result.transferredFromSubscriptionId },
+      })
+    }
+
+    revalidateSubscriptionConsumers(result.subscription.clientId)
+    return { ok: true, data: toDTO(result.subscription) }
   } catch (e) {
     if (e instanceof Error && e.message.startsWith('OVERSPEND:')) {
       const remaining = e.message.split(':')[1]
@@ -409,5 +447,172 @@ export async function updateSubscriptionStatus(
   } catch (e) {
     console.error('[updateSubscriptionStatus]', e)
     return { ok: false, error: 'Не удалось обновить статус абонемента' }
+  }
+}
+
+// ============================================================
+// РУЧНАЯ КОРРЕКТИРОВКА ЧАСОВ — единственная точка входа для правки "Куплено"/
+// "Использовано" (см. ТЗ, Части 5-9). Правит packageHours напрямую и
+// openingUsedHours КОСВЕННО (через желаемую итоговую сумму использованных
+// часов минус сумма реальных SubscriptionUsage) — реальные списания по
+// конкретным записям расписания этой функцией никогда не трогаются и не
+// теряются, меняется только "стартовый остаток" до них (тот же смысл, что и
+// у openingUsedHours при обычном импорте — см. комментарий в schema.prisma).
+// ============================================================
+
+export interface UpdateSubscriptionHoursInput {
+  packageHours: number
+  // Желаемое ИТОГОВОЕ использованное количество часов (не только openingUsedHours)
+  usedHours: number
+  adjustmentComment?: string
+  adjustmentReason?: string
+}
+
+export async function updateSubscriptionHours(
+  subscriptionId: string, input: UpdateSubscriptionHoursInput
+): Promise<{ ok: true; data: ClientSubscriptionDTO } | { ok: false; error: string }> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, error: authResult.error }
+
+  if (!Number.isFinite(input.packageHours) || input.packageHours < 0) {
+    return { ok: false, error: 'Куплено часов не может быть отрицательным' }
+  }
+  if (!Number.isFinite(input.usedHours) || input.usedHours < 0) {
+    return { ok: false, error: 'Использовано часов не может быть отрицательным' }
+  }
+  if (input.usedHours > input.packageHours) {
+    return { ok: false, error: 'Использовано часов не может быть больше купленных' }
+  }
+
+  try {
+    const existing = await prisma.clientSubscription.findUnique({ where: { id: subscriptionId }, include: { usages: true } })
+    if (!existing) return { ok: false, error: 'Абонемент не найден' }
+
+    // Реальные списания по конкретным записям — неприкосновенны, корректировка
+    // ложится только на "стартовый" остаток (openingUsedHours).
+    const realUsagesSum = existing.usages.reduce((sum, u) => sum + u.usedHours, 0)
+    const newOpeningUsedHours = input.usedHours - realUsagesSum
+    if (newOpeningUsedHours < 0) {
+      return {
+        ok: false,
+        error: `Нельзя указать использованных часов меньше суммы реальных списаний по записям (${realUsagesSum} ч). Сначала измените или отвяжите отдельные списания в самих записях.`,
+      }
+    }
+
+    const oldUsedHours = existing.openingUsedHours + realUsagesSum
+    const oldTotalHours = existing.packageHours
+    const oldRemainingHours = oldTotalHours - oldUsedHours
+    const newRemainingHours = input.packageHours - input.usedHours
+
+    const now = new Date()
+    const data: Prisma.ClientSubscriptionUpdateInput = {
+      packageHours: input.packageHours,
+      openingUsedHours: newOpeningUsedHours,
+    }
+
+    // Тот же принцип, что и в applyAutoStatus: ручная корректировка может
+    // подвинуть статус между ACTIVE/USED_UP, но никогда не трогает
+    // CANCELLED/REFUNDED без явного отдельного действия администратора.
+    if (canAutoRecomputeStatus(existing.status)) {
+      const newStatus: SubscriptionStatus = newRemainingHours <= 0 ? 'USED_UP' : 'ACTIVE'
+      if (newStatus !== existing.status) {
+        data.status = newStatus
+        data.statusUpdatedAt = now
+        data.usedAt = newStatus === 'USED_UP' ? (existing.usedAt ?? now) : null
+      }
+    }
+
+    const updated = await prisma.clientSubscription.update({ where: { id: subscriptionId }, data, include: USAGE_INCLUDE })
+
+    await writeAuditLog({
+      userId: authResult.userId,
+      action: 'SUBSCRIPTION_HOURS_ADJUSTED',
+      entityId: subscriptionId,
+      metadata: {
+        oldTotalHours, newTotalHours: input.packageHours,
+        oldUsedHours, newUsedHours: input.usedHours,
+        oldRemainingHours, newRemainingHours,
+        comment: input.adjustmentComment?.trim() || null,
+        reason: input.adjustmentReason?.trim() || null,
+        manual: true,
+      },
+    })
+
+    revalidateSubscriptionConsumers(updated.clientId)
+    return { ok: true, data: toDTO(updated) }
+  } catch (e) {
+    console.error('[updateSubscriptionHours]', e)
+    return { ok: false, error: 'Не удалось изменить часы абонемента' }
+  }
+}
+
+// ============================================================
+// ИСТОРИЯ КОРРЕКТИРОВОК — и ручные правки часов (updateSubscriptionHours), и
+// переносы оплаты между абонементами (chargeEventToSubscription) — то же
+// AuditLog, что и у смены статуса, просто другой набор action. Единая
+// таблица истории для "Истории корректировок" в карточке абонемента.
+// ============================================================
+
+export interface SubscriptionAdjustmentDTO {
+  id: string
+  createdAt: string
+  action: string
+  oldTotalHours: number | null
+  newTotalHours: number | null
+  oldUsedHours: number | null
+  newUsedHours: number | null
+  oldRemainingHours: number | null
+  newRemainingHours: number | null
+  comment: string | null
+  reason: string | null
+  hours: number | null
+  relatedScheduleEventDate: string | null
+}
+
+const ADJUSTMENT_ACTIONS = ['SUBSCRIPTION_HOURS_ADJUSTED', 'SUBSCRIPTION_HOURS_TRANSFERRED_OUT', 'SUBSCRIPTION_HOURS_TRANSFERRED_IN']
+
+export async function getSubscriptionAdjustmentHistory(subscriptionId: string): Promise<
+  { ok: true; data: SubscriptionAdjustmentDTO[] } | { ok: false; data: SubscriptionAdjustmentDTO[]; error: string }
+> {
+  try {
+    const rows = await prisma.auditLog.findMany({
+      where: { entityType: 'ClientSubscription', entityId: subscriptionId, action: { in: ADJUSTMENT_ACTIONS } },
+      orderBy: { createdAt: 'desc' },
+    })
+
+    const scheduleEventIds = Array.from(new Set(
+      rows.map(r => (r.metadata as Record<string, unknown> | null)?.scheduleEventId).filter((v): v is string => typeof v === 'string'),
+    ))
+    const events = scheduleEventIds.length > 0
+      ? await prisma.scheduleEvent.findMany({ where: { id: { in: scheduleEventIds } }, select: { id: true, startAt: true } })
+      : []
+    const eventDateById = new Map(events.map(e => [e.id, e.startAt ? e.startAt.toISOString() : null]))
+
+    const data: SubscriptionAdjustmentDTO[] = rows.map(r => {
+      const m = (r.metadata ?? {}) as Record<string, unknown>
+      const num = (key: string) => (typeof m[key] === 'number' ? m[key] as number : null)
+      const str = (key: string) => (typeof m[key] === 'string' ? m[key] as string : null)
+      const scheduleEventId = str('scheduleEventId')
+      return {
+        id: r.id,
+        createdAt: r.createdAt.toISOString(),
+        action: r.action,
+        oldTotalHours: num('oldTotalHours'),
+        newTotalHours: num('newTotalHours'),
+        oldUsedHours: num('oldUsedHours'),
+        newUsedHours: num('newUsedHours'),
+        oldRemainingHours: num('oldRemainingHours'),
+        newRemainingHours: num('newRemainingHours'),
+        comment: str('comment'),
+        reason: str('reason'),
+        hours: num('hours'),
+        relatedScheduleEventDate: scheduleEventId ? (eventDateById.get(scheduleEventId) ?? null) : null,
+      }
+    })
+
+    return { ok: true, data }
+  } catch (e) {
+    console.error('[getSubscriptionAdjustmentHistory]', e)
+    return { ok: false, data: [], error: 'Не удалось загрузить историю корректировок' }
   }
 }

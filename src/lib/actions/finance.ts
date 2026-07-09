@@ -281,6 +281,9 @@ export interface SubscriptionUsageDetailDTO {
   id: string
   usedHours: number
   usedAt: string
+  createdAt: string
+  updatedAt: string
+  comment: string | null
   eventTitle: string | null
   eventRoom: string | null
   eventFormat: string | null
@@ -355,6 +358,9 @@ export async function getSubscriptionDetail(id: string): Promise<
           id: u.id,
           usedHours: u.usedHours,
           usedAt: u.usedAt.toISOString(),
+          createdAt: u.createdAt.toISOString(),
+          updatedAt: u.updatedAt.toISOString(),
+          comment: u.comment,
           eventTitle: u.scheduleEvent?.title ?? null,
           eventRoom: u.scheduleEvent?.room ?? null,
           eventFormat: u.scheduleEvent?.format ?? null,

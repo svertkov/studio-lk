@@ -1,8 +1,8 @@
 'use client'
 
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { ShoppingBag, Film, DollarSign, FileText, Upload, Send, Calendar, Clock, Wallet, Receipt, Link2, HardDrive as NasIcon } from 'lucide-react'
+import { ShoppingBag, Film, DollarSign, FileText, Upload, Send, Calendar, Clock, Wallet, Receipt, Link2, HardDrive as NasIcon, ExternalLink } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import {
   CLIENT_TYPE_LABELS, CLIENT_STATUS_LABELS, CLIENT_SOURCE_LABELS,
@@ -23,6 +23,7 @@ import MetricCard, { METRIC_GRID_CLASSNAME } from '@/components/ui/metric-card'
 import MaterialsStatusBadge from '../../schedule/MaterialsStatusBadge'
 import EventCardModal from '../../schedule/EventCardModal'
 import SubscriptionActionsMenu from '@/components/subscriptions/SubscriptionActionsMenu'
+import SubscriptionDetailModal from '../../finance/subscriptions/SubscriptionDetailModal'
 
 const CHART_COLORS = ['#00c26b', '#3b82f6', '#f59e0b', '#a855f7', '#ef4444', '#14b8a6']
 
@@ -136,6 +137,21 @@ function PlaceholderTab({ icon: Icon, title, description }: { icon: React.Elemen
   )
 }
 
+// ClientVisit — исторический импорт из Google-таблицы, без FK на ScheduleEvent.
+// Сопоставляем визит с живой записью расписания эвристикой "тот же день"
+// (+ зал/формат, если день оказался неоднозначным) — единая сущность для
+// открытия карточки уже есть (ScheduleEvent/бронирование), дублировать её не
+// нужно; если совпадения нет — строка просто не кликабельна.
+function matchBookingForVisit(visit: ClientVisitRow, bookings: ClientBookingDTO[]): ClientBookingDTO | null {
+  if (!visit.date) return null
+  const dayKey = (d: Date) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`
+  const visitKey = dayKey(new Date(visit.date))
+  const candidates = bookings.filter(b => b.calendarEventId && b.startAt && dayKey(new Date(b.startAt)) === visitKey)
+  if (candidates.length <= 1) return candidates[0] ?? null
+  const refined = candidates.filter(b => (!visit.room || b.room === visit.room) && (!visit.format || b.format === visit.format))
+  return refined[0] ?? candidates[0]
+}
+
 function InfoRow({ label, value }: { label: string; value?: string | null }) {
   if (!value) return null
   return (
@@ -161,6 +177,9 @@ export default function ClientTabs({ client, subscriptions, bookings }: Props) {
   // таких контекстов (см. комментарий в начале schedule-model.ts).
   const [openVm, setOpenVm] = useState<ScheduleEventVM | null>(null)
   const [openingBookingId, setOpeningBookingId] = useState<string | null>(null)
+  // Открытие единой карточки абонемента (SubscriptionDetailModal) — та же
+  // самая, что и в Финансах, и в подборе абонемента заказа (см. ТЗ, часть 7).
+  const [openSubscriptionId, setOpenSubscriptionId] = useState<string | null>(null)
 
   const isLegal = client.type !== 'INDIVIDUAL' && client.type !== 'SELF_EMPLOYED'
   const visitStats = computeVisitStats(
@@ -169,6 +188,10 @@ export default function ClientTabs({ client, subscriptions, bookings }: Props) {
   // Записи, оплаченные по абонементу, уже показаны в истории списаний самого
   // абонемента ниже — здесь показываем только те, что оплачивались отдельно.
   const oneTimeBookings = bookings.filter(b => b.subscriptionUsedHours == null)
+  const visitBookingMatches = useMemo(
+    () => new Map(client.visits.map(v => [v.id, matchBookingForVisit(v, bookings)])),
+    [client.visits, bookings]
+  )
 
   async function handleOpenBooking(booking: ClientBookingDTO) {
     if (!booking.calendarEventId) return
@@ -323,30 +346,51 @@ export default function ClientTabs({ client, subscriptions, bookings }: Props) {
               <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
                 <div className="px-6 py-4 border-b border-zinc-800">
                   <h3 className="text-white font-semibold text-sm">История визитов</h3>
+                  <p className="text-zinc-500 text-xs mt-0.5">Нажмите на визит со связанной записью в расписании, чтобы открыть её карточку</p>
                 </div>
                 <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
+                  <table className="w-full text-sm table-fixed">
                     <thead>
                       <tr className="border-b border-zinc-800 bg-zinc-800/40">
-                        <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium">Дата</th>
-                        <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium">Зал</th>
-                        <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium">Формат</th>
-                        <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium">Часы</th>
-                        <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium">Сумма</th>
+                        <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium w-28">Дата</th>
+                        <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium w-24">Зал</th>
+                        <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium w-28">Формат</th>
+                        <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium w-16">Часы</th>
+                        <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium w-28">Сумма</th>
                         <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium">Комментарий</th>
+                        <th className="w-12"></th>
                       </tr>
                     </thead>
                     <tbody>
-                      {client.visits.map((v, i) => (
-                        <tr key={v.id} className={`border-b border-zinc-800/60 ${i === client.visits.length - 1 ? 'border-b-0' : ''}`}>
-                          <td className="px-4 py-2.5 text-zinc-300 text-sm">{formatDate(v.date)}</td>
-                          <td className="px-4 py-2.5 text-zinc-400 text-sm">{v.room ?? '—'}</td>
-                          <td className="px-4 py-2.5 text-zinc-400 text-sm">{v.format ?? '—'}</td>
+                      {client.visits.map((v, i) => {
+                        const matched = visitBookingMatches.get(v.id) ?? null
+                        return (
+                        <tr key={v.id}
+                          onClick={() => matched && handleOpenBooking(matched)}
+                          onKeyDown={e => {
+                            if ((e.key === 'Enter' || e.key === ' ') && matched) { e.preventDefault(); handleOpenBooking(matched) }
+                          }}
+                          tabIndex={matched ? 0 : -1}
+                          title={matched ? 'Открыть запись в расписании' : 'Нет связанной записи в расписании'}
+                          className={`border-b border-zinc-800/60 transition-colors ${i === client.visits.length - 1 ? 'border-b-0' : ''} ${
+                            matched ? 'cursor-pointer hover:bg-white/[0.04] focus:outline-none focus:bg-white/[0.04]' : ''
+                          }`}
+                        >
+                          <td className="px-4 py-2.5 text-zinc-300 text-sm">
+                            {formatDate(v.date)}
+                            {matched && openingBookingId === matched.id && <span className="text-zinc-500 text-xs ml-2">Открываем...</span>}
+                          </td>
+                          <td className="px-4 py-2.5 text-zinc-400 text-sm truncate">{v.room ?? '—'}</td>
+                          <td className="px-4 py-2.5 text-zinc-400 text-sm truncate">{v.format ?? '—'}</td>
                           <td className="px-4 py-2.5 text-zinc-400 text-sm">{v.durationHours ?? '—'}</td>
-                          <td className="px-4 py-2.5 text-zinc-400 text-sm">{v.grossAmount != null ? formatMoney(v.grossAmount) : '—'}</td>
-                          <td className="px-4 py-2.5 text-zinc-500 text-xs max-w-xs truncate">{v.comment ?? '—'}</td>
+                          <td className="px-4 py-2.5 text-zinc-400 text-sm truncate">{v.grossAmount != null ? formatMoney(v.grossAmount) : '—'}</td>
+                          <td className="px-4 py-2.5 text-zinc-500 text-xs max-w-xs truncate" title={v.comment ?? undefined}>{v.comment ?? '—'}</td>
+                          <td className="px-4 py-2.5 text-right">
+                            {matched && <ExternalLink className="w-3.5 h-3.5 text-zinc-500 inline-block" />}
+                          </td>
                         </tr>
-                      ))}
+                        )
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -429,6 +473,13 @@ export default function ClientTabs({ client, subscriptions, bookings }: Props) {
                           {SUBSCRIPTION_ARCHIVED_BADGE_LABEL}
                         </Badge>
                       )}
+                      <button
+                        type="button"
+                        onClick={() => setOpenSubscriptionId(sub.id)}
+                        className="text-xs px-2.5 py-1.5 rounded-lg border border-zinc-700 bg-zinc-800 text-zinc-200 font-medium hover:bg-zinc-700 hover:border-zinc-600 transition-colors"
+                      >
+                        Открыть
+                      </button>
                       <SubscriptionActionsMenu subscription={sub} onChanged={() => router.refresh()} />
                     </div>
                   </div>
@@ -639,6 +690,14 @@ export default function ClientTabs({ client, subscriptions, bookings }: Props) {
           vm={openVm}
           onOpenChange={open => { if (!open) setOpenVm(null) }}
           onSaved={() => { setOpenVm(null); router.refresh() }}
+        />
+      )}
+
+      {openSubscriptionId && (
+        <SubscriptionDetailModal
+          subscriptionId={openSubscriptionId}
+          onOpenChange={open => { if (!open) setOpenSubscriptionId(null) }}
+          onChanged={() => router.refresh()}
         />
       )}
     </div>

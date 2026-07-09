@@ -253,7 +253,7 @@ export default function SubscriptionsAnalyticsView({ summary, rows, initialLowOn
 
       {selected && (
         <SubscriptionDetailModal
-          subscription={selected}
+          subscriptionId={selected.id}
           onOpenChange={open => { if (!open) setSelected(null) }}
           onChanged={() => router.refresh()}
         />

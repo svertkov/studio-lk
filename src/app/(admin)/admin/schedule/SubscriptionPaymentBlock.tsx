@@ -10,6 +10,8 @@ import {
   SUBSCRIPTION_ARCHIVED_BADGE_LABEL, SUBSCRIPTION_ARCHIVED_BADGE_CLASS,
 } from '@/lib/subscription-model'
 import SubscriptionActionsMenu from '@/components/subscriptions/SubscriptionActionsMenu'
+import HourStepper from '@/components/subscriptions/HourStepper'
+import SubscriptionDetailModal from '../finance/subscriptions/SubscriptionDetailModal'
 import type { ScheduleEventSubscriptionInfo } from '@/lib/schedule-model'
 
 export type SubscriptionPaymentValue =
@@ -60,6 +62,7 @@ const SubscriptionPaymentBlock = forwardRef<SubscriptionPaymentHandle, Props>(fu
   const [newPackageHours, setNewPackageHours] = useState('6')
   const [newPaidAmount, setNewPaidAmount] = useState('')
   const [newPurchasedAt, setNewPurchasedAt] = useState(format(new Date(), 'yyyy-MM-dd'))
+  const [openSubscriptionId, setOpenSubscriptionId] = useState<string | null>(null)
 
   const fetchSubscriptions = useCallback(async () => {
     const res = await getClientSubscriptions(clientId)
@@ -210,6 +213,10 @@ const SubscriptionPaymentBlock = forwardRef<SubscriptionPaymentHandle, Props>(fu
                               }`}>
                               {isSelected ? 'Выбран' : 'Выбрать'}
                             </button>
+                            <button type="button" onClick={() => setOpenSubscriptionId(s.id)}
+                              className="text-xs px-2.5 py-1.5 rounded-lg border border-zinc-700 bg-zinc-800 text-zinc-300 hover:bg-zinc-700 transition-colors">
+                              Подробнее
+                            </button>
                             <SubscriptionActionsMenu subscription={s} onChanged={handleSubscriptionChanged} variant="compact" />
                           </div>
                         </div>
@@ -270,7 +277,12 @@ const SubscriptionPaymentBlock = forwardRef<SubscriptionPaymentHandle, Props>(fu
                 <>
                   <div>
                     <label className={LABEL}>Списать часов за эту запись</label>
-                    <input className={INPUT} type="number" min="0" step="0.25" value={usedHours} onChange={e => setUsedHours(e.target.value)} />
+                    <HourStepper
+                      value={Number.isFinite(usedHoursNum) ? usedHoursNum : 0}
+                      onChange={v => setUsedHours(v.toString())}
+                      step={0.5}
+                      min={0}
+                    />
                   </div>
 
                   {overspend && selected ? (
@@ -318,7 +330,13 @@ const SubscriptionPaymentBlock = forwardRef<SubscriptionPaymentHandle, Props>(fu
                                 )}
                               </div>
                             </div>
-                            <SubscriptionActionsMenu subscription={s} onChanged={handleSubscriptionChanged} variant="compact" />
+                            <div className="flex items-center gap-1.5 flex-shrink-0">
+                              <button type="button" onClick={() => setOpenSubscriptionId(s.id)}
+                                className="text-xs px-2.5 py-1.5 rounded-lg border border-zinc-700 bg-zinc-800 text-zinc-300 hover:bg-zinc-700 transition-colors">
+                                Подробнее
+                              </button>
+                              <SubscriptionActionsMenu subscription={s} onChanged={handleSubscriptionChanged} variant="compact" />
+                            </div>
                           </div>
                         )
                       })}
@@ -329,6 +347,14 @@ const SubscriptionPaymentBlock = forwardRef<SubscriptionPaymentHandle, Props>(fu
             </>
           )}
         </div>
+      )}
+
+      {openSubscriptionId && (
+        <SubscriptionDetailModal
+          subscriptionId={openSubscriptionId}
+          onOpenChange={open => { if (!open) setOpenSubscriptionId(null) }}
+          onChanged={handleSubscriptionChanged}
+        />
       )}
     </div>
   )
