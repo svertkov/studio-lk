@@ -130,7 +130,12 @@ export function getMaterialsDisplay(input: {
     case 'YANDEX_ACTIVE':
       return input.nasBackupUrl
         ? { label: 'Материалы сохранены', severity: 'success' }
-        : { label: 'Яндекс.Диск указан', severity: 'success' }
+        // Яндекс.Диск по-прежнему не блокирует сохранение/переход заказа (решение
+        // от 2026-07-06 не отменяется), но само по себе отсутствие NAS-бэкапа
+        // должно быть заметно администратору — просьба владельца от 2026-07-09,
+        // после того как добавление ссылки на Яндекс.Диск у Никиты Горина тихо
+        // убрало запись из блока предупреждений на дашборде.
+        : { label: 'Нет бэкапа на NAS', severity: 'warning' }
   }
 }
 
@@ -142,10 +147,17 @@ export const MATERIALS_SEVERITY_TEXT_COLOR: Record<MaterialsSeverity, string> = 
   neutral: 'text-zinc-400',
 }
 
-// Тревожная подсветка карточки для проблемных событий — переиспользуется
-// в Day/Week/Month видах расписания и в блоке проблемных съёмок на дашборде.
-export const PROBLEM_GLOW_CARD_CLASS =
+// Тревожная подсветка карточки — переиспользуется в Day/Week/Month видах
+// расписания и в блоке "Записи требуют внимания" на дашборде. Уровень CRITICAL:
+// карточка практически не заполнена (нет ни материалов, ни оплаты).
+export const CRITICAL_GLOW_CARD_CLASS =
   'border-red-600/60 bg-red-950/30 shadow-[0_0_14px_rgba(239,68,68,0.22)]'
+
+// Уровень WARNING: карточка заполнена частично — что-то одно из ключевых
+// полей (NAS-бэкап, способ оплаты и т.п.) ещё не указано. Ничего не
+// блокирует, только напоминание — см. getBookingAttentionInfo.
+export const WARNING_GLOW_CARD_CLASS =
+  'border-amber-600/60 bg-amber-950/30 shadow-[0_0_14px_rgba(245,158,11,0.22)]'
 
 // Отслеживание материалов появилось в системе только с этой даты — съёмки,
 // которые НАЧАЛИСЬ раньше, никогда не помечаются проблемными, даже если ссылок
@@ -155,21 +167,12 @@ export const PROBLEM_GLOW_CARD_CLASS =
 export const MATERIALS_TRACKING_LAUNCH_DATE = new Date('2026-07-03T00:00:00')
 
 // ============================================================
-// ПРОБЛЕМЫ ЗАПИСИ (booking issues) — единственный источник правды для
+// "ВНИМАНИЕ К ЗАПИСИ" (booking attention) — единственный источник правды для
 // подсветки мини-карточек в расписании и для блока "Записи требуют внимания"
 // на дашборде. Проверяется только STUDIO_BOOKING (встречи/отсутствия
 // сотрудников/служебные пометки никогда не считаются проблемными) и только
 // для уже прошедших записей — будущая запись без материалов/оплаты это норма.
 // ============================================================
-
-export type BookingIssueType = 'materials_missing' | 'payment_missing'
-export type IssueSeverity = 'danger' | 'warning'
-
-export interface BookingIssue {
-  type: BookingIssueType
-  label: string
-  severity: IssueSeverity
-}
 
 // Небольшой запас времени после окончания записи, прежде чем она станет
 // считаться "прошедшей" для целей предупреждений — чтобы администратор успел
@@ -198,39 +201,115 @@ export function canCheckBookingIssues(vm: ScheduleEventVM, now: Date = new Date(
   return isPastBooking(vm, now)
 }
 
-export function getBookingIssues(vm: ScheduleEventVM, now: Date = new Date()): BookingIssue[] {
-  if (!canCheckBookingIssues(vm, now)) return []
+export type AttentionSeverity = 'critical' | 'warning' | 'complete'
+
+// Конкретное поле карточки, которого не хватает — для программных проверок
+// (тесты, будущие фичи), badges — это уже готовый для показа текст на русском.
+export type BookingMissingField = 'yandexDiskUrl' | 'nasBackupUrl' | 'paymentAmount' | 'paymentMethod'
+
+export interface BookingAttentionInfo {
+  isComplete: boolean
+  severity: AttentionSeverity
+  missingFields: BookingMissingField[]
+  badges: string[]
+}
+
+export const ATTENTION_BADGE_CLASS: Record<'critical' | 'warning', string> = {
+  critical: 'bg-red-950/50 border border-red-700/60 text-red-300',
+  warning:  'bg-amber-950/50 border border-amber-700/60 text-amber-300',
+}
+
+// Стили отдельной цветной панели уровня критичности в блоке "Записи требуют
+// внимания" на дашборде (см. AttentionSubsection) — critical и warning теперь
+// две самостоятельные панели, а не одна общая рамка с построчными акцентами,
+// чтобы жёлтая (неполная) запись не читалась как часть красной "колбасы"
+// (владелец, 2026-07-10). Свечение warning намеренно той же силы, что и у
+// critical (тот же размер/прозрачность shadow, только жёлтый цвет) — раньше
+// было заметно ярче/крупнее, чем у красных, что читалось как перебор
+// (владелец, 2026-07-10, тот же день).
+export const ATTENTION_PANEL_STYLE: Record<'critical' | 'warning', {
+  panel: string
+  headerBorder: string
+  headerText: string
+  button: string
+}> = {
+  critical: {
+    panel:       'border border-red-600/60 bg-red-950/30 shadow-[0_0_22px_rgba(239,68,68,0.20)]',
+    headerBorder: 'border-red-900/50',
+    headerText:  'text-red-300',
+    button:      'bg-red-600 hover:bg-red-500',
+  },
+  warning: {
+    panel:       'border border-amber-500/70 bg-amber-950/40 shadow-[0_0_22px_rgba(245,158,11,0.20)]',
+    headerBorder: 'border-amber-800/60',
+    headerText:  'text-amber-300',
+    button:      'bg-amber-600 hover:bg-amber-500',
+  },
+}
+
+const COMPLETE_ATTENTION: BookingAttentionInfo = { isComplete: true, severity: 'complete', missingFields: [], badges: [] }
+
+// Карточка считается полностью заполненной, только если заполнены ВСЕ
+// ключевые поля: ссылка на Яндекс.Диск, NAS-бэкап и оплата (сумма + способ,
+// либо списание по абонементу — абонемент сам по себе покрывает и то, и
+// другое). Такая запись не должна попадать в блок "Записи требуют внимания"
+// (владелец, 2026-07-09/10).
+//
+// Уровень критичности — не по количеству отдельных недостающих полей, а по
+// тому, пуста ли карточка целиком по ОБОИМ направлениям сразу:
+//   - CRITICAL: нет вообще никаких материалов (ни Яндекс.Диска, ни NAS) И
+//     вообще никакой оплаты (ни суммы, ни способа, ни абонемента) —
+//     карточка практически не заполнена.
+//   - WARNING: хотя бы одно из двух направлений (материалы или оплата) уже
+//     имеет какие-то данные, но что-то из ключевых полей всё ещё не хватает
+//     (например есть Яндекс.Диск, но нет NAS; есть оплата, но нет способа;
+//     есть абонемент, но нет NAS, и т.п.).
+// Это единственная функция, определяющая критичность — переиспользуется и
+// в расписании (Day/Week/Month), и в блоке на дашборде.
+export function getBookingAttentionInfo(vm: ScheduleEventVM, now: Date = new Date()): BookingAttentionInfo {
+  if (!canCheckBookingIssues(vm, now)) return COMPLETE_ATTENTION
 
   const a = vm.annotation
-  const issues: BookingIssue[] = []
   const hasYandex = !!a?.yandexDiskUrl
   const hasNas = !!a?.nasBackupUrl
+  const hasSubscription = !!a?.subscriptionUsage
+  const hasPrice = a?.estimatedPrice != null
+  const hasPaymentMethod = !!a?.paymentMethod
 
-  // Ссылка на Яндекс.Диск сама по себе закрывает проблему с материалами — NAS
-  // сверху не обязателен (см. комментарий у getMaterialsDisplay про решение
-  // от 2026-07-06). Единственные проблемные случаи: нет вообще ничего
-  // (danger) или есть только NAS без Яндекс.Диска (warning — клиенту всё ещё
-  // нечем ничего передать напрямую).
-  if (!hasNas && !hasYandex) {
-    issues.push({ type: 'materials_missing', label: 'Нет материалов', severity: 'danger' })
-  } else if (!hasYandex) {
-    issues.push({ type: 'materials_missing', label: 'Нет Яндекс.Диска', severity: 'warning' })
+  const paymentComplete = hasSubscription || (hasPrice && hasPaymentMethod)
+  const paymentEmpty = !hasSubscription && !hasPrice && !hasPaymentMethod
+  const materialsEmpty = !hasYandex && !hasNas
+
+  if (hasYandex && hasNas && paymentComplete) return COMPLETE_ATTENTION
+
+  const missingFields: BookingMissingField[] = []
+  if (!hasYandex) missingFields.push('yandexDiskUrl')
+  if (!hasNas) missingFields.push('nasBackupUrl')
+  if (!hasSubscription && !hasPrice) missingFields.push('paymentAmount')
+  if (!hasSubscription && !hasPaymentMethod) missingFields.push('paymentMethod')
+
+  const critical = materialsEmpty && paymentEmpty
+  const badges: string[] = []
+
+  if (critical) {
+    // По определению critical оба направления пусты целиком — отдельная
+    // пометка "нет способа оплаты" здесь ничего не добавляет к "оплата не
+    // указана", поэтому не дублируем её отдельным бейджем.
+    badges.push('Нет материалов', 'Оплата не указана')
+  } else {
+    if (materialsEmpty) badges.push('Нет материалов')
+    else if (!hasYandex) badges.push('Нет ссылки на Яндекс')
+    else if (!hasNas) badges.push('Нет бэкапа на NAS')
+
+    if (paymentEmpty) {
+      badges.push('Оплата не указана')
+    } else if (!hasSubscription) {
+      if (!hasPaymentMethod) badges.push('Не указан способ оплаты')
+      if (!hasPrice) badges.push('Нет статуса оплаты')
+    }
   }
 
-  const hasPayment = a?.estimatedPrice != null || !!a?.subscriptionUsage
-  if (!hasPayment) {
-    issues.push({ type: 'payment_missing', label: 'Оплата не указана', severity: 'warning' })
-  }
-
-  return issues
-}
-
-export function hasDangerIssue(issues: BookingIssue[]): boolean {
-  return issues.some(i => i.severity === 'danger')
-}
-
-export function hasPaymentIssue(issues: BookingIssue[]): boolean {
-  return issues.some(i => i.type === 'payment_missing')
+  return { isComplete: false, severity: critical ? 'critical' : 'warning', missingFields, badges }
 }
 
 // ============================================================

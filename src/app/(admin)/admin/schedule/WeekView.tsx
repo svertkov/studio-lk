@@ -5,8 +5,8 @@ import { ru } from 'date-fns/locale'
 import { Coins } from 'lucide-react'
 import type { ScheduleEventVM } from '@/lib/schedule-model'
 import {
-  getEffectiveEventType, getBookingIssues, hasDangerIssue, hasPaymentIssue, shouldShowMaterialsBadge,
-  PROBLEM_GLOW_CARD_CLASS,
+  getEffectiveEventType, getBookingAttentionInfo, shouldShowMaterialsBadge,
+  CRITICAL_GLOW_CARD_CLASS, WARNING_GLOW_CARD_CLASS,
 } from '@/lib/schedule-model'
 import { EVENT_TYPE_LABELS } from '@/lib/event-type'
 import MaterialsStatusBadge from './MaterialsStatusBadge'
@@ -75,9 +75,11 @@ export default function WeekView({ weekDays, events, onSelectEvent }: Props) {
                 bookings.map(vm => {
                   const effectiveType = getEffectiveEventType(vm)
                   const isBooking = effectiveType === 'STUDIO_BOOKING'
-                  const issues = getBookingIssues(vm)
-                  const isProblem = hasDangerIssue(issues)
-                  const paymentMissing = hasPaymentIssue(issues)
+                  const attention = getBookingAttentionInfo(vm)
+                  const isProblem = attention.severity === 'critical'
+                  const isWarning = attention.severity === 'warning'
+                  const paymentMissing = isWarning
+                    && (attention.missingFields.includes('paymentAmount') || attention.missingFields.includes('paymentMethod'))
                   const formatLine = shortFormatLine(vm.annotation)
                   return (
                     <button
@@ -85,8 +87,10 @@ export default function WeekView({ weekDays, events, onSelectEvent }: Props) {
                       onClick={() => onSelectEvent(vm)}
                       className={`w-full text-left rounded-lg px-2.5 py-2 text-xs transition-colors ${
                         isProblem
-                          ? `${PROBLEM_GLOW_CARD_CLASS} hover:bg-red-950/40`
-                          : 'bg-zinc-800/60 border border-zinc-800 hover:bg-zinc-800'
+                          ? `${CRITICAL_GLOW_CARD_CLASS} hover:bg-red-950/40`
+                          : isWarning
+                            ? `${WARNING_GLOW_CARD_CLASS} hover:bg-amber-950/40`
+                            : 'bg-zinc-800/60 border border-zinc-800 hover:bg-zinc-800'
                       }`}
                     >
                       <div className="flex items-center justify-between gap-1.5">

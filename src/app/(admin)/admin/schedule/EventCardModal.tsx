@@ -101,7 +101,7 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
   const looksLikeYandexLink = /^https?:\/\/(disk\.yandex\.[a-z.]+|yadi\.sk)\//i.test(yandexUrlTrimmedLive)
   // Материалы: наличие ссылки на Яндекс.Диск снимает предупреждение само по
   // себе — NAS-бэкап при этом просто дополнительный плюс, а не обязательное
-  // условие (см. Материалы ниже и schedule-model.ts: getMaterialsDisplay/getBookingIssues).
+  // условие (см. Материалы ниже и schedule-model.ts: getMaterialsDisplay/getBookingAttentionInfo).
   const hasYandexNow = !!yandexDiskUrl
   const hasNasNow = !!nasBackupUrl
   const paymentMissingNow = paymentMode === 'ONE_TIME' && !estimatedPrice
@@ -511,8 +511,8 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
               {/* Ссылка на Яндекс.Диск сама по себе снимает предупреждение —
                   NAS-бэкап только дополнительный плюс, а не обязательное
                   условие (см. schedule-model.ts: getMaterialsDisplay/
-                  getBookingIssues). Поэтому блока "hasYandexNow && !hasNasNow"
-                  здесь больше нет — это больше не проблема, это норма. */}
+                  getBookingAttentionInfo). Поэтому блока "hasYandexNow &&
+                  !hasNasNow" здесь больше нет — это больше не проблема, это норма. */}
               {!hasNasNow && !hasYandexNow && (
                 <div className="flex items-start gap-2 rounded-lg px-3 py-2.5 text-xs bg-red-950/40 border border-red-900 text-red-300">
                   <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />

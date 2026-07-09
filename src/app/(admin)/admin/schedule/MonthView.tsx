@@ -7,7 +7,8 @@ import {
 import { ru } from 'date-fns/locale'
 import { UserX, Coins } from 'lucide-react'
 import type { ScheduleEventVM } from '@/lib/schedule-model'
-import { getEffectiveEventType, getBookingIssues, hasDangerIssue, hasPaymentIssue } from '@/lib/schedule-model'
+import { getEffectiveEventType, getBookingAttentionInfo } from '@/lib/schedule-model'
+import NasMissingBadge from './NasMissingBadge'
 
 const MAX_CHIPS_PER_DAY = 3
 const WEEKDAY_LABELS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
@@ -100,9 +101,14 @@ export default function MonthView({ month, events, onSelectEvent, onSelectDay }:
                       )
                     }
 
-                    const issues = getBookingIssues(vm)
-                    const isProblem = hasDangerIssue(issues)
-                    const paymentMissing = hasPaymentIssue(issues)
+                    const attention = getBookingAttentionInfo(vm)
+                    const isProblem = attention.severity === 'critical'
+                    const isWarning = attention.severity === 'warning'
+                    const nasOnlyWarning = isWarning
+                      && attention.missingFields.includes('nasBackupUrl')
+                      && !attention.missingFields.includes('yandexDiskUrl')
+                    const paymentMissing = isWarning
+                      && (attention.missingFields.includes('paymentAmount') || attention.missingFields.includes('paymentMethod'))
 
                     return (
                       <button
@@ -111,12 +117,15 @@ export default function MonthView({ month, events, onSelectEvent, onSelectDay }:
                         className={`flex items-center gap-1 px-1 py-0.5 rounded text-[10px] leading-tight truncate transition-all ${
                           isProblem
                             ? 'bg-red-950/50 border border-red-600/60 text-red-300 shadow-[0_0_8px_rgba(239,68,68,0.3)] hover:bg-red-950/70'
-                            : 'hover:brightness-125'
+                            : isWarning
+                              ? 'bg-amber-950/50 border border-amber-600/60 text-amber-300 shadow-[0_0_8px_rgba(245,158,11,0.3)] hover:bg-amber-950/70'
+                              : 'hover:brightness-125'
                         }`}
-                        style={isProblem ? undefined : { background: `${dot}26`, color: dot }}
+                        style={isProblem || isWarning ? undefined : { background: `${dot}26`, color: dot }}
                       >
-                        {paymentMissing && !isProblem && <Coins className="w-2.5 h-2.5 flex-shrink-0 text-amber-400" />}
-                        <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: isProblem ? '#ef4444' : dot }} />
+                        {paymentMissing && <Coins className="w-2.5 h-2.5 flex-shrink-0 text-amber-400" />}
+                        {nasOnlyWarning && <NasMissingBadge />}
+                        <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: isProblem ? '#ef4444' : isWarning ? '#f59e0b' : dot }} />
                         <span className="truncate">
                           {!ce.allDay && `${formatTime(ce.start)} `}{ce.title}
                         </span>

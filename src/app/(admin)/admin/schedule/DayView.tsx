@@ -4,8 +4,8 @@ import { format, parseISO, isSameDay } from 'date-fns'
 import { Coins } from 'lucide-react'
 import type { ScheduleEventVM } from '@/lib/schedule-model'
 import {
-  getEffectiveEventType, getBookingIssues, hasDangerIssue, hasPaymentIssue, shouldShowMaterialsBadge,
-  PROBLEM_GLOW_CARD_CLASS,
+  getEffectiveEventType, getBookingAttentionInfo, shouldShowMaterialsBadge,
+  CRITICAL_GLOW_CARD_CLASS, WARNING_GLOW_CARD_CLASS,
 } from '@/lib/schedule-model'
 import { EVENT_TYPE_LABELS } from '@/lib/event-type'
 import MaterialsStatusBadge from './MaterialsStatusBadge'
@@ -52,9 +52,11 @@ export default function DayView({ day, events, onSelectEvent }: Props) {
           const { calendarEvent: ce, annotation: a } = vm
           const effectiveType = getEffectiveEventType(vm)
           const isBooking = effectiveType === 'STUDIO_BOOKING'
-          const issues = getBookingIssues(vm)
-          const isProblem = hasDangerIssue(issues)
-          const paymentMissing = hasPaymentIssue(issues)
+          const attention = getBookingAttentionInfo(vm)
+          const isProblem = attention.severity === 'critical'
+          const isWarning = attention.severity === 'warning'
+          const paymentMissing = isWarning
+            && (attention.missingFields.includes('paymentAmount') || attention.missingFields.includes('paymentMethod'))
           const materialsStatus = a?.materialsStatus ?? 'NO_LINKS'
           const price = formatMoney(a?.estimatedPrice)
 
@@ -64,8 +66,10 @@ export default function DayView({ day, events, onSelectEvent }: Props) {
               onClick={() => onSelectEvent(vm)}
               className={`w-full text-left border rounded-xl p-5 transition-colors ${
                 isProblem
-                  ? `${PROBLEM_GLOW_CARD_CLASS} hover:bg-red-950/40`
-                  : 'bg-zinc-900 border-zinc-800 hover:bg-zinc-800/60'
+                  ? `${CRITICAL_GLOW_CARD_CLASS} hover:bg-red-950/40`
+                  : isWarning
+                    ? `${WARNING_GLOW_CARD_CLASS} hover:bg-amber-950/40`
+                    : 'bg-zinc-900 border-zinc-800 hover:bg-zinc-800/60'
               }`}
             >
               <div className="flex items-start justify-between gap-3">
