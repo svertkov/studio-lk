@@ -119,6 +119,19 @@ describe('mergeShoots — dedup between ClientVisit and ScheduleEvent', () => {
     expect(matched).toHaveLength(1)
   })
 
+  it('sorts newest-first by real date/time, not by the string form of the date', () => {
+    // Умышленно передаём события НЕ в хронологическом порядке, с датами,
+    // строковое сравнение которых дало бы другой результат, если бы где-то
+    // в коде sort сравнивал ISO-строки, а не .getTime() — ловим этот класс
+    // регрессии явно, а не полагаемся на то, что ISO и так сортируется верно.
+    const rows = mergeShoots([], [
+      event({ id: 'e-mid', startAt: new Date('2026-06-15T10:00:00Z'), endAt: new Date('2026-06-15T12:00:00Z') }),
+      event({ id: 'e-newest', startAt: new Date('2026-07-01T10:00:00Z'), endAt: new Date('2026-07-01T12:00:00Z') }),
+      event({ id: 'e-oldest', startAt: new Date('2025-01-01T10:00:00Z'), endAt: new Date('2025-01-01T12:00:00Z') }),
+    ], NOW)
+    expect(rows.map(r => r.scheduleEventId)).toEqual(['e-newest', 'e-mid', 'e-oldest'])
+  })
+
   it('computes duration from start/end when available, else falls back to the visit field', () => {
     const withTimes = mergeShoots([], [event()], NOW)
     expect(withTimes[0].durationHours).toBe(2)
@@ -275,5 +288,18 @@ describe('getVisibleShoots / getHiddenShootsCount — "show 5 / show all"', () =
     const five = ten.slice(0, 5)
     expect(getHiddenShootsCount(five.length)).toBe(0)
     expect(getVisibleShoots(five, false)).toHaveLength(5)
+  })
+
+  it('never affects analytics — computeShootsSummary always sums the full list, not just the visible slice', () => {
+    const events = Array.from({ length: 10 }, (_, i) =>
+      event({ id: `e${i}`, startAt: new Date(NOW.getTime() - i * 86_400_000), endAt: new Date(NOW.getTime() - i * 86_400_000 + 7_200_000) }))
+    const rows = mergeShoots([], events, NOW)
+    const collapsedSummary = computeShootsSummary(getVisibleShoots(rows, false))
+    const fullSummary = computeShootsSummary(rows)
+    // Если бы аналитика случайно считалась по обрезанному (5 строк) списку,
+    // эти числа разошлись бы — часы/count должны совпадать с полным набором.
+    expect(collapsedSummary.totalShoots).not.toBe(fullSummary.totalShoots)
+    expect(fullSummary.totalShoots).toBe(10)
+    expect(fullSummary.totalHours).toBe(20)
   })
 })
