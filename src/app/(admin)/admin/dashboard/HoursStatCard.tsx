@@ -24,10 +24,14 @@ export default function HoursStatCard({
   categories,
   totalHours,
   recordsCount,
+  monthLabel,
+  completedRangeLabel,
 }: {
   categories: CategoryDTO[]
   totalHours: number
   recordsCount: number
+  monthLabel: string
+  completedRangeLabel: string
 }) {
   const conicGradient = buildConicGradient(categories, totalHours)
   const topCategories = categories.slice(0, 3)
@@ -39,8 +43,9 @@ export default function HoursStatCard({
           <div className="flex items-start justify-between gap-4">
             <div>
               <p className="text-zinc-400 text-sm uppercase tracking-wider">Часов за месяц</p>
+              <p className="text-zinc-600 text-[11px] mt-0.5">{monthLabel}</p>
               <p className="text-4xl font-bold text-white mt-3">{totalHours.toFixed(1)}</p>
-              <p className="text-zinc-400 text-xs mt-1">{recordsCount} записей</p>
+              <p className="text-zinc-400 text-xs mt-1">Завершено: {completedRangeLabel} · {recordsCount} записей</p>
             </div>
             <div className="flex items-center gap-4">
               {topCategories.length > 0 && (

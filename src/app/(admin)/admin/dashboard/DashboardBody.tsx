@@ -6,6 +6,11 @@ import { ru } from 'date-fns/locale'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Users, Mic2, TrendingUp } from 'lucide-react'
 import { categorizeEvent, colorForCategory, isStudioBooking } from '@/lib/event-category'
+import { getScheduleAnnotations } from '@/lib/actions/schedule'
+import {
+  getCalendarMonthRange, getCurrentStudioYearMonth, filterCompletedStudioBookings,
+  calculateCompletedHours, formatMonthLabel, formatCompletedRangeLabel,
+} from '@/lib/booking-analytics'
 import MetricCard from '@/components/ui/metric-card'
 import HoursStatCard from './HoursStatCard'
 import BookingIssuesBlock from './BookingIssuesBlock'
@@ -36,27 +41,57 @@ interface Props {
 // (тот же класс бага, что чинили в ScheduleView — там это уже работает так же).
 export default function DashboardBody({ clientsTotal, monthStart, monthEnd, nowIso }: Props) {
   const [events, setEvents] = useState<CalendarEvent[] | null>(null)
+  // Отменённые записи (по статусу связанного заказа) — единственный сигнал
+  // отмены в схеме (см. booking-analytics.ts), подтягивается отдельно, т.к.
+  // Google Calendar сам по себе ничего не знает про статус заказа платформы.
+  const [cancelledIds, setCancelledIds] = useState<Set<string>>(new Set())
   const now = new Date(nowIso)
+  const { year, month } = getCurrentStudioYearMonth(now)
+  const monthRange = getCalendarMonthRange(year, month)
+  const monthLabel = formatMonthLabel(year, month)
+  const completedRangeLabel = formatCompletedRangeLabel(monthRange, now)
 
   useEffect(() => {
-    function loadEvents() {
-      fetch(`/api/calendar/events?calendar=studio&timeMin=${encodeURIComponent(monthStart)}&timeMax=${encodeURIComponent(monthEnd)}`)
+    let cancelledEffect = false
+    async function loadEvents() {
+      const data = await fetch(`/api/calendar/events?calendar=studio&timeMin=${encodeURIComponent(monthStart)}&timeMax=${encodeURIComponent(monthEnd)}`)
         .then(res => res.json())
-        .then(data => setEvents(data.events ?? []))
-        .catch(() => setEvents([]))
+        .catch(() => ({ events: [] }))
+      if (cancelledEffect) return
+      const list: CalendarEvent[] = data.events ?? []
+      setEvents(list)
+
+      const studioIds = list.filter(e => !e.allDay && isStudioBooking(e.title)).map(e => e.id)
+      if (studioIds.length === 0) { setCancelledIds(new Set()); return }
+      const annotations = await getScheduleAnnotations(studioIds)
+      if (cancelledEffect) return
+      setCancelledIds(new Set(Object.values(annotations.data).filter(a => a.isCancelled).map(a => a.calendarEventId!)))
     }
     loadEvents()
     // Автообновление раз в 5 минут, чтобы новые записи и статусы подтягивались сами
     const interval = setInterval(loadEvents, 5 * 60 * 1000)
-    return () => clearInterval(interval)
+    return () => { cancelledEffect = true; clearInterval(interval) }
   }, [monthStart, monthEnd])
 
-  const monthlyStudioEvents = (events ?? []).filter(e => !e.allDay && isStudioBooking(e.title))
-  const totalMonthHours = monthlyStudioEvents.reduce((sum, e) => sum + eventHours(e), 0)
-  const todayEvents = monthlyStudioEvents.filter(e => new Date(e.start).toDateString() === now.toDateString())
+  // "Сегодня"/"Записи сегодня" — это планирование (расписание на сегодня),
+  // а не аналитика состоявшихся съёмок, поэтому берётся из ПОЛНОГО списка
+  // записей месяца, без фильтра "уже завершилась" (ТЗ, часть 12: планирование
+  // и аналитику завершённых записей нельзя смешивать).
+  const allMonthStudioEvents = (events ?? []).filter(e => !e.allDay && isStudioBooking(e.title))
+  const todayEvents = allMonthStudioEvents.filter(e => new Date(e.start).toDateString() === now.toDateString())
+
+  // А вот "Часов за месяц"/"За месяц"/диаграмма — это уже аналитика состоявшихся
+  // съёмок: только завершённые к текущему моменту записи текущего календарного
+  // месяца, без отменённых (единый фильтр из booking-analytics.ts — тот же,
+  // что использует подробный отчёт /admin/reports/hours, ТЗ, часть 10).
+  const completedMonthStudioEvents = filterCompletedStudioBookings(
+    allMonthStudioEvents.map(e => ({ ...e, isCancelled: cancelledIds.has(e.id) })),
+    monthRange, now,
+  )
+  const totalMonthHours = calculateCompletedHours(completedMonthStudioEvents)
 
   const categoryMap = new Map<string, { hours: number; events: CalendarEvent[] }>()
-  for (const e of monthlyStudioEvents) {
+  for (const e of completedMonthStudioEvents) {
     const cat = categorizeEvent(e.title)
     const entry = categoryMap.get(cat) ?? { hours: 0, events: [] }
     entry.hours += eventHours(e)
@@ -112,7 +147,9 @@ export default function DashboardBody({ clientsTotal, monthStart, monthEnd, nowI
             <HoursStatCard
               categories={categoryBreakdown}
               totalHours={totalMonthHours}
-              recordsCount={monthlyStudioEvents.length}
+              recordsCount={completedMonthStudioEvents.length}
+              monthLabel={monthLabel}
+              completedRangeLabel={completedRangeLabel}
             />
 
             <MetricCard
@@ -130,9 +167,9 @@ export default function DashboardBody({ clientsTotal, monthStart, monthEnd, nowI
 
             <MetricCard
               icon={TrendingUp}
-              label="За месяц"
-              value={String(monthlyStudioEvents.length)}
-              subtitle="записей в студии"
+              label={`Записей за ${monthLabel.split(' ')[0].toLowerCase()}`}
+              value={String(completedMonthStudioEvents.length)}
+              subtitle={`Завершено: ${completedRangeLabel}`}
               padding="p-7"
               valueClassName="text-4xl mt-3"
               iconWrapperClassName="w-14 h-14"

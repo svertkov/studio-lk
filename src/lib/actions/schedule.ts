@@ -63,11 +63,13 @@ type SubscriptionUsageWithSubscription = SubscriptionUsage & {
 type ScheduleEventWithClient = ScheduleEvent & {
   client: { name: string } | null
   subscriptionUsage: SubscriptionUsageWithSubscription | null
+  order: { status: string } | null
 }
 
 const SCHEDULE_EVENT_INCLUDE = {
   client: { select: { name: true } },
   subscriptionUsage: { include: { subscription: { include: { usages: true } } } },
+  order: { select: { status: true } },
 } as const
 
 function toDTO(row: ScheduleEventWithClient): ScheduleEventDTO {
@@ -100,6 +102,8 @@ function toDTO(row: ScheduleEventWithClient): ScheduleEventDTO {
     clientConfirmationStatus: row.clientConfirmationStatus,
     eventType: row.eventType,
     makeupDurationMinutes: row.makeupDurationMinutes,
+    orderId: row.orderId,
+    isCancelled: row.order?.status === 'CANCELLED',
     subscriptionUsage: su ? {
       subscriptionId: su.subscriptionId,
       usedHours: su.usedHours,

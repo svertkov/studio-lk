@@ -346,6 +346,11 @@ export interface ScheduleEventDTO {
   subscriptionUsage: ScheduleEventSubscriptionInfo | null
   eventType: EventType
   makeupDurationMinutes: number | null
+  orderId: string | null
+  // Единственный существующий в схеме сигнал отмены записи — статус связанного
+  // Order (у самого ScheduleEvent нет отдельного статуса отмены, см.
+  // client-shoots-model.ts). false, если заказа нет вовсе.
+  isCancelled: boolean
 }
 
 // Снэпшот абонемента, которым оплачена эта конкретная запись — только для

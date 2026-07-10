@@ -1,10 +1,12 @@
 'use client'
 
 import { useMemo, useState } from 'react'
+import Link from 'next/link'
 import { format, parseISO } from 'date-fns'
 import { ru } from 'date-fns/locale'
+import { ArrowUp, ArrowDown, ArrowUpDown, ExternalLink } from 'lucide-react'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
-import { ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react'
+import { Badge } from '@/components/ui/badge'
 import { colorForCategory } from '@/lib/event-category'
 
 export interface HoursRow {
@@ -12,9 +14,11 @@ export interface HoursRow {
   start: string
   category: string
   client: string
+  clientId: string | null
   hall: string
   cameras: number | null
   hours: number
+  amount: number | null
 }
 
 type SortKey = 'date' | 'category' | 'client' | 'hall' | 'hours'
@@ -24,12 +28,20 @@ const TEXT_SORT_KEYS: SortKey[] = ['category', 'client', 'hall']
 const COLUMNS: { key: SortKey | null; label: string }[] = [
   { key: 'date', label: 'Дата' },
   { key: null, label: 'Время' },
-  { key: 'category', label: 'Категория' },
+  { key: 'category', label: 'Формат' },
   { key: 'client', label: 'Клиент' },
   { key: 'hall', label: 'Зал' },
   { key: null, label: 'Камеры' },
   { key: 'hours', label: 'Часы' },
+  { key: null, label: 'Статус' },
+  { key: null, label: 'Сумма' },
+  { key: null, label: '' },
 ]
+
+function formatMoney(v: number | null): string {
+  if (v == null) return '—'
+  return new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB', maximumFractionDigits: 0 }).format(v)
+}
 
 export default function HoursReportTable({ rows }: { rows: HoursRow[] }) {
   const [sortKey, setSortKey] = useState<SortKey>('date')
@@ -63,18 +75,18 @@ export default function HoursReportTable({ rows }: { rows: HoursRow[] }) {
   if (rows.length === 0) {
     return (
       <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-12 text-center">
-        <p className="text-zinc-400">Записей за этот месяц нет</p>
+        <p className="text-zinc-400">За выбранный месяц завершённых записей нет</p>
       </div>
     )
   }
 
   return (
-    <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
+    <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden overflow-x-auto">
       <Table>
         <TableHeader>
           <TableRow className="border-zinc-800 hover:bg-transparent">
             {COLUMNS.map(col => (
-              <TableHead key={col.label} className="text-zinc-400 text-xs uppercase tracking-wider">
+              <TableHead key={col.label || 'action'} className="text-zinc-400 text-xs uppercase tracking-wider">
                 {col.key ? (
                   <button
                     onClick={() => toggleSort(col.key as SortKey)}
@@ -95,18 +107,34 @@ export default function HoursReportTable({ rows }: { rows: HoursRow[] }) {
         <TableBody>
           {sorted.map(row => (
             <TableRow key={row.id} className="border-zinc-800 hover:bg-zinc-800/50">
-              <TableCell className="text-zinc-200">{format(parseISO(row.start), 'd MMM', { locale: ru })}</TableCell>
-              <TableCell className="text-zinc-400">{format(parseISO(row.start), 'HH:mm')}</TableCell>
+              <TableCell className="text-zinc-200 whitespace-nowrap">{format(parseISO(row.start), 'd MMM', { locale: ru })}</TableCell>
+              <TableCell className="text-zinc-400 whitespace-nowrap">{format(parseISO(row.start), 'HH:mm')}</TableCell>
               <TableCell>
-                <span className="inline-flex items-center gap-1.5 text-zinc-200">
+                <span className="inline-flex items-center gap-1.5 text-zinc-200 whitespace-nowrap">
                   <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: colorForCategory(row.category) }} />
                   {row.category}
                 </span>
               </TableCell>
               <TableCell className="text-zinc-200">{row.client}</TableCell>
-              <TableCell className="text-zinc-400">{row.hall}</TableCell>
-              <TableCell className="text-zinc-400">{row.cameras ?? '—'}</TableCell>
-              <TableCell className="text-white font-medium">{row.hours.toFixed(1)} ч</TableCell>
+              <TableCell className="text-zinc-400 whitespace-nowrap">{row.hall}</TableCell>
+              <TableCell className="text-zinc-400 whitespace-nowrap">{row.cameras ?? '—'}</TableCell>
+              <TableCell className="text-white font-medium whitespace-nowrap">{row.hours.toFixed(1)} ч</TableCell>
+              <TableCell>
+                <Badge variant="outline" className="text-[11px] border-green-800 text-green-400">Завершено</Badge>
+              </TableCell>
+              <TableCell className="text-zinc-300 whitespace-nowrap">{formatMoney(row.amount)}</TableCell>
+              <TableCell>
+                {row.clientId && (
+                  <Link
+                    href={`/admin/clients/${row.clientId}`}
+                    aria-label="Открыть карточку клиента"
+                    title="Открыть карточку клиента"
+                    className="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-white transition-colors"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </Link>
+                )}
+              </TableCell>
             </TableRow>
           ))}
         </TableBody>

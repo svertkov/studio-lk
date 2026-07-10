@@ -1,10 +1,9 @@
-import { startOfMonth, endOfMonth } from 'date-fns'
+import { getCurrentStudioYearMonth } from '@/lib/booking-analytics'
 import HoursReportBody from './HoursReportBody'
 
 export default function HoursReportPage() {
   const now = new Date()
-  const monthStart = startOfMonth(now).toISOString()
-  const monthEnd = endOfMonth(now).toISOString()
+  const { year, month } = getCurrentStudioYearMonth(now)
 
-  return <HoursReportBody monthStart={monthStart} monthEnd={monthEnd} nowIso={now.toISOString()} />
+  return <HoursReportBody initialYear={year} initialMonth={month} nowIso={now.toISOString()} />
 }

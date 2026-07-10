@@ -180,7 +180,7 @@ export function extractTimeRange(raw: string): TimeRangeExtraction | undefined {
 // суток (см. parseFlexibleDate — строится через Date.UTC, поэтому берём
 // именно getUTC*-компоненты, а не локальные, независимо от TZ окружения,
 // где выполняется скрипт/сервер).
-const STUDIO_UTC_OFFSET_HOURS = 3
+export const STUDIO_UTC_OFFSET_HOURS = 3
 
 export function combineDateWithStudioTime(date: Date, hour: number, minute: number): Date {
   return new Date(Date.UTC(
