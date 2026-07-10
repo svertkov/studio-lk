@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
-import { ArrowLeft, Mail, Phone, MessageCircle, Calendar } from 'lucide-react'
+import { ArrowLeft, Mail, Phone, MessageCircle, Calendar, Clock, Wallet } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import {
   CLIENT_STATUS_LABELS, CLIENT_STATUS_COLORS,
@@ -9,20 +9,30 @@ import {
 } from '@/lib/client-model'
 import { getClientById } from '@/lib/actions/clients'
 import { getClientSubscriptions } from '@/lib/actions/subscriptions'
-import { getClientScheduleBookings } from '@/lib/actions/schedule'
+import { getClientShootsData, getClientFinanceOverview } from '@/lib/actions/client-shoots'
 import { getConversationForClient } from '@/lib/actions/telegram'
 import ClientTabs from './ClientTabs'
 import EditClientModal from './EditClientModal'
 import MergeClientModal from './MergeClientModal'
 import ClientTelegramLayout from '@/components/telegram/ClientTelegramLayout'
 
+function formatMoney(v: number | null) {
+  if (v == null) return '—'
+  return new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB', maximumFractionDigits: 0 }).format(v)
+}
+
+function formatHours(v: number) {
+  return `${v % 1 === 0 ? v.toFixed(0) : v.toFixed(1)} ч`
+}
+
 export default async function ClientDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
 
-  const [result, subscriptionsResult, bookingsResult, telegramResult] = await Promise.all([
+  const [result, subscriptionsResult, shootsResult, financeResult, telegramResult] = await Promise.all([
     getClientById(id),
     getClientSubscriptions(id),
-    getClientScheduleBookings(id),
+    getClientShootsData(id),
+    getClientFinanceOverview(id),
     getConversationForClient(id),
   ])
   if (!result.ok || !result.data) redirect('/admin/clients')
@@ -30,6 +40,8 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
   const client = result.data
   const initials = client.name.charAt(0).toUpperCase()
   const conversation = telegramResult.ok ? telegramResult.data : null
+  const { summary } = shootsResult.data
+  const finance = financeResult.data
   // Тот же приём, что и в src/app/(admin)/admin/telegram/[id]/page.tsx —
   // ключ меняется при реальном изменении диалога, чтобы ClientTelegramPanel
   // пересоздавался из свежих данных, а не пытался слить их через useEffect.
@@ -134,6 +146,41 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
               на самой карточке — полное значение видно по наведению, если
               когда-нибудь встретится более длинный источник. Ни одна
               карточка не кликабельна — намеренно без hover/cursor-pointer. */}
+          {/* Два заметных итоговых показателя — часы и деньги, посчитанные
+              сервером один раз (getClientShootsData/getClientFinanceOverview)
+              из единого списка "Съёмки", без двойного учёта абонементов и
+              разовых оплат (см. итоговый отчёт). Отдельная строка над мелкими
+              мета-карточками ниже, чтобы не теряться на их фоне. */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <p className="text-zinc-400 text-xs uppercase tracking-wider">Всего часов в студии</p>
+                <div className="w-8 h-8 bg-zinc-800 rounded-lg flex items-center justify-center flex-shrink-0">
+                  <Clock className="w-4 h-4 text-zinc-300" />
+                </div>
+              </div>
+              <p className="text-white text-2xl font-bold">{formatHours(summary.totalHours)}</p>
+              <p className="text-zinc-500 text-xs mt-1">
+                {summary.totalShoots} {summary.totalShoots === 1 ? 'съёмка' : 'съёмок'}
+                {summary.lastShootDate && ` · последняя ${new Date(summary.lastShootDate).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' })}`}
+              </p>
+            </div>
+            <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <p className="text-zinc-400 text-xs uppercase tracking-wider">Всего оплачено</p>
+                <div className="w-8 h-8 bg-zinc-800 rounded-lg flex items-center justify-center flex-shrink-0">
+                  <Wallet className="w-4 h-4 text-zinc-300" />
+                </div>
+              </div>
+              <p className="text-white text-2xl font-bold">{formatMoney(finance.netReceived)}</p>
+              <p className="text-zinc-500 text-xs mt-1">
+                {finance.refundsTotal > 0
+                  ? `из них возвращено ${formatMoney(finance.refundsTotal)}`
+                  : summary.avgCheck != null ? `средний чек ${formatMoney(summary.avgCheck)}` : 'нет данных об оплатах'}
+              </p>
+            </div>
+          </div>
+
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
             <div className="bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3.5 flex flex-col justify-center gap-0.5 h-[72px]">
               <p className="text-zinc-500 text-[11px] uppercase tracking-wide">Заметок</p>
@@ -159,7 +206,13 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
           </div>
 
           {/* Tabs */}
-          <ClientTabs client={client} subscriptions={subscriptionsResult.data} bookings={bookingsResult.data} />
+          <ClientTabs
+            client={client}
+            subscriptions={subscriptionsResult.data}
+            shoots={shootsResult.data.shoots}
+            shootsSummary={shootsResult.data.summary}
+            financeOverview={finance}
+          />
       </ClientTelegramLayout>
     </div>
   )

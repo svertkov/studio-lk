@@ -2,40 +2,42 @@
 
 import { useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { ShoppingBag, Film, DollarSign, FileText, Upload, Send, Calendar, Clock, Wallet, Receipt, Link2, HardDrive as NasIcon, ExternalLink } from 'lucide-react'
+import {
+  ShoppingBag, Film, DollarSign, FileText, Upload, Send, Calendar, Clock, Receipt,
+  Link2, ExternalLink, Wallet,
+} from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import {
   CLIENT_TYPE_LABELS, CLIENT_STATUS_LABELS, CLIENT_SOURCE_LABELS,
 } from '@/lib/client-model'
 import { addClientNote } from '@/lib/actions/clients'
 import type { ClientSubscriptionDTO } from '@/lib/actions/subscriptions'
-import { getScheduleAnnotations, type ClientBookingDTO } from '@/lib/actions/schedule'
+import { getScheduleAnnotations } from '@/lib/actions/schedule'
+import type { ShootRowDTO, ShootsSummaryOutDTO, FinanceOverviewOutDTO } from '@/lib/actions/client-shoots'
 import {
   SUBSCRIPTION_DISPLAY_STATUS_LABELS, SUBSCRIPTION_DISPLAY_STATUS_COLORS,
   SUBSCRIPTION_ARCHIVED_BADGE_LABEL, SUBSCRIPTION_ARCHIVED_BADGE_CLASS,
   getSubscriptionDisplayStatus,
 } from '@/lib/subscription-model'
 import { PAYMENT_METHOD_LABELS, mergeScheduleEvent, type ScheduleEventVM } from '@/lib/schedule-model'
-import { computeVisitStats } from '@/lib/visit-stats'
+import { isValidHttpUrl } from '@/lib/url'
 import type { CalendarEvent } from '@/lib/google-calendar'
 import DonutChart from '@/components/ui/donut-chart'
 import MetricCard, { METRIC_GRID_CLASSNAME } from '@/components/ui/metric-card'
-import MaterialsStatusBadge from '../../schedule/MaterialsStatusBadge'
 import EventCardModal from '../../schedule/EventCardModal'
 import SubscriptionActionsMenu from '@/components/subscriptions/SubscriptionActionsMenu'
 import SubscriptionDetailModal from '../../finance/subscriptions/SubscriptionDetailModal'
 
 const CHART_COLORS = ['#00c26b', '#3b82f6', '#f59e0b', '#a855f7', '#ef4444', '#14b8a6']
+const LONG_COMMENT_THRESHOLD = 140
 
 function formatMoney(v: number | null) {
   if (v == null) return '—'
   return new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB', maximumFractionDigits: 0 }).format(v)
 }
 
-// Компактный формат (напр. "8,5 тыс. ₽") — только для маленьких карточек-метрик
-// во вкладке «Съёмки», где точная сумма и так обрезалась бы CSS-многоточием
-// при узкой колонке. Везде, где нужна точная сумма (таблица визитов, заказы,
-// абонементы), используется formatMoney — его не трогаем.
+// Компактный формат (напр. "8,5 тыс. ₽") — только для маленьких карточек-метрик,
+// где точная сумма и так обрезалась бы CSS-многоточием при узкой колонке.
 function formatMoneyCompact(v: number | null) {
   if (v == null) return '—'
   return new Intl.NumberFormat('ru-RU', { notation: 'compact', style: 'currency', currency: 'RUB', maximumFractionDigits: 1 }).format(v)
@@ -44,6 +46,29 @@ function formatMoneyCompact(v: number | null) {
 function formatDate(v: string | Date | null) {
   if (!v) return '—'
   return new Date(v).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' })
+}
+
+function formatTimeRange(startAt: string | null, endAt: string | null): string | null {
+  if (!startAt || !endAt) return null
+  const fmt = (v: string) => new Date(v).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
+  return `${fmt(startAt)}–${fmt(endAt)}`
+}
+
+function formatHours(v: number | null) {
+  if (v == null) return '—'
+  return `${v % 1 === 0 ? v.toFixed(0) : v.toFixed(1)} ч`
+}
+
+// Единое текстовое представление суммы съёмки — правила из ТЗ, часть 4:
+// абонемент/бесплатно/не оплачено/нет данных — это состояния, а не 0 ₽.
+function formatShootAmount(row: ShootRowDTO): string {
+  switch (row.amount.kind) {
+    case 'subscription': return `По абонементу${row.amount.subscriptionHours != null ? ` · ${row.amount.subscriptionHours} ч` : ''}`
+    case 'free': return '0 ₽'
+    case 'unpaid': return 'Не оплачено'
+    case 'unknown': return 'Нет данных'
+    case 'amount': return formatMoney(row.amount.amount)
+  }
 }
 
 interface ClientNote {
@@ -71,17 +96,6 @@ interface ClientDoc {
   createdAt: string | Date
 }
 
-interface ClientVisitRow {
-  id: string
-  date: string | Date | null
-  room: string | null
-  format: string | null
-  durationHours: number | null
-  grossAmount: number | null
-  netAmount: number | null
-  comment: string | null
-}
-
 interface PrismaClient {
   id: string
   name: string
@@ -104,13 +118,14 @@ interface PrismaClient {
   clientNotes: ClientNote[]
   contacts: ClientContact[]
   documents: ClientDoc[]
-  visits: ClientVisitRow[]
 }
 
 interface Props {
   client: PrismaClient
   subscriptions: ClientSubscriptionDTO[]
-  bookings: ClientBookingDTO[]
+  shoots: ShootRowDTO[]
+  shootsSummary: ShootsSummaryOutDTO
+  financeOverview: FinanceOverviewOutDTO
 }
 
 const TABS = [
@@ -120,10 +135,6 @@ const TABS = [
   { id: 'editing',    label: 'Монтаж' },
   { id: 'finance',    label: 'Финансы' },
   { id: 'documents',  label: 'Документы' },
-  // Раньше был плейсхолдером "Материалы" — теперь реальный список всех
-  // записей клиента (id оставлен прежним, он используется только для
-  // сравнения внутри этого файла, наружу нигде не торчит).
-  { id: 'materials',  label: 'Записи' },
   { id: 'notes',      label: 'Заметки' },
 ]
 
@@ -137,21 +148,6 @@ function PlaceholderTab({ icon: Icon, title, description }: { icon: React.Elemen
   )
 }
 
-// ClientVisit — исторический импорт из Google-таблицы, без FK на ScheduleEvent.
-// Сопоставляем визит с живой записью расписания эвристикой "тот же день"
-// (+ зал/формат, если день оказался неоднозначным) — единая сущность для
-// открытия карточки уже есть (ScheduleEvent/бронирование), дублировать её не
-// нужно; если совпадения нет — строка просто не кликабельна.
-function matchBookingForVisit(visit: ClientVisitRow, bookings: ClientBookingDTO[]): ClientBookingDTO | null {
-  if (!visit.date) return null
-  const dayKey = (d: Date) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`
-  const visitKey = dayKey(new Date(visit.date))
-  const candidates = bookings.filter(b => b.calendarEventId && b.startAt && dayKey(new Date(b.startAt)) === visitKey)
-  if (candidates.length <= 1) return candidates[0] ?? null
-  const refined = candidates.filter(b => (!visit.room || b.room === visit.room) && (!visit.format || b.format === visit.format))
-  return refined[0] ?? candidates[0]
-}
-
 function InfoRow({ label, value }: { label: string; value?: string | null }) {
   if (!value) return null
   return (
@@ -162,48 +158,91 @@ function InfoRow({ label, value }: { label: string; value?: string | null }) {
   )
 }
 
-export default function ClientTabs({ client, subscriptions, bookings }: Props) {
+// Комментарий может быть очень длинным (старые импортированные заметки) —
+// по умолчанию режем до 2 строк по словам (line-clamp, не posимвольно) и
+// даём кнопку "Показать полностью" вместо обрыва текста (ТЗ, часть 2).
+function CommentCell({ comment }: { comment: string | null }) {
+  const [expanded, setExpanded] = useState(false)
+  if (!comment) return <span className="text-zinc-600 text-xs">—</span>
+  const isLong = comment.length > LONG_COMMENT_THRESHOLD
+  return (
+    <div className="min-w-[180px] max-w-md">
+      <p className={`text-zinc-400 text-xs whitespace-pre-wrap break-words ${!expanded && isLong ? 'line-clamp-2' : ''}`}>
+        {comment}
+      </p>
+      {isLong && (
+        <button
+          type="button"
+          onClick={e => { e.stopPropagation(); setExpanded(v => !v) }}
+          className="text-[#00c26b] text-[11px] hover:underline mt-0.5"
+        >
+          {expanded ? 'Свернуть' : 'Показать полностью'}
+        </button>
+      )}
+    </div>
+  )
+}
+
+// Как и в computeShootsSummary — только фактически состоявшиеся съёмки:
+// без отменённых и без будущих (иначе "По залам"/"По форматам" считали бы
+// часы съёмки, которая не входит в "Часов в студии" на этой же вкладке).
+function groupHoursBy(rows: ShootRowDTO[], key: 'room' | 'format') {
+  const groups = new Map<string, number>()
+  let totalHours = 0
+  for (const r of rows) {
+    if (r.isCancelled || r.isFuture) continue
+    const label = r[key]
+    if (!label) continue
+    const hours = r.durationHours ?? 0
+    totalHours += hours
+    groups.set(label, (groups.get(label) ?? 0) + hours)
+  }
+  if (totalHours <= 0) return []
+  return Array.from(groups.entries())
+    .map(([label, hours]) => ({ label, value: (hours / totalHours) * 100 }))
+    .sort((a, b) => b.value - a.value)
+}
+
+export default function ClientTabs({ client, subscriptions, shoots, shootsSummary, financeOverview }: Props) {
   const router = useRouter()
   const [activeTab, setActiveTab] = useState('overview')
   const [noteText, setNoteText] = useState('')
   const [savingNote, setSavingNote] = useState(false)
   const [noteError, setNoteError] = useState<string | null>(null)
-  // Карточка конкретной записи открывается прямо отсюда — переиспользует тот
-  // же EventCardModal, что и раздел "Расписание", а не отдельную заново
-  // собранную форму. calendarEvent для него строится из снэпшот-полей самой
-  // аннотации (тот же приём, что и в PendingScheduleClients.tsx на странице
-  // Клиентов) — с этой страницы нет доступа к живому Google Calendar, а он
-  // и не нужен: title/start/end уже сохранены в ScheduleEvent как раз для
-  // таких контекстов (см. комментарий в начале schedule-model.ts).
+  // Карточка конкретной съёмки открывается прямо отсюда — переиспользует тот
+  // же EventCardModal, что и раздел "Расписание". calendarEvent для него
+  // строится из снэпшот-полей самой аннотации (у ScheduleEvent всегда есть
+  // аннотация, если он вообще существует, см. schedule-model.ts) — с этой
+  // страницы нет доступа к живому Google Calendar, а он и не нужен.
   const [openVm, setOpenVm] = useState<ScheduleEventVM | null>(null)
-  const [openingBookingId, setOpeningBookingId] = useState<string | null>(null)
+  const [openingRowId, setOpeningRowId] = useState<string | null>(null)
   // Открытие единой карточки абонемента (SubscriptionDetailModal) — та же
-  // самая, что и в Финансах, и в подборе абонемента заказа (см. ТЗ, часть 7).
+  // самая, что и в Финансах, и в подборе абонемента заказа.
   const [openSubscriptionId, setOpenSubscriptionId] = useState<string | null>(null)
 
   const isLegal = client.type !== 'INDIVIDUAL' && client.type !== 'SELF_EMPLOYED'
-  const visitStats = computeVisitStats(
-    client.visits.map(v => ({ ...v, date: v.date ? new Date(v.date) : null }))
-  )
-  // Записи, оплаченные по абонементу, уже показаны в истории списаний самого
-  // абонемента ниже — здесь показываем только те, что оплачивались отдельно.
-  const oneTimeBookings = bookings.filter(b => b.subscriptionUsedHours == null)
-  const visitBookingMatches = useMemo(
-    () => new Map(client.visits.map(v => [v.id, matchBookingForVisit(v, bookings)])),
-    [client.visits, bookings]
+
+  const byRoom = useMemo(() => groupHoursBy(shoots, 'room'), [shoots])
+  const byFormat = useMemo(() => groupHoursBy(shoots, 'format'), [shoots])
+  // Те же правила, что и в финансовом расчёте на сервере (computeFinanceOverview):
+  // отменённые/будущие съёмки не показываются как "оплата" в этом списке.
+  const paymentRows = useMemo(
+    () => shoots.filter(r => !r.isCancelled && !r.isFuture && r.amount.kind !== 'unknown'),
+    [shoots]
   )
 
-  async function handleOpenBooking(booking: ClientBookingDTO) {
-    if (!booking.calendarEventId) return
-    setOpeningBookingId(booking.id)
-    const annResult = await getScheduleAnnotations([booking.calendarEventId])
-    setOpeningBookingId(null)
-    const annotation = annResult.data[booking.calendarEventId] ?? null
+  async function handleOpenShoot(row: ShootRowDTO) {
+    if (!row.calendarEventId) return
+    setOpeningRowId(row.id)
+    const annResult = await getScheduleAnnotations([row.calendarEventId])
+    setOpeningRowId(null)
+    const annotation = annResult.data[row.calendarEventId] ?? null
+    const fallbackTime = row.startAt ?? row.date ?? new Date().toISOString()
     const calendarEvent: CalendarEvent = {
-      id: booking.calendarEventId,
-      title: booking.title ?? 'Без названия',
-      start: booking.startAt ?? new Date().toISOString(),
-      end: booking.endAt ?? new Date().toISOString(),
+      id: row.calendarEventId,
+      title: annotation?.title ?? row.format ?? 'Съёмка',
+      start: annotation?.startAt ?? fallbackTime,
+      end: annotation?.endAt ?? row.endAt ?? fallbackTime,
       allDay: false,
       description: annotation?.description ?? '',
       location: '',
@@ -211,12 +250,6 @@ export default function ClientTabs({ client, subscriptions, bookings }: Props) {
       color: '#00c26b',
     }
     setOpenVm(mergeScheduleEvent(calendarEvent, annotation))
-  }
-
-  function formatBookingPayment(b: ClientBookingDTO): string {
-    if (b.subscriptionUsedHours != null) return `Абонемент · ${b.subscriptionUsedHours} ч`
-    if (b.estimatedPrice != null) return formatMoney(b.estimatedPrice) + (b.paymentMethod ? ` · ${PAYMENT_METHOD_LABELS[b.paymentMethod]}` : '')
-    return 'Не указана'
   }
 
   async function handleSaveNote() {
@@ -305,23 +338,23 @@ export default function ClientTabs({ client, subscriptions, bookings }: Props) {
           </div>
         )}
 
-        {/* Съёмки */}
+        {/* Съёмки — единый список: старые импортированные визиты + живые
+            записи расписания, без дублей (см. getClientShootsData). */}
         {activeTab === 'sessions' && (
-          client.visits.length === 0 ? (
+          shoots.length === 0 ? (
             <PlaceholderTab
               icon={Calendar}
-              title="История визитов пока не импортирована"
-              description="Импортируйте базу клиентов из Excel, PDF или Google-таблицы, чтобы увидеть визиты, часы и суммы"
+              title="Съёмок пока нет"
+              description="Импортируйте историю визитов или создайте запись в разделе «Расписание», чтобы увидеть съёмки, часы и суммы"
             />
           ) : (
             <div className="space-y-4">
-              {/* Метрики */}
+              {/* Метрики — из уже посчитанного на сервере summary, без
+                  повторного пересчёта на фронтенде (ТЗ, часть 9). */}
               <div className={METRIC_GRID_CLASSNAME}>
-                <MetricCard icon={Calendar} label="Визитов" value={String(visitStats.totalVisits)} />
-                <MetricCard icon={Clock} label="Часов в студии" value={visitStats.totalHours.toFixed(1)} />
-                <MetricCard icon={Wallet} label="Выручка" value={formatMoneyCompact(visitStats.grossTotal)} />
-                <MetricCard icon={Receipt} label="Чистая прибыль" value={formatMoneyCompact(visitStats.netTotal)} />
-                <MetricCard icon={DollarSign} label="Средний чек" value={formatMoneyCompact(visitStats.avgCheck)} />
+                <MetricCard icon={Calendar} label="Съёмок" value={String(shootsSummary.totalShoots)} />
+                <MetricCard icon={Clock} label="Часов в студии" value={formatHours(shootsSummary.totalHours)} />
+                <MetricCard icon={DollarSign} label="Средний чек" value={formatMoneyCompact(shootsSummary.avgCheck)} />
               </div>
 
               {/* Диаграммы */}
@@ -330,65 +363,100 @@ export default function ClientTabs({ client, subscriptions, bookings }: Props) {
                   <h3 className="text-white font-semibold text-sm mb-4">По залам</h3>
                   <DonutChart
                     emptyLabel="Нет данных о залах"
-                    data={visitStats.byRoom.map((r, i) => ({ label: r.label, value: r.percent, color: CHART_COLORS[i % CHART_COLORS.length] }))}
+                    data={byRoom.map((r, i) => ({ label: r.label, value: r.value, color: CHART_COLORS[i % CHART_COLORS.length] }))}
                   />
                 </div>
                 <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6">
                   <h3 className="text-white font-semibold text-sm mb-4">По форматам записи</h3>
                   <DonutChart
                     emptyLabel="Нет данных о форматах"
-                    data={visitStats.byFormat.map((f, i) => ({ label: f.label, value: f.percent, color: CHART_COLORS[i % CHART_COLORS.length] }))}
+                    data={byFormat.map((f, i) => ({ label: f.label, value: f.value, color: CHART_COLORS[i % CHART_COLORS.length] }))}
                   />
                 </div>
               </div>
 
-              {/* История визитов */}
+              {/* История съёмок */}
               <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
                 <div className="px-6 py-4 border-b border-zinc-800">
-                  <h3 className="text-white font-semibold text-sm">История визитов</h3>
-                  <p className="text-zinc-500 text-xs mt-0.5">Нажмите на визит со связанной записью в расписании, чтобы открыть её карточку</p>
+                  <h3 className="text-white font-semibold text-sm">История съёмок</h3>
+                  <p className="text-zinc-500 text-xs mt-0.5">Нажмите на съёмку со связью в расписании, чтобы открыть её карточку</p>
                 </div>
                 <div className="overflow-x-auto">
-                  <table className="w-full text-sm table-fixed">
+                  <table className="w-full text-sm min-w-[860px]">
                     <thead>
                       <tr className="border-b border-zinc-800 bg-zinc-800/40">
-                        <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium w-28">Дата</th>
-                        <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium w-24">Зал</th>
-                        <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium w-28">Формат</th>
-                        <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium w-16">Часы</th>
-                        <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium w-28">Сумма</th>
+                        <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium">Дата и время</th>
+                        <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium">Зал</th>
+                        <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium">Формат</th>
+                        <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium">Часы</th>
+                        <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium">Сумма</th>
+                        <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium">Яндекс.Диск</th>
+                        <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium">В системе</th>
                         <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium">Комментарий</th>
-                        <th className="w-12"></th>
                       </tr>
                     </thead>
                     <tbody>
-                      {client.visits.map((v, i) => {
-                        const matched = visitBookingMatches.get(v.id) ?? null
+                      {shoots.map((row, i) => {
+                        const clickable = !!row.calendarEventId
+                        const timeRange = formatTimeRange(row.startAt, row.endAt)
+                        const hasYandexLink = isValidHttpUrl(row.yandexDiskUrl)
                         return (
-                        <tr key={v.id}
-                          onClick={() => matched && handleOpenBooking(matched)}
-                          onKeyDown={e => {
-                            if ((e.key === 'Enter' || e.key === ' ') && matched) { e.preventDefault(); handleOpenBooking(matched) }
-                          }}
-                          tabIndex={matched ? 0 : -1}
-                          title={matched ? 'Открыть запись в расписании' : 'Нет связанной записи в расписании'}
-                          className={`border-b border-zinc-800/60 transition-colors ${i === client.visits.length - 1 ? 'border-b-0' : ''} ${
-                            matched ? 'cursor-pointer hover:bg-white/[0.04] focus:outline-none focus:bg-white/[0.04]' : ''
-                          }`}
-                        >
-                          <td className="px-4 py-2.5 text-zinc-300 text-sm">
-                            {formatDate(v.date)}
-                            {matched && openingBookingId === matched.id && <span className="text-zinc-500 text-xs ml-2">Открываем...</span>}
-                          </td>
-                          <td className="px-4 py-2.5 text-zinc-400 text-sm truncate">{v.room ?? '—'}</td>
-                          <td className="px-4 py-2.5 text-zinc-400 text-sm truncate">{v.format ?? '—'}</td>
-                          <td className="px-4 py-2.5 text-zinc-400 text-sm">{v.durationHours ?? '—'}</td>
-                          <td className="px-4 py-2.5 text-zinc-400 text-sm truncate">{v.grossAmount != null ? formatMoney(v.grossAmount) : '—'}</td>
-                          <td className="px-4 py-2.5 text-zinc-500 text-xs max-w-xs truncate" title={v.comment ?? undefined}>{v.comment ?? '—'}</td>
-                          <td className="px-4 py-2.5 text-right">
-                            {matched && <ExternalLink className="w-3.5 h-3.5 text-zinc-500 inline-block" />}
-                          </td>
-                        </tr>
+                          <tr
+                            key={row.id}
+                            onClick={() => clickable && handleOpenShoot(row)}
+                            onKeyDown={e => {
+                              if ((e.key === 'Enter' || e.key === ' ') && clickable) { e.preventDefault(); handleOpenShoot(row) }
+                            }}
+                            tabIndex={clickable ? 0 : -1}
+                            className={`align-top border-b border-zinc-800/60 transition-colors ${i === shoots.length - 1 ? 'border-b-0' : ''} ${
+                              clickable ? 'cursor-pointer hover:bg-white/[0.04] focus:outline-none focus:bg-white/[0.04]' : ''
+                            } ${row.isCancelled ? 'opacity-50' : ''}`}
+                          >
+                            <td className="px-4 py-3 whitespace-nowrap">
+                              <p className="text-zinc-300 text-sm">{formatDate(row.date)}</p>
+                              {timeRange && <p className="text-zinc-500 text-xs mt-0.5">{timeRange}</p>}
+                              {row.isFuture && <Badge variant="outline" className="text-[10px] mt-1 border-blue-800 text-blue-400">Будущая</Badge>}
+                              {row.isCancelled && <Badge variant="outline" className="text-[10px] mt-1 border-zinc-700 text-zinc-500">Отменена</Badge>}
+                              {openingRowId === row.id && <span className="text-zinc-500 text-xs ml-1">Открываем...</span>}
+                            </td>
+                            <td className="px-4 py-3 text-zinc-300 text-sm">{row.room ?? '—'}</td>
+                            <td className="px-4 py-3 text-zinc-300 text-sm">{row.format ?? '—'}</td>
+                            <td className="px-4 py-3 text-zinc-400 text-sm whitespace-nowrap">{formatHours(row.durationHours)}</td>
+                            <td className="px-4 py-3 text-zinc-300 text-sm whitespace-nowrap">{formatShootAmount(row)}</td>
+                            <td className="px-4 py-3">
+                              {hasYandexLink ? (
+                                <a
+                                  href={row.yandexDiskUrl!}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  onClick={e => e.stopPropagation()}
+                                  aria-label="Открыть материалы на Яндекс.Диске"
+                                  className="inline-flex items-center gap-1 text-xs text-[#00c26b] hover:underline"
+                                >
+                                  <Link2 className="w-3.5 h-3.5" /> Открыть
+                                </a>
+                              ) : (
+                                <span className="text-zinc-600 text-xs">Нет ссылки</span>
+                              )}
+                            </td>
+                            <td className="px-4 py-3">
+                              {clickable ? (
+                                <button
+                                  type="button"
+                                  onClick={e => { e.stopPropagation(); handleOpenShoot(row) }}
+                                  aria-label="Открыть карточку съёмки в системе"
+                                  className="inline-flex items-center gap-1 text-xs text-[#00c26b] hover:underline"
+                                >
+                                  <ExternalLink className="w-3.5 h-3.5" /> Открыть
+                                </button>
+                              ) : (
+                                <span className="text-zinc-600 text-xs">Нет связи</span>
+                              )}
+                            </td>
+                            <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
+                              <CommentCell comment={row.comment} />
+                            </td>
+                          </tr>
                         )
                       })}
                     </tbody>
@@ -419,39 +487,81 @@ export default function ClientTabs({ client, subscriptions, bookings }: Props) {
 
         {/* Финансы */}
         {activeTab === 'finance' && (
-          subscriptions.length === 0 && oneTimeBookings.length === 0 ? (
+          subscriptions.length === 0 && financeOverview.totalReceived === 0 ? (
             <PlaceholderTab
               icon={DollarSign}
-              title="Абонементов и оплат пока нет"
+              title="Финансовых данных пока нет"
               description="Абонемент или способ оплаты можно указать в карточке записи расписания"
             />
           ) : (
             <div className="space-y-4">
-              {oneTimeBookings.length > 0 && (
-                <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
-                  <div className="px-6 py-4 border-b border-zinc-800">
-                    <h3 className="text-white font-semibold text-sm">Разовые оплаты по записям в расписании</h3>
-                  </div>
-                  <div className="divide-y divide-zinc-800/60">
-                    {oneTimeBookings.map(b => (
-                      <div key={b.id} className="flex items-center justify-between gap-4 px-6 py-3">
+              {/* Итоговые суммы */}
+              <div className={METRIC_GRID_CLASSNAME}>
+                <MetricCard icon={Wallet} label="Получено всего" value={formatMoneyCompact(financeOverview.totalReceived)} />
+                <MetricCard icon={Receipt} label="Возвращено" value={formatMoneyCompact(financeOverview.refundsTotal || null)} />
+                <MetricCard icon={DollarSign} label="Чистыми" value={formatMoneyCompact(financeOverview.netReceived)} />
+                <MetricCard icon={Calendar} label="Абонементы" value={formatMoneyCompact(financeOverview.subscriptionPurchasesTotal || null)} />
+                <MetricCard icon={Clock} label="Разовые оплаты" value={formatMoneyCompact(financeOverview.oneTimePaymentsTotal || null)} />
+              </div>
+
+              {/* Кольцевая диаграмма распределения денег */}
+              <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6">
+                <h3 className="text-white font-semibold text-sm mb-4">Откуда получены деньги</h3>
+                <DonutChart
+                  emptyLabel="Нет финансовых данных"
+                  formatValue={v => formatMoney(v)}
+                  data={financeOverview.segments.map((s, i) => ({
+                    label: s.date ? `${formatDate(s.date)}${s.label ? ' · ' + s.label : ''}` : s.label,
+                    value: s.value,
+                    color: CHART_COLORS[i % CHART_COLORS.length],
+                  }))}
+                />
+              </div>
+
+              {/* Список оплат по каждой съёмке — без двойного учёта абонементов:
+                  строки с оплатой по абонементу показывают "По абонементу", а не
+                  повторяют сумму покупки самого абонемента (ТЗ, часть 7). */}
+              <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
+                <div className="px-6 py-4 border-b border-zinc-800">
+                  <h3 className="text-white font-semibold text-sm">Оплаты по съёмкам</h3>
+                </div>
+                <div className="divide-y divide-zinc-800/60">
+                  {paymentRows.length === 0 ? (
+                    <p className="text-zinc-500 text-sm px-6 py-4">Нет данных об оплатах отдельных съёмок</p>
+                  ) : (
+                    paymentRows.map(row => (
+                      <div key={row.id} className="flex items-center justify-between gap-4 px-6 py-3">
                         <div className="min-w-0">
-                          <p className="text-zinc-200 text-sm truncate">{b.title ?? 'Запись'}</p>
+                          <p className="text-zinc-200 text-sm truncate">{row.format ?? 'Съёмка'}</p>
                           <p className="text-zinc-500 text-xs mt-0.5">
-                            {b.startAt ? formatDate(b.startAt) : '—'}
-                            {b.room && ` · ${b.room}`}
-                            {b.format && ` · ${b.format}`}
+                            {formatDate(row.date)}
+                            {row.room && ` · ${row.room}`}
                           </p>
                         </div>
-                        <div className="text-right flex-shrink-0">
-                          <p className="text-white text-sm font-medium">{b.estimatedPrice != null ? formatMoney(b.estimatedPrice) : '—'}</p>
-                          <p className="text-zinc-500 text-xs mt-0.5">{b.paymentMethod ? PAYMENT_METHOD_LABELS[b.paymentMethod] : 'способ не указан'}</p>
+                        <div className="text-right flex-shrink-0 flex items-center gap-3">
+                          <div>
+                            <p className="text-white text-sm font-medium">{formatShootAmount(row)}</p>
+                            <p className="text-zinc-500 text-xs mt-0.5">
+                              {row.amount.kind === 'amount' && row.paymentMethod ? PAYMENT_METHOD_LABELS[row.paymentMethod] : ' '}
+                            </p>
+                          </div>
+                          {row.calendarEventId && (
+                            <button
+                              type="button"
+                              onClick={() => handleOpenShoot(row)}
+                              aria-label="Открыть съёмку"
+                              className="text-zinc-500 hover:text-[#00c26b] transition-colors"
+                            >
+                              <ExternalLink className="w-4 h-4" />
+                            </button>
+                          )}
                         </div>
                       </div>
-                    ))}
-                  </div>
+                    ))
+                  )}
                 </div>
-              )}
+              </div>
+
               {subscriptions.map(sub => {
                 const displayStatus = getSubscriptionDisplayStatus(sub)
                 return (
@@ -567,75 +677,6 @@ export default function ClientTabs({ client, subscriptions, bookings }: Props) {
               </ul>
             )}
           </div>
-        )}
-
-        {/* Материалы */}
-        {activeTab === 'materials' && (
-          bookings.length === 0 ? (
-            <PlaceholderTab
-              icon={Calendar}
-              title="Записей пока нет"
-              description="Записи из календаря появятся здесь после первого сохранения карточки записи в разделе «Расписание»"
-            />
-          ) : (
-            <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
-              <div className="px-6 py-4 border-b border-zinc-800">
-                <h3 className="text-white font-semibold text-sm">Записи</h3>
-                <p className="text-zinc-500 text-xs mt-0.5">Нажмите на запись, чтобы открыть её карточку</p>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-zinc-800 bg-zinc-800/40">
-                      <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium">Дата</th>
-                      <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium">Название</th>
-                      <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium">Статус материалов</th>
-                      <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium">Яндекс.Диск</th>
-                      <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium">NAS</th>
-                      <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium">Оплата</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {bookings.map((b, i) => (
-                      <tr key={b.id}
-                        onClick={() => handleOpenBooking(b)}
-                        onKeyDown={e => {
-                          if ((e.key === 'Enter' || e.key === ' ') && b.calendarEventId) { e.preventDefault(); handleOpenBooking(b) }
-                        }}
-                        tabIndex={b.calendarEventId ? 0 : -1}
-                        title={b.calendarEventId ? undefined : 'У этой записи нет связанного события календаря'}
-                        className={`border-b border-zinc-800/60 transition-colors ${i === bookings.length - 1 ? 'border-b-0' : ''} ${
-                          b.calendarEventId
-                            ? 'cursor-pointer hover:bg-white/[0.04] focus:outline-none focus:bg-white/[0.04]'
-                            : 'opacity-50'
-                        }`}
-                      >
-                        <td className="px-4 py-3 text-zinc-300 text-sm whitespace-nowrap">
-                          {b.startAt ? formatDate(b.startAt) : '—'}
-                          {openingBookingId === b.id && <span className="text-zinc-500 text-xs ml-2">Открываем...</span>}
-                        </td>
-                        <td className="px-4 py-3 text-zinc-200 text-sm max-w-xs truncate">{b.title ?? 'Запись'}</td>
-                        <td className="px-4 py-3">
-                          <MaterialsStatusBadge status={b.materialsStatus} nasBackupUrl={b.nasBackupUrl} showLabel />
-                        </td>
-                        <td className="px-4 py-3">
-                          <span className={`inline-flex items-center gap-1 text-xs ${b.yandexDiskUrl ? 'text-[#00c26b]' : 'text-zinc-600'}`}>
-                            <Link2 className="w-3.5 h-3.5" /> {b.yandexDiskUrl ? 'Есть' : 'Нет'}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3">
-                          <span className={`inline-flex items-center gap-1 text-xs ${b.nasBackupUrl ? 'text-[#00c26b]' : 'text-zinc-600'}`}>
-                            <NasIcon className="w-3.5 h-3.5" /> {b.nasBackupUrl ? 'Есть' : 'Нет'}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 text-zinc-400 text-xs whitespace-nowrap">{formatBookingPayment(b)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )
         )}
 
         {/* Заметки */}

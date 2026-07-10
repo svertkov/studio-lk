@@ -141,7 +141,9 @@ export async function getClientById(id: string) {
           take: 50,
         },
         documents: { orderBy: { createdAt: 'desc' } },
-        visits: { orderBy: { date: 'desc' } },
+        // Визиты больше не включаются сюда — единая история "Съёмки"
+        // (визиты + записи расписания, без дублей) считается отдельно
+        // в getClientShootsData (src/lib/actions/client-shoots.ts).
       },
     })
     return { ok: true as const, data: client }

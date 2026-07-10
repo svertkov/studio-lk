@@ -19,6 +19,11 @@ interface Props {
   // Без этого пропа существующие места использования (карточка клиента)
   // продолжают рендериться как обычный нередактируемый список.
   hrefBase?: string
+  // Если передано — рядом с процентом в легенде показывается отформатированное
+  // значение (например, сумма в рублях). Без этого пропа поведение не
+  // меняется — существующие вызовы (визиты по залам/форматам, расходы по
+  // категориям) продолжают показывать только проценты.
+  formatValue?: (v: number) => string
 }
 
 const SIZE = 140
@@ -26,7 +31,7 @@ const STROKE = 18
 const RADIUS = (SIZE - STROKE) / 2
 const CIRCUMFERENCE = 2 * Math.PI * RADIUS
 
-export default function DonutChart({ data, emptyLabel = 'Нет данных', hrefBase }: Props) {
+export default function DonutChart({ data, emptyLabel = 'Нет данных', hrefBase, formatValue }: Props) {
   const total = data.reduce((s, d) => s + d.value, 0)
 
   if (total <= 0) {
@@ -59,6 +64,7 @@ export default function DonutChart({ data, emptyLabel = 'Нет данных', h
             <>
               <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: d.color }} />
               <span className="text-zinc-300 truncate">{d.label}</span>
+              {formatValue && <span className="text-zinc-400 flex-shrink-0">{formatValue(d.value)}</span>}
               <span className="text-zinc-500 flex-shrink-0">{Math.round((d.value / total) * 100)}%</span>
             </>
           )
