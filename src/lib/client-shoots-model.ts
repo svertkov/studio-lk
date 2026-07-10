@@ -40,6 +40,13 @@ export interface ShootRow {
   // не зависит от этого поля напрямую, см. categorizeShootAmount.
   paymentMethod: PaymentMethod | null
   yandexDiskUrl: string | null
+  // Момент, до которого ссылка на Яндекс.Диск считается действующей — уже
+  // хранится на ScheduleEvent (computeYandexLinkExpiry, schedule-model.ts),
+  // пересчитывается там же при каждом сохранении ссылки. Здесь только
+  // прокидывается, чтобы капсула "Материалы" могла показать актуальное
+  // активна/истекла состояние без повторного вычисления даты истечения.
+  yandexDiskUrlExpiresAt: Date | null
+  nasBackupUrl: string | null
   comment: string | null
   isCancelled: boolean
   isFuture: boolean
@@ -66,6 +73,8 @@ export interface ShootEventInput {
   estimatedPrice: number | null
   paymentMethod: PaymentMethod | null
   yandexDiskUrl: string | null
+  yandexDiskUrlExpiresAt: Date | null
+  nasBackupUrl: string | null
   notes: string | null
   subscriptionUsedHours: number | null
   // Статус связанного заказа (Order.status), если запись была создана из
@@ -161,6 +170,8 @@ export function mergeShoots(
       }),
       paymentMethod: e.paymentMethod,
       yandexDiskUrl: e.yandexDiskUrl,
+      yandexDiskUrlExpiresAt: e.yandexDiskUrlExpiresAt,
+      nasBackupUrl: e.nasBackupUrl,
       comment: e.notes,
       isCancelled,
       isFuture,
@@ -204,6 +215,8 @@ export function mergeShoots(
         }),
         paymentMethod: null,
         yandexDiskUrl: null,
+        yandexDiskUrlExpiresAt: null,
+        nasBackupUrl: null,
         comment: v.comment,
         isCancelled: false,
         isFuture: false,
@@ -217,6 +230,44 @@ export function mergeShoots(
     const tb = (b.date ?? b.startAt)?.getTime() ?? 0
     return tb - ta
   })
+}
+
+// ============================================================
+// КОЛОНКА "МАТЕРИАЛЫ" — активна/истекла/отсутствует, без завязки на React.
+// Проверка валидности самого значения URL (isValidHttpUrl) — забота UI-слоя;
+// сюда должны приходить уже проверенные значения (null, если ссылка битая).
+// ============================================================
+
+export type MaterialsLinkState = 'active' | 'expired' | null
+
+export interface MaterialsCapsulesState {
+  yandex: MaterialsLinkState
+  nas: 'active' | null
+}
+
+export function computeMaterialsCapsules(
+  input: { yandexDiskUrl: string | null; yandexDiskUrlExpiresAt: Date | null; nasBackupUrl: string | null },
+  now: Date = new Date()
+): MaterialsCapsulesState {
+  const yandex: MaterialsLinkState = input.yandexDiskUrl
+    ? (input.yandexDiskUrlExpiresAt && input.yandexDiskUrlExpiresAt.getTime() <= now.getTime() ? 'expired' : 'active')
+    : null
+  const nas: 'active' | null = input.nasBackupUrl ? 'active' : null
+  return { yandex, nas }
+}
+
+// ============================================================
+// "ПОКАЗАТЬ 5 / ПОКАЗАТЬ ВСЕ" — сколько строк таблицы рендерить по умолчанию.
+// ============================================================
+
+export const SHOOTS_TABLE_DEFAULT_LIMIT = 5
+
+export function getVisibleShoots<T>(shoots: T[], expanded: boolean, limit: number = SHOOTS_TABLE_DEFAULT_LIMIT): T[] {
+  return expanded ? shoots : shoots.slice(0, limit)
+}
+
+export function getHiddenShootsCount(total: number, limit: number = SHOOTS_TABLE_DEFAULT_LIMIT): number {
+  return Math.max(0, total - limit)
 }
 
 export interface ShootsSummaryDTO {

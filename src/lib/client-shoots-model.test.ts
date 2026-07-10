@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   mergeShoots, computeShootsSummary, computeFinanceOverview, categorizeShootAmount,
+  computeMaterialsCapsules, getVisibleShoots, getHiddenShootsCount, SHOOTS_TABLE_DEFAULT_LIMIT,
   type ShootVisitInput, type ShootEventInput, type ShootRow,
 } from './client-shoots-model'
 
@@ -19,7 +20,8 @@ function event(overrides: Partial<ShootEventInput> = {}): ShootEventInput {
     id: 'e1', calendarEventId: 'cal1',
     startAt: new Date('2026-06-01T10:00:00Z'), endAt: new Date('2026-06-01T12:00:00Z'),
     room: 'Светлый зал', format: 'Подкаст', estimatedPrice: 12000, paymentMethod: 'CASH',
-    yandexDiskUrl: null, notes: null, subscriptionUsedHours: null, orderStatus: null,
+    yandexDiskUrl: null, yandexDiskUrlExpiresAt: null, nasBackupUrl: null,
+    notes: null, subscriptionUsedHours: null, orderStatus: null,
     ...overrides,
   }
 }
@@ -225,5 +227,53 @@ describe('computeFinanceOverview — subscription purchase counted once, not per
     expect(overview.segments).toHaveLength(1)
     expect(overview.segments[0].label).toBe('Разовые оплаты')
     expect(overview.segments[0].value).toBe(10000)
+  })
+})
+
+describe('computeMaterialsCapsules', () => {
+  const uploadedAt = new Date('2026-07-01T00:00:00Z')
+  const expiresAt = new Date(uploadedAt.getTime() + 14 * 24 * 60 * 60 * 1000)
+
+  it('shows the Yandex capsule as active before the 14-day expiry', () => {
+    const justBefore = new Date(expiresAt.getTime() - 1000)
+    const state = computeMaterialsCapsules({ yandexDiskUrl: 'https://disk.yandex.ru/d/x', yandexDiskUrlExpiresAt: expiresAt, nasBackupUrl: null }, justBefore)
+    expect(state.yandex).toBe('active')
+  })
+
+  it('marks the Yandex link expired once the 14-day window has passed', () => {
+    const justAfter = new Date(expiresAt.getTime() + 1000)
+    const state = computeMaterialsCapsules({ yandexDiskUrl: 'https://disk.yandex.ru/d/x', yandexDiskUrlExpiresAt: expiresAt, nasBackupUrl: null }, justAfter)
+    expect(state.yandex).toBe('expired')
+  })
+
+  it('shows NAS as active whenever a NAS link is stored, independent of Yandex state', () => {
+    const state = computeMaterialsCapsules({ yandexDiskUrl: null, yandexDiskUrlExpiresAt: null, nasBackupUrl: 'https://nas.local/x' }, new Date())
+    expect(state.nas).toBe('active')
+    expect(state.yandex).toBeNull()
+  })
+
+  it('reports both capsules absent when neither link is stored ("Нет материалов" case)', () => {
+    const state = computeMaterialsCapsules({ yandexDiskUrl: null, yandexDiskUrlExpiresAt: null, nasBackupUrl: null }, new Date())
+    expect(state.yandex).toBeNull()
+    expect(state.nas).toBeNull()
+  })
+})
+
+describe('getVisibleShoots / getHiddenShootsCount — "show 5 / show all"', () => {
+  const ten = Array.from({ length: 10 }, (_, i) => i)
+
+  it('shows only the first 5 by default', () => {
+    expect(getVisibleShoots(ten, false)).toHaveLength(SHOOTS_TABLE_DEFAULT_LIMIT)
+    expect(getHiddenShootsCount(ten.length)).toBe(5)
+  })
+
+  it('shows all 10 once expanded', () => {
+    expect(getVisibleShoots(ten, true)).toHaveLength(10)
+  })
+
+  it('hides nothing (and the button should not render) when there are 5 or fewer shoots', () => {
+    const five = ten.slice(0, 5)
+    expect(getHiddenShootsCount(five.length)).toBe(0)
+    expect(getVisibleShoots(five, false)).toHaveLength(5)
   })
 })

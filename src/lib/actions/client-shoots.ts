@@ -45,6 +45,8 @@ export interface ShootRowDTO {
   amount: ShootAmount
   paymentMethod: PaymentMethod | null
   yandexDiskUrl: string | null
+  yandexDiskUrlExpiresAt: string | null
+  nasBackupUrl: string | null
   comment: string | null
   isCancelled: boolean
   isFuture: boolean
@@ -72,6 +74,8 @@ function toShootRowDTO(r: ShootRow): ShootRowDTO {
     amount: r.amount,
     paymentMethod: r.paymentMethod,
     yandexDiskUrl: r.yandexDiskUrl,
+    yandexDiskUrlExpiresAt: r.yandexDiskUrlExpiresAt ? r.yandexDiskUrlExpiresAt.toISOString() : null,
+    nasBackupUrl: r.nasBackupUrl,
     comment: r.comment,
     isCancelled: r.isCancelled,
     isFuture: r.isFuture,
@@ -97,7 +101,8 @@ async function loadShootRows(clientId: string): Promise<ShootRow[]> {
       where: { clientId, eventType: 'STUDIO_BOOKING' },
       select: {
         id: true, calendarEventId: true, startAt: true, endAt: true, room: true, format: true,
-        estimatedPrice: true, paymentMethod: true, yandexDiskUrl: true, notes: true,
+        estimatedPrice: true, paymentMethod: true, yandexDiskUrl: true, yandexDiskUrlExpiresAt: true,
+        nasBackupUrl: true, notes: true,
         subscriptionUsage: { select: { usedHours: true } },
         order: { select: { status: true } },
       },
@@ -115,6 +120,8 @@ async function loadShootRows(clientId: string): Promise<ShootRow[]> {
     estimatedPrice: e.estimatedPrice,
     paymentMethod: e.paymentMethod,
     yandexDiskUrl: e.yandexDiskUrl,
+    yandexDiskUrlExpiresAt: e.yandexDiskUrlExpiresAt,
+    nasBackupUrl: e.nasBackupUrl,
     notes: e.notes,
     subscriptionUsedHours: e.subscriptionUsage?.usedHours ?? null,
     orderStatus: e.order?.status ?? null,

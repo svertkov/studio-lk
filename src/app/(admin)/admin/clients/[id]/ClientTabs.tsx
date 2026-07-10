@@ -3,8 +3,8 @@
 import { useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import {
-  ShoppingBag, Film, DollarSign, FileText, Upload, Send, Calendar, Clock, Receipt,
-  Link2, ExternalLink, Wallet,
+  Film, DollarSign, FileText, Upload, Send, Calendar, Clock, Receipt,
+  ExternalLink, Wallet, Cloud, CloudOff, Server, ChevronDown,
 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import {
@@ -14,6 +14,9 @@ import { addClientNote } from '@/lib/actions/clients'
 import type { ClientSubscriptionDTO } from '@/lib/actions/subscriptions'
 import { getScheduleAnnotations } from '@/lib/actions/schedule'
 import type { ShootRowDTO, ShootsSummaryOutDTO, FinanceOverviewOutDTO } from '@/lib/actions/client-shoots'
+import {
+  computeMaterialsCapsules, getVisibleShoots, getHiddenShootsCount, SHOOTS_TABLE_DEFAULT_LIMIT,
+} from '@/lib/client-shoots-model'
 import {
   SUBSCRIPTION_DISPLAY_STATUS_LABELS, SUBSCRIPTION_DISPLAY_STATUS_COLORS,
   SUBSCRIPTION_ARCHIVED_BADGE_LABEL, SUBSCRIPTION_ARCHIVED_BADGE_CLASS,
@@ -131,7 +134,6 @@ interface Props {
 const TABS = [
   { id: 'overview',   label: 'Обзор' },
   { id: 'sessions',   label: 'Съёмки' },
-  { id: 'orders',     label: 'Заказы' },
   { id: 'editing',    label: 'Монтаж' },
   { id: 'finance',    label: 'Финансы' },
   { id: 'documents',  label: 'Документы' },
@@ -159,15 +161,17 @@ function InfoRow({ label, value }: { label: string; value?: string | null }) {
 }
 
 // Комментарий может быть очень длинным (старые импортированные заметки) —
-// по умолчанию режем до 2 строк по словам (line-clamp, не posимвольно) и
-// даём кнопку "Показать полностью" вместо обрыва текста (ТЗ, часть 2).
+// по умолчанию режем до 2 строк по словам (line-clamp, не посимвольно) и
+// даём кнопку "Показать полностью" вместо обрыва текста (ТЗ, часть 2/6).
+// Ширину ячейки теперь задаёт <col> самой таблицы (table-layout: fixed) —
+// здесь больше не нужны собственные min-w/max-w, они только мешали бы.
 function CommentCell({ comment }: { comment: string | null }) {
   const [expanded, setExpanded] = useState(false)
   if (!comment) return <span className="text-zinc-600 text-xs">—</span>
   const isLong = comment.length > LONG_COMMENT_THRESHOLD
   return (
-    <div className="min-w-[180px] max-w-md">
-      <p className={`text-zinc-400 text-xs whitespace-pre-wrap break-words ${!expanded && isLong ? 'line-clamp-2' : ''}`}>
+    <div>
+      <p className={`text-zinc-400 text-[13px] leading-snug whitespace-pre-wrap break-words ${!expanded && isLong ? 'line-clamp-2' : ''}`}>
         {comment}
       </p>
       {isLong && (
@@ -178,6 +182,94 @@ function CommentCell({ comment }: { comment: string | null }) {
         >
           {expanded ? 'Свернуть' : 'Показать полностью'}
         </button>
+      )}
+    </div>
+  )
+}
+
+// Компактная сумма съёмки — двухстрочный вид для абонемента (ТЗ, часть 11),
+// а не длинная строка "По абонементу · 2 ч" в одну ячейку.
+function AmountCell({ row }: { row: ShootRowDTO }) {
+  switch (row.amount.kind) {
+    case 'subscription':
+      return (
+        <div className="leading-snug">
+          <p className="text-zinc-200 text-[13px]">Абонемент</p>
+          {row.amount.subscriptionHours != null && (
+            <p className="text-zinc-500 text-xs">{formatHours(row.amount.subscriptionHours)}</p>
+          )}
+        </div>
+      )
+    case 'free':      return <span className="text-zinc-300 text-[13px] whitespace-nowrap">0 ₽</span>
+    case 'unpaid':     return <span className="text-zinc-500 text-[13px] whitespace-nowrap">Не оплачено</span>
+    case 'unknown':    return <span className="text-zinc-600 text-[13px] whitespace-nowrap">Нет данных</span>
+    case 'amount':     return <span className="text-zinc-200 text-[13px] whitespace-nowrap">{formatMoney(row.amount.amount)}</span>
+  }
+}
+
+function formatDayMonth(v: string | null): string | null {
+  if (!v) return null
+  return new Date(v).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })
+}
+
+const CAPSULE_BASE = 'inline-flex items-center gap-1 h-7 px-2.5 rounded-full text-[11px] font-medium transition-colors whitespace-nowrap focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1'
+
+// Колонка "Материалы" — капсулы вместо обычных текстовых ссылок (ТЗ, часть
+// 7-10). Активность Яндекс.Диска и наличие NAS считаются чистой функцией
+// computeMaterialsCapsules (client-shoots-model.ts) — здесь только рендер.
+function MaterialsCell({ row }: { row: ShootRowDTO }) {
+  const yandexUrl = isValidHttpUrl(row.yandexDiskUrl) ? row.yandexDiskUrl : null
+  const nasUrl = isValidHttpUrl(row.nasBackupUrl) ? row.nasBackupUrl : null
+  const state = computeMaterialsCapsules({
+    yandexDiskUrl: yandexUrl,
+    yandexDiskUrlExpiresAt: row.yandexDiskUrlExpiresAt ? new Date(row.yandexDiskUrlExpiresAt) : null,
+    nasBackupUrl: nasUrl,
+  })
+
+  if (!state.yandex && !state.nas) {
+    return <span className="text-zinc-600 text-xs">Нет материалов</span>
+  }
+
+  const expiresLabel = formatDayMonth(row.yandexDiskUrlExpiresAt)
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {state.yandex === 'active' && (
+        <a
+          href={yandexUrl!}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={e => e.stopPropagation()}
+          title={expiresLabel ? `Доступно до ${expiresLabel}` : 'Открыть материалы на Яндекс.Диске'}
+          aria-label="Открыть материалы на Яндекс.Диске"
+          className={`${CAPSULE_BASE} bg-amber-500 hover:bg-amber-400 text-zinc-950 cursor-pointer focus-visible:outline-amber-300`}
+        >
+          <Cloud className="w-3.5 h-3.5" /> Яндекс.Диск
+        </a>
+      )}
+      {state.yandex === 'expired' && (
+        <button
+          type="button"
+          disabled
+          title={expiresLabel ? `Срок хранения истёк ${expiresLabel}` : 'Материалы удалены с Яндекс.Диска'}
+          aria-label="Материалы на Яндекс.Диске недоступны — срок хранения истёк"
+          className={`${CAPSULE_BASE} bg-zinc-800 text-zinc-500 cursor-not-allowed`}
+        >
+          <CloudOff className="w-3.5 h-3.5" /> Яндекс.Диск
+        </button>
+      )}
+      {state.nas === 'active' && (
+        <a
+          href={nasUrl!}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={e => e.stopPropagation()}
+          title="Открыть архив на NAS"
+          aria-label="Открыть архив на NAS"
+          className={`${CAPSULE_BASE} bg-violet-600/15 border border-violet-500 text-violet-300 hover:bg-violet-600/25 cursor-pointer focus-visible:outline-violet-300`}
+        >
+          <Server className="w-3.5 h-3.5" /> NAS
+        </a>
       )}
     </div>
   )
@@ -219,11 +311,18 @@ export default function ClientTabs({ client, subscriptions, shoots, shootsSummar
   // Открытие единой карточки абонемента (SubscriptionDetailModal) — та же
   // самая, что и в Финансах, и в подборе абонемента заказа.
   const [openSubscriptionId, setOpenSubscriptionId] = useState<string | null>(null)
+  // По умолчанию таблица "Съёмки" показывает только последние 5 записей
+  // (ТЗ, часть 3) — аналитика ниже (метрики, диаграммы) всегда считается по
+  // ПОЛНОМУ shoots, это состояние влияет только на то, что рендерится в теле
+  // таблицы, см. visibleShoots.
+  const [shootsExpanded, setShootsExpanded] = useState(false)
 
   const isLegal = client.type !== 'INDIVIDUAL' && client.type !== 'SELF_EMPLOYED'
 
   const byRoom = useMemo(() => groupHoursBy(shoots, 'room'), [shoots])
   const byFormat = useMemo(() => groupHoursBy(shoots, 'format'), [shoots])
+  const visibleShoots = useMemo(() => getVisibleShoots(shoots, shootsExpanded), [shoots, shootsExpanded])
+  const hiddenShootsCount = getHiddenShootsCount(shoots.length)
   // Те же правила, что и в финансовом расчёте на сервере (computeFinanceOverview):
   // отменённые/будущие съёмки не показываются как "оплата" в этом списке.
   const paymentRows = useMemo(
@@ -375,31 +474,44 @@ export default function ClientTabs({ client, subscriptions, shoots, shootsSummar
                 </div>
               </div>
 
-              {/* История съёмок */}
+              {/* История съёмок — компактная таблица, ТЗ часть 2-6: по
+                  умолчанию только последние 5 (visibleShoots), полный список
+                  доступен по кнопке ниже; аналитика выше всегда считается по
+                  полному shoots, сворачивание сюда не влияет. */}
               <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
-                <div className="px-6 py-4 border-b border-zinc-800">
+                <div className="px-4 py-3 border-b border-zinc-800">
                   <h3 className="text-white font-semibold text-sm">История съёмок</h3>
                   <p className="text-zinc-500 text-xs mt-0.5">Нажмите на съёмку со связью в расписании, чтобы открыть её карточку</p>
                 </div>
                 <div className="overflow-x-auto">
-                  <table className="w-full text-sm min-w-[860px]">
+                  <table className="w-full min-w-[1040px] table-fixed leading-snug">
+                    <colgroup>
+                      <col style={{ width: 135 }} />
+                      <col style={{ width: 110 }} />
+                      <col style={{ width: 125 }} />
+                      <col style={{ width: 72 }} />
+                      <col style={{ width: 130 }} />
+                      <col style={{ width: 195 }} />
+                      <col />
+                      <col style={{ width: 50 }} />
+                    </colgroup>
                     <thead>
-                      <tr className="border-b border-zinc-800 bg-zinc-800/40">
-                        <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium">Дата и время</th>
-                        <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium">Зал</th>
-                        <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium">Формат</th>
-                        <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium">Часы</th>
-                        <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium">Сумма</th>
-                        <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium">Яндекс.Диск</th>
-                        <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium">В системе</th>
-                        <th className="text-left px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium">Комментарий</th>
+                      <tr className="sticky top-0 z-10 border-b border-zinc-800 bg-zinc-800/60 backdrop-blur-sm">
+                        <th className="text-left px-3 py-2 text-zinc-400 text-[11px] uppercase tracking-wide font-medium">Дата и время</th>
+                        <th className="text-left px-3 py-2 text-zinc-400 text-[11px] uppercase tracking-wide font-medium">Зал</th>
+                        <th className="text-left px-3 py-2 text-zinc-400 text-[11px] uppercase tracking-wide font-medium">Формат</th>
+                        <th className="text-left px-3 py-2 text-zinc-400 text-[11px] uppercase tracking-wide font-medium">Часы</th>
+                        <th className="text-left px-3 py-2 text-zinc-400 text-[11px] uppercase tracking-wide font-medium">Сумма</th>
+                        <th className="text-left px-3 py-2 text-zinc-400 text-[11px] uppercase tracking-wide font-medium">Материалы</th>
+                        <th className="text-left px-3 py-2 text-zinc-400 text-[11px] uppercase tracking-wide font-medium">Комментарий</th>
+                        <th className="px-2 py-2"><span className="sr-only">Действие</span></th>
                       </tr>
                     </thead>
                     <tbody>
-                      {shoots.map((row, i) => {
+                      {visibleShoots.map((row, i) => {
                         const clickable = !!row.calendarEventId
                         const timeRange = formatTimeRange(row.startAt, row.endAt)
-                        const hasYandexLink = isValidHttpUrl(row.yandexDiskUrl)
+                        const isNewlyRevealed = shootsExpanded && i >= SHOOTS_TABLE_DEFAULT_LIMIT
                         return (
                           <tr
                             key={row.id}
@@ -408,53 +520,39 @@ export default function ClientTabs({ client, subscriptions, shoots, shootsSummar
                               if ((e.key === 'Enter' || e.key === ' ') && clickable) { e.preventDefault(); handleOpenShoot(row) }
                             }}
                             tabIndex={clickable ? 0 : -1}
-                            className={`align-top border-b border-zinc-800/60 transition-colors ${i === shoots.length - 1 ? 'border-b-0' : ''} ${
+                            className={`align-top border-b border-zinc-800/60 transition-colors ${i === visibleShoots.length - 1 ? 'border-b-0' : ''} ${
                               clickable ? 'cursor-pointer hover:bg-white/[0.04] focus:outline-none focus:bg-white/[0.04]' : ''
-                            } ${row.isCancelled ? 'opacity-50' : ''}`}
+                            } ${row.isCancelled ? 'opacity-50' : ''} ${isNewlyRevealed ? 'animate-in fade-in duration-300' : ''}`}
                           >
-                            <td className="px-4 py-3 whitespace-nowrap">
-                              <p className="text-zinc-300 text-sm">{formatDate(row.date)}</p>
+                            <td className="px-3 py-2.5 whitespace-nowrap overflow-hidden text-ellipsis">
+                              <p className="text-zinc-200 text-[13px]">{formatDate(row.date)}</p>
                               {timeRange && <p className="text-zinc-500 text-xs mt-0.5">{timeRange}</p>}
                               {row.isFuture && <Badge variant="outline" className="text-[10px] mt-1 border-blue-800 text-blue-400">Будущая</Badge>}
                               {row.isCancelled && <Badge variant="outline" className="text-[10px] mt-1 border-zinc-700 text-zinc-500">Отменена</Badge>}
-                              {openingRowId === row.id && <span className="text-zinc-500 text-xs ml-1">Открываем...</span>}
+                              {openingRowId === row.id && <span className="text-zinc-500 text-[11px] ml-1">Открываем...</span>}
                             </td>
-                            <td className="px-4 py-3 text-zinc-300 text-sm">{row.room ?? '—'}</td>
-                            <td className="px-4 py-3 text-zinc-300 text-sm">{row.format ?? '—'}</td>
-                            <td className="px-4 py-3 text-zinc-400 text-sm whitespace-nowrap">{formatHours(row.durationHours)}</td>
-                            <td className="px-4 py-3 text-zinc-300 text-sm whitespace-nowrap">{formatShootAmount(row)}</td>
-                            <td className="px-4 py-3">
-                              {hasYandexLink ? (
-                                <a
-                                  href={row.yandexDiskUrl!}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  onClick={e => e.stopPropagation()}
-                                  aria-label="Открыть материалы на Яндекс.Диске"
-                                  className="inline-flex items-center gap-1 text-xs text-[#00c26b] hover:underline"
-                                >
-                                  <Link2 className="w-3.5 h-3.5" /> Открыть
-                                </a>
-                              ) : (
-                                <span className="text-zinc-600 text-xs">Нет ссылки</span>
-                              )}
+                            <td className="px-3 py-2.5 text-zinc-300 text-[13px] line-clamp-2 break-words" title={row.room ?? undefined}>{row.room ?? '—'}</td>
+                            <td className="px-3 py-2.5 text-zinc-300 text-[13px] line-clamp-2 break-words" title={row.format ?? undefined}>{row.format ?? '—'}</td>
+                            <td className="px-3 py-2.5 text-zinc-400 text-[13px] whitespace-nowrap">{formatHours(row.durationHours)}</td>
+                            <td className="px-3 py-2.5"><AmountCell row={row} /></td>
+                            <td className="px-3 py-2.5" onClick={e => e.stopPropagation()}>
+                              <MaterialsCell row={row} />
                             </td>
-                            <td className="px-4 py-3">
-                              {clickable ? (
+                            <td className="px-3 py-2.5" onClick={e => e.stopPropagation()}>
+                              <CommentCell comment={row.comment} />
+                            </td>
+                            <td className="px-2 py-2.5 text-center">
+                              {clickable && (
                                 <button
                                   type="button"
                                   onClick={e => { e.stopPropagation(); handleOpenShoot(row) }}
                                   aria-label="Открыть карточку съёмки в системе"
-                                  className="inline-flex items-center gap-1 text-xs text-[#00c26b] hover:underline"
+                                  title="Открыть карточку съёмки"
+                                  className="inline-flex items-center justify-center w-7 h-7 rounded-lg text-zinc-500 hover:text-[#00c26b] hover:bg-white/[0.06] transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[#00c26b]"
                                 >
-                                  <ExternalLink className="w-3.5 h-3.5" /> Открыть
+                                  <ExternalLink className="w-3.5 h-3.5" />
                                 </button>
-                              ) : (
-                                <span className="text-zinc-600 text-xs">Нет связи</span>
                               )}
-                            </td>
-                            <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
-                              <CommentCell comment={row.comment} />
                             </td>
                           </tr>
                         )
@@ -462,18 +560,21 @@ export default function ClientTabs({ client, subscriptions, shoots, shootsSummar
                     </tbody>
                   </table>
                 </div>
+                {shoots.length > SHOOTS_TABLE_DEFAULT_LIMIT ? (
+                  <div className="px-4 py-3 border-t border-zinc-800">
+                    <button
+                      type="button"
+                      onClick={() => setShootsExpanded(v => !v)}
+                      className="inline-flex items-center gap-1.5 text-xs font-medium text-zinc-300 hover:text-white transition-colors"
+                    >
+                      <ChevronDown className={`w-3.5 h-3.5 transition-transform ${shootsExpanded ? 'rotate-180' : ''}`} />
+                      {shootsExpanded ? 'Свернуть' : `Показать все съёмки${hiddenShootsCount > 0 ? ` · ещё ${hiddenShootsCount}` : ''}`}
+                    </button>
+                  </div>
+                ) : null}
               </div>
             </div>
           )
-        )}
-
-        {/* Заказы */}
-        {activeTab === 'orders' && (
-          <PlaceholderTab
-            icon={ShoppingBag}
-            title="Заказы клиента"
-            description="Здесь будут заказы и проекты этого клиента: статусы, суммы, дедлайны"
-          />
         )}
 
         {/* Монтаж */}
