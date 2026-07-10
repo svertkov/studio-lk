@@ -55,6 +55,7 @@ export interface OrderDTO {
   plannedStartTime: string | null
   plannedEndTime: string | null
   durationMinutes: number | null
+  makeupDurationMinutes: number | null
   preliminaryAmount: number | null
   paymentStatus: OrderPaymentStatus
   paymentMethod: PaymentMethod | null
@@ -98,6 +99,7 @@ function toDTO(row: OrderWithRelations): OrderDTO {
     plannedStartTime: row.plannedStartTime ? row.plannedStartTime.toISOString() : null,
     plannedEndTime: row.plannedEndTime ? row.plannedEndTime.toISOString() : null,
     durationMinutes: row.durationMinutes,
+    makeupDurationMinutes: row.makeupDurationMinutes,
     preliminaryAmount: row.preliminaryAmount,
     paymentStatus: row.paymentStatus,
     paymentMethod: row.paymentMethod,
@@ -251,6 +253,10 @@ export interface OrderInput {
   room?: string
   plannedStartTime?: string | null
   plannedEndTime?: string | null
+  // Длительность предварительного бронирования для гримёра, в минутах —
+  // null/0 означает "гримёр не предусмотрен". Не влияет на durationMinutes/
+  // plannedEndTime/preliminaryAmount основной съёмки (см. order-model.ts).
+  makeupDurationMinutes?: number | null
   // Заполняется только при создании заказа из кнопки "Создать заказ" на
   // странице Telegram-диалога (см. src/lib/actions/telegram.ts) — источник
   // заказа автоматически становится TELEGRAM_BOT, а не MANUAL.
@@ -291,6 +297,7 @@ export async function createOrder(
           plannedStartTime: input.plannedStartTime ? new Date(input.plannedStartTime) : null,
           plannedEndTime: input.plannedEndTime ? new Date(input.plannedEndTime) : null,
           durationMinutes: computeDurationMinutes(input.plannedStartTime, input.plannedEndTime),
+          makeupDurationMinutes: input.makeupDurationMinutes ?? null,
           preliminaryAmount: input.preliminaryAmount ?? null,
           paymentStatus: input.paymentStatus ?? 'NOT_SPECIFIED',
           paymentMethod: input.paymentMethod ?? null,
@@ -369,6 +376,7 @@ export async function updateOrder(
           durationMinutes: hasBookingTimeNow
             ? computeDurationMinutes(nextStart!.toISOString(), nextEnd!.toISOString())
             : null,
+          makeupDurationMinutes: input.makeupDurationMinutes !== undefined ? input.makeupDurationMinutes : undefined,
           preliminaryAmount: input.preliminaryAmount !== undefined ? input.preliminaryAmount : undefined,
           paymentStatus: input.paymentStatus !== undefined ? input.paymentStatus : undefined,
           paymentMethod: input.paymentMethod !== undefined ? input.paymentMethod : undefined,
