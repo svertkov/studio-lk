@@ -44,10 +44,10 @@ const LONG_COMMENT_THRESHOLD = 140
 // header/строк не оставляет для этого возможности в принципе.
 // Фиксированные px-колонки в CSS Grid НЕ растут при наличии свободного места
 // (в отличие от <table>) — поэтому ширины подобраны по факту самых длинных
-// реальных значений (напр. "Говорящая голова", "Тёмный зал", капсулы
-// "Яндекс.Диск"+"NAS" рядом), а не "на глаз", иначе они снова начинают
+// реальных значений (напр. "Говорящая голова", "Тёмный зал", по одной капсуле
+// на колонку в "Материалы"/Backup), а не "на глаз", иначе они снова начинают
 // обрезаться независимо от того, сколько места есть у самой таблицы.
-const SHOOTS_GRID_COLS = 'grid-cols-[130px_130px_162px_64px_128px_235px_minmax(180px,1fr)_44px]'
+const SHOOTS_GRID_COLS = 'grid-cols-[130px_130px_162px_64px_128px_150px_110px_minmax(180px,1fr)_44px]'
 const SHOOTS_TABLE_MIN_WIDTH = 1095
 
 function formatMoney(v: number | null) {
@@ -230,69 +230,79 @@ function formatDayMonth(v: string | null): string | null {
   return new Date(v).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })
 }
 
-// Колонка "Материалы" — переиспользует общую плашку с glow (GlowPill, тот же
-// приём, что и StaffAbsenceBadge в разделе "Расписание"), а не рисует свой
-// вариант капсулы. Цвета берём по смыслу уже принятому в проекте для этих же
-// статусов (см. MATERIALS_STATUS_COLORS в schedule-model.ts): зелёный —
-// активная ссылка, синий — NAS/бэкап, приглушённый zinc — недоступно.
-// Активность/срок жизни считаются чистой функцией computeMaterialsCapsules
-// (client-shoots-model.ts) — здесь только рендер.
+// Колонка "Материалы" (только Яндекс.Диск) — переиспользует общую плашку с
+// glow (GlowPill, тот же приём, что и StaffAbsenceBadge в разделе
+// "Расписание"), а не рисует свой вариант капсулы. Зелёный — активная ссылка,
+// приглушённый zinc — истёкшая (не "предупреждение", а именно нейтральное
+// "недоступно", поэтому не amber). Активность/срок жизни считаются чистой
+// функцией computeMaterialsCapsules (client-shoots-model.ts) — здесь только рендер.
+// NAS вынесен в отдельную колонку "Backup" (BackupCell ниже) — материалы и
+// резервная копия больше не делят одну ячейку.
 function MaterialsCell({ row }: { row: ShootRowDTO }) {
   const yandexUrl = isValidHttpUrl(row.yandexDiskUrl) ? row.yandexDiskUrl : null
-  const nasUrl = isValidHttpUrl(row.nasBackupUrl) ? row.nasBackupUrl : null
   const state = computeMaterialsCapsules({
     yandexDiskUrl: yandexUrl,
     yandexDiskUrlExpiresAt: row.yandexDiskUrlExpiresAt ? new Date(row.yandexDiskUrlExpiresAt) : null,
-    nasBackupUrl: nasUrl,
+    nasBackupUrl: null,
   })
 
-  if (!state.yandex && !state.nas) {
+  if (!state.yandex) {
     return <span className="text-zinc-600 text-xs">Нет материалов</span>
   }
 
   const expiresLabel = formatDayMonth(row.yandexDiskUrlExpiresAt)
 
+  if (state.yandex === 'expired') {
+    return (
+      <GlowPill
+        as="button"
+        disabled
+        color="zinc"
+        icon={CloudOff}
+        title={expiresLabel ? `Срок хранения истёк ${expiresLabel}` : 'Материалы удалены с Яндекс.Диска'}
+        ariaLabel="Материалы на Яндекс.Диске недоступны — срок хранения истёк"
+      >
+        Яндекс.Диск
+      </GlowPill>
+    )
+  }
+
   return (
-    <div className="flex flex-wrap items-center gap-1.5">
-      {state.yandex === 'active' && (
-        <GlowPill
-          as="a"
-          href={yandexUrl!}
-          color="green"
-          icon={Cloud}
-          onClick={e => e.stopPropagation()}
-          title={expiresLabel ? `Доступно до ${expiresLabel}` : 'Открыть материалы на Яндекс.Диске'}
-          ariaLabel="Открыть материалы на Яндекс.Диске"
-        >
-          Яндекс.Диск
-        </GlowPill>
-      )}
-      {state.yandex === 'expired' && (
-        <GlowPill
-          as="button"
-          disabled
-          color="zinc"
-          icon={CloudOff}
-          title={expiresLabel ? `Срок хранения истёк ${expiresLabel}` : 'Материалы удалены с Яндекс.Диска'}
-          ariaLabel="Материалы на Яндекс.Диске недоступны — срок хранения истёк"
-        >
-          Яндекс.Диск
-        </GlowPill>
-      )}
-      {state.nas === 'active' && (
-        <GlowPill
-          as="a"
-          href={nasUrl!}
-          color="blue"
-          icon={Server}
-          onClick={e => e.stopPropagation()}
-          title="Открыть архив на NAS"
-          ariaLabel="Открыть архив на NAS"
-        >
-          NAS
-        </GlowPill>
-      )}
-    </div>
+    <GlowPill
+      as="a"
+      href={yandexUrl!}
+      color="green"
+      icon={Cloud}
+      onClick={e => e.stopPropagation()}
+      title={expiresLabel ? `Доступно до ${expiresLabel}` : 'Открыть материалы на Яндекс.Диске'}
+      ariaLabel="Открыть материалы на Яндекс.Диске"
+    >
+      Яндекс.Диск
+    </GlowPill>
+  )
+}
+
+// Колонка "Backup" — плашка NAS, тот же общий GlowPill, фиолетовый смысловой
+// вариант (ТЗ: "используй существующий фиолетовый variant общей системы
+// плашек"). Автоистечения по времени у NAS нет (в отличие от Яндекс.Диска) —
+// либо ссылка есть и плашка активна, либо её нет вовсе.
+function BackupCell({ row }: { row: ShootRowDTO }) {
+  const nasUrl = isValidHttpUrl(row.nasBackupUrl) ? row.nasBackupUrl : null
+  if (!nasUrl) {
+    return <span className="text-zinc-600 text-xs">Нет backup</span>
+  }
+  return (
+    <GlowPill
+      as="a"
+      href={nasUrl}
+      color="violet"
+      icon={Server}
+      onClick={e => e.stopPropagation()}
+      title="Открыть резервную копию на NAS"
+      ariaLabel="Открыть резервную копию на NAS"
+    >
+      NAS
+    </GlowPill>
   )
 }
 
@@ -510,7 +520,7 @@ export default function ClientTabs({ client, subscriptions, shoots, shootsSummar
                         поэтому значения физически не могут разъехаться со
                         своими колонками. */}
                     <div role="row" className={`grid ${SHOOTS_GRID_COLS} sticky top-0 z-10 border-b border-zinc-800 bg-zinc-800/60 backdrop-blur-sm`}>
-                      {['Дата и время', 'Зал', 'Формат', 'Часы', 'Сумма', 'Материалы', 'Комментарий'].map(label => (
+                      {['Дата и время', 'Зал', 'Формат', 'Часы', 'Сумма', 'Материалы', 'Backup', 'Комментарий'].map(label => (
                         <div key={label} role="columnheader" className="px-4 py-2.5 text-zinc-400 text-xs uppercase tracking-wider font-medium">
                           {label}
                         </div>
@@ -549,6 +559,9 @@ export default function ClientTabs({ client, subscriptions, shoots, shootsSummar
                             <div role="cell" className="px-4 py-2.5"><AmountCell row={row} /></div>
                             <div role="cell" className="px-4 py-2.5 min-w-0" onClick={e => e.stopPropagation()}>
                               <MaterialsCell row={row} />
+                            </div>
+                            <div role="cell" className="px-4 py-2.5 min-w-0" onClick={e => e.stopPropagation()}>
+                              <BackupCell row={row} />
                             </div>
                             <div role="cell" className="px-4 py-2.5 min-w-0" onClick={e => e.stopPropagation()}>
                               <CommentCell comment={row.comment} />

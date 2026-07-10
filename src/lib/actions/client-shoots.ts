@@ -95,7 +95,7 @@ async function loadShootRows(clientId: string): Promise<ShootRow[]> {
   const [visits, events] = await Promise.all([
     prisma.clientVisit.findMany({
       where: { clientId },
-      select: { id: true, date: true, room: true, format: true, durationHours: true, grossAmount: true, netAmount: true, comment: true },
+      select: { id: true, date: true, startAt: true, endAt: true, room: true, format: true, durationHours: true, grossAmount: true, netAmount: true, comment: true },
     }),
     prisma.scheduleEvent.findMany({
       where: { clientId, eventType: 'STUDIO_BOOKING' },

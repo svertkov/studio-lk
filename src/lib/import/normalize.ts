@@ -70,7 +70,9 @@ export function parseAmount(raw: string): number | undefined {
   return Number.isFinite(num) ? num : undefined
 }
 
-const TIME_RANGE_RE = /(\d{1,2})(?::(\d{2}))?\s*[-–]\s*(\d{1,2})(?::(\d{2}))?/g
+// Разделитель минут — двоеточие (14:30) или точка (14.30), оба варианта
+// встречаются в реальной таблице студии.
+const TIME_RANGE_RE = /(\d{1,2})(?:[:.](\d{2}))?\s*[-–]\s*(\d{1,2})(?:[:.](\d{2}))?/g
 
 // Число, явно подписанное как часы («2 часа», «5 часов»), отдельно от общей
 // parseDurationHours — нужно, чтобы отличить настоящий конфликт исходных данных
@@ -120,6 +122,71 @@ export function parseDurationHours(raw: string): number | undefined {
   }
 
   return undefined
+}
+
+export interface TimeRangeExtraction {
+  startHour: number
+  startMinute: number
+  endHour: number
+  endMinute: number
+  crossesMidnight: boolean
+  rangeDurationHours: number
+  // 'low' — в строке несколько диапазонов времени сразу (например «9-11 гример,
+  // 11-15 запись» или «2 часа (12-14) + 2 часа (16-18)» — два отдельных
+  // отрезка одной брони). Непонятно, какой из них — реальное время съёмки,
+  // поэтому такие строки не применяются автоматически, только через отчёт
+  // конфликтов (см. backfill-скрипт восстановления времени).
+  confidence: 'high' | 'low'
+}
+
+// Достаёт время начала/конца из тех же диапазонов, что и parseDurationHours
+// («2 часа (16-18)», «1 камера (13-16)», «15-20» и т.п.), но, в отличие от
+// неё, возвращает не только длительность, а сами часы:минуты — нужно для
+// восстановления startAt/endAt у старых визитов, где раньше сохранялась
+// только длительность, а сама дата хранилась без времени суток.
+export function extractTimeRange(raw: string): TimeRangeExtraction | undefined {
+  const v = raw.trim()
+  if (!v) return undefined
+
+  const matches = Array.from(v.matchAll(TIME_RANGE_RE))
+  if (matches.length === 0) return undefined
+
+  // При нескольких диапазонах последний обычно и есть сама съёмка (грим/сборка
+  // идёт перед ней) — но раз диапазонов больше одного, однозначности нет,
+  // поэтому confidence всё равно 'low' и такая строка не применяется молча.
+  const chosen = matches[matches.length - 1]
+  const confidence: 'high' | 'low' = matches.length === 1 ? 'high' : 'low'
+
+  const startHour = parseInt(chosen[1], 10)
+  const startMinute = chosen[2] ? parseInt(chosen[2], 10) : 0
+  const endHour = parseInt(chosen[3], 10)
+  const endMinute = chosen[4] ? parseInt(chosen[4], 10) : 0
+  if (startHour > 23 || endHour > 23 || startMinute > 59 || endMinute > 59) return undefined
+
+  const startTotal = startHour * 60 + startMinute
+  let endTotal = endHour * 60 + endMinute
+  const crossesMidnight = endTotal <= startTotal
+  if (crossesMidnight) endTotal += 24 * 60
+
+  const rangeDurationHours = Math.round(((endTotal - startTotal) / 60) * 100) / 100
+  if (rangeDurationHours <= 0 || rangeDurationHours > 16) return undefined
+
+  return { startHour, startMinute, endHour, endMinute, crossesMidnight, rangeDurationHours, confidence }
+}
+
+// Россия не переходит на летнее/зимнее время с 2014 года — смещение Москвы
+// от UTC стабильно +3 часа на всей истории студии, поэтому не требует
+// timezone-библиотеки. `date` ожидается как календарный день без времени
+// суток (см. parseFlexibleDate — строится через Date.UTC, поэтому берём
+// именно getUTC*-компоненты, а не локальные, независимо от TZ окружения,
+// где выполняется скрипт/сервер).
+const STUDIO_UTC_OFFSET_HOURS = 3
+
+export function combineDateWithStudioTime(date: Date, hour: number, minute: number): Date {
+  return new Date(Date.UTC(
+    date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(),
+    hour - STUDIO_UTC_OFFSET_HOURS, minute,
+  ))
 }
 
 export function parseFlexibleDate(raw: string): Date | undefined {

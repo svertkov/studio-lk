@@ -279,6 +279,15 @@ model ClientVisit {
   id            String    @id @default(cuid())
   clientId      String    @map("client_id")
   date          DateTime?
+  // Время начала/конца съёмки — исторически не хранилось отдельно (только
+  // календарный день в date + durationHours). Восстановлено из исходной
+  // Google-таблицы (колонка вида "2 часа (16-18)") отдельным backfill-скриптом
+  // для уже импортированных визитов; для новых импортов заполняется сразу
+  // тем же парсером (см. extractTimeRange в src/lib/import/normalize.ts).
+  // Nullable — у части старых визитов время в исходной строке не выделяется
+  // однозначно и остаётся неизвестным, это ожидаемо, а не ошибка.
+  startAt       DateTime? @map("start_at")
+  endAt         DateTime? @map("end_at")
   room          String?
   format        String?
   durationHours Float?    @map("duration_hours")

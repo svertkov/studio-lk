@@ -55,6 +55,11 @@ export interface ShootRow {
 export interface ShootVisitInput {
   id: string
   date: Date | null
+  // Восстановлены backfill-скриптом для старых визитов (или сразу заполнены
+  // при импорте, см. extractTimeRange) — могут быть null, если время в
+  // исходной таблице объективно не выделяется однозначно.
+  startAt: Date | null
+  endAt: Date | null
   room: string | null
   format: string | null
   durationHours: number | null
@@ -187,6 +192,10 @@ export function mergeShoots(
       const row = eventRowById.get(matched.id)!
       row.visitId = v.id
       if (row.durationHours == null) row.durationHours = v.durationHours
+      // ScheduleEvent — источник правды по времени (реальный календарь), визит
+      // используется только как резерв, если у события своего времени почему-то нет.
+      if (row.startAt == null) row.startAt = v.startAt
+      if (row.endAt == null) row.endAt = v.endAt
       if (row.amount.kind === 'unknown' && v.grossAmount != null) {
         row.amount = { kind: 'amount', amount: v.grossAmount }
       }
@@ -201,8 +210,8 @@ export function mergeShoots(
         calendarEventId: null,
         visitId: v.id,
         date: v.date,
-        startAt: null,
-        endAt: null,
+        startAt: v.startAt,
+        endAt: v.endAt,
         room: v.room,
         format: v.format,
         durationHours: v.durationHours,

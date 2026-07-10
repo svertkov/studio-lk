@@ -42,3 +42,7 @@ next-env.d.ts
 
 # credentials runbook — never commit, local-only backup of real secret values
 CREDENTIALS.md
+
+# резервные копии данных перед разовыми backfill-скриптами — локальные
+# артефакты для отката, не часть кода
+scripts/backfill-visit-times/backups/

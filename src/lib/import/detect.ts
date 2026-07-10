@@ -4,7 +4,7 @@
 import {
   normalizePhone, normalizeTelegram, normalizeEmail, splitFullName,
   parseAmount, parseDurationHours, extractStatedHours, parseFlexibleDate, normalizeRoom, normalizeFormat,
-  hashSheetRow,
+  hashSheetRow, extractTimeRange, combineDateWithStudioTime,
 } from './normalize'
 
 export type ClientField =
@@ -140,6 +140,14 @@ export function describeColumnShape(table: string[][], colIndex: number): string
 
 export interface VisitRecord {
   date?: Date
+  // Время начала/конца, извлечённое из того же значения, что и durationHours
+  // (например, «2 часа (16-18)» → 16:00-18:00) — только когда диапазон в
+  // строке однозначен (extractTimeRange confidence: 'high'). Неоднозначные
+  // строки (несколько диапазонов сразу) оставляют startAt/endAt пустыми —
+  // такие случаи не должны молча угадываться ни при обычном импорте, ни при
+  // повторном восстановлении времени старых визитов.
+  startAt?: Date
+  endAt?: Date
   room?: string
   format?: string
   durationHours?: number
@@ -254,8 +262,21 @@ export function applyMapping(table: string[][], columns: DetectedColumn[]): { ro
       hasConflict ? `В таблице указано «${statedHours} ч», но по времени в скобках выходит ${durationHours} ч — использовано время в скобках` : '',
     ].filter(Boolean).join('; ')
 
+    const parsedDate = dateRaw ? parseFlexibleDate(dateRaw) : undefined
+    // Время начала/конца — только при однозначном диапазоне (ровно один
+    // «14-16»-подобный отрезок в строке) и известной дате визита; неоднозначные
+    // строки («9-11 гример, 11-15 запись», «2ч (12-14) + 2ч (16-18)») не
+    // должны молча угадываться — они остаются без времени, как и раньше.
+    const timeRange = durationRaw ? extractTimeRange(durationRaw) : undefined
+    const start = (timeRange && timeRange.confidence === 'high' && parsedDate)
+      ? combineDateWithStudioTime(parsedDate, timeRange.startHour, timeRange.startMinute)
+      : undefined
+    const end = start ? new Date(start.getTime() + timeRange!.rangeDurationHours * 3_600_000) : undefined
+
     const visit: VisitRecord = {
-      date: dateRaw ? parseFlexibleDate(dateRaw) : undefined,
+      date: parsedDate,
+      startAt: start,
+      endAt: end,
       room: roomRaw ? normalizeRoom(roomRaw) : undefined,
       format: formatRaw ? normalizeFormat(formatRaw) : undefined,
       durationHours,

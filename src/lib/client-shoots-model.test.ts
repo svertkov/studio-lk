@@ -9,7 +9,8 @@ const NOW = new Date('2026-07-10T12:00:00Z')
 
 function visit(overrides: Partial<ShootVisitInput> = {}): ShootVisitInput {
   return {
-    id: 'v1', date: new Date('2026-06-01T00:00:00Z'), room: 'Светлый зал', format: 'Подкаст',
+    id: 'v1', date: new Date('2026-06-01T00:00:00Z'), startAt: null, endAt: null,
+    room: 'Светлый зал', format: 'Подкаст',
     durationHours: 2, grossAmount: 10000, netAmount: 9000, comment: null,
     ...overrides,
   }
@@ -256,6 +257,11 @@ describe('computeMaterialsCapsules', () => {
   it('marks the Yandex link expired once the 14-day window has passed', () => {
     const justAfter = new Date(expiresAt.getTime() + 1000)
     const state = computeMaterialsCapsules({ yandexDiskUrl: 'https://disk.yandex.ru/d/x', yandexDiskUrlExpiresAt: expiresAt, nasBackupUrl: null }, justAfter)
+    expect(state.yandex).toBe('expired')
+  })
+
+  it('treats exactly 14 days as expired (boundary is inclusive, not one-off)', () => {
+    const state = computeMaterialsCapsules({ yandexDiskUrl: 'https://disk.yandex.ru/d/x', yandexDiskUrlExpiresAt: expiresAt, nasBackupUrl: null }, expiresAt)
     expect(state.yandex).toBe('expired')
   })
 

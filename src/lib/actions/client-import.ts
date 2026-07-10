@@ -393,6 +393,8 @@ export async function runConfirmImport(
             data: {
               clientId,
               date: v.date ? new Date(v.date) : null,
+              startAt: v.startAt ? new Date(v.startAt) : null,
+              endAt: v.endAt ? new Date(v.endAt) : null,
               room: v.room || null,
               format: v.format || null,
               durationHours: v.durationHours ?? null,
