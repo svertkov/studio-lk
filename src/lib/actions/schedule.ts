@@ -99,6 +99,7 @@ function toDTO(row: ScheduleEventWithClient): ScheduleEventDTO {
     editingRequired: row.editingRequired,
     clientConfirmationStatus: row.clientConfirmationStatus,
     eventType: row.eventType,
+    makeupDurationMinutes: row.makeupDurationMinutes,
     subscriptionUsage: su ? {
       subscriptionId: su.subscriptionId,
       usedHours: su.usedHours,
@@ -169,6 +170,10 @@ export interface UpsertScheduleEventInput {
   editingRequired?: boolean | null
   clientConfirmationStatus?: ClientConfirmationStatus
   eventType?: EventType
+  // Длительность предварительного бронирования для гримёра, в минутах —
+  // null/0 означает "гримёр не предусмотрен". Не влияет на startAt/endAt/
+  // estimatedPrice основной съёмки (см. schedule-model.ts).
+  makeupDurationMinutes?: number | null
 }
 
 export async function upsertScheduleEvent(
@@ -253,6 +258,7 @@ export async function upsertScheduleEvent(
         editingRequired: input.editingRequired ?? null,
         clientConfirmationStatus: input.clientConfirmationStatus ?? 'NOT_REQUIRED',
         eventType: effectiveEventType,
+        makeupDurationMinutes: input.makeupDurationMinutes ?? null,
         orderId: orderIdForCreate,
       },
       update: {
@@ -279,6 +285,7 @@ export async function upsertScheduleEvent(
         ...(input.editingRequired !== undefined && { editingRequired: input.editingRequired }),
         ...(input.clientConfirmationStatus !== undefined && { clientConfirmationStatus: input.clientConfirmationStatus }),
         ...(input.eventType !== undefined && { eventType: input.eventType }),
+        ...(input.makeupDurationMinutes !== undefined && { makeupDurationMinutes: input.makeupDurationMinutes }),
       },
       include: SCHEDULE_EVENT_INCLUDE,
     })
@@ -300,6 +307,11 @@ export async function upsertScheduleEvent(
     if (input.clientConfirmationStatus !== undefined || input.clientId !== undefined) {
       revalidatePath('/admin/clients')
     }
+    // Карточка клиента (вкладка "Съёмки") и список заказов читают notes/
+    // makeupDurationMinutes/материалы этой же записи — без явной инвалидации
+    // здесь администратор увидел бы изменения только после ручной перезагрузки.
+    if (row.clientId) revalidatePath(`/admin/clients/${row.clientId}`)
+    if (row.orderId) revalidatePath('/admin/orders')
 
     return { ok: true, data: toDTO(row) }
   } catch (e) {

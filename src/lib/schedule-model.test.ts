@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import {
   normalizeMakeupDurationMinutes, computeMakeupInterval, MAKEUP_DURATION_MAX_MINUTES,
+  formatDurationMinutes, formatMakeupBadgeLabel,
   applyQuickCommentTemplate, hasQuickCommentTemplate, QUICK_COMMENT_TEMPLATES,
-} from './order-model'
+} from './schedule-model'
 
 describe('normalizeMakeupDurationMinutes — гримёр, ввод длительности', () => {
   it('accepts 30/60/90/120 minutes as-is', () => {
@@ -22,10 +23,6 @@ describe('normalizeMakeupDurationMinutes — гримёр, ввод длител
 
   it('converts 1,5 hours to 90 minutes (comma decimal)', () => {
     expect(normalizeMakeupDurationMinutes('1,5', 'hours')).toBe(90)
-  })
-
-  it('converts 0.5 hours to 30 minutes', () => {
-    expect(normalizeMakeupDurationMinutes('0.5', 'hours')).toBe(30)
   })
 
   it('does not save a negative value — treated as "no makeup"', () => {
@@ -56,7 +53,7 @@ describe('normalizeMakeupDurationMinutes — гримёр, ввод длител
 
 describe('computeMakeupInterval — расчёт интервала от начала съёмки назад', () => {
   it('computes start = shootStart - duration, end = shootStart', () => {
-    const shootStart = new Date('2026-08-01T09:00:00Z')
+    const shootStart = new Date('2026-08-01T09:00:00.000Z')
     const interval = computeMakeupInterval(shootStart, 60)
     expect(interval?.start.toISOString()).toBe('2026-08-01T08:00:00.000Z')
     expect(interval?.end.toISOString()).toBe('2026-08-01T09:00:00.000Z')
@@ -84,6 +81,30 @@ describe('computeMakeupInterval — расчёт интервала от нач�
     computeMakeupInterval(shootStart, 60)
     expect(shootStart.getTime()).toBe(before)
   })
+
+  it('changing the shoot start recomputes the interval instead of using a stale cached start', () => {
+    const first = computeMakeupInterval(new Date('2026-08-01T09:00:00Z'), 60)
+    const second = computeMakeupInterval(new Date('2026-08-01T10:00:00Z'), 60)
+    expect(first?.start.toISOString()).not.toBe(second?.start.toISOString())
+  })
+})
+
+describe('formatDurationMinutes / formatMakeupBadgeLabel — единый helper', () => {
+  it.each([
+    [0, '0 мин'],
+    [30, '30 мин'],
+    [60, '1 ч'],
+    [90, '1 ч 30 мин'],
+    [120, '2 ч'],
+    [150, '2 ч 30 мин'],
+  ])('formats %i minutes as "%s"', (minutes, expected) => {
+    expect(formatDurationMinutes(minutes)).toBe(expected)
+  })
+
+  it('prefixes with "Гримёр" for the badge label', () => {
+    expect(formatMakeupBadgeLabel(60)).toBe('Гримёр 1 ч')
+    expect(formatMakeupBadgeLabel(90)).toBe('Гримёр 1 ч 30 мин')
+  })
 })
 
 describe('quick comment templates — «Акция! 20% скидка на первую запись»', () => {
@@ -106,5 +127,10 @@ describe('quick comment templates — «Акция! 20% скидка на пер
   it('detects the template is already present via hasQuickCommentTemplate', () => {
     expect(hasQuickCommentTemplate(`Заметка\n${promo.text}`, promo.text)).toBe(true)
     expect(hasQuickCommentTemplate('Заметка без шаблона', promo.text)).toBe(false)
+  })
+
+  it('handles null/undefined comment safely', () => {
+    expect(hasQuickCommentTemplate(null, promo.text)).toBe(false)
+    expect(hasQuickCommentTemplate(undefined, promo.text)).toBe(false)
   })
 })

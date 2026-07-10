@@ -50,6 +50,7 @@ export interface ShootRowDTO {
   comment: string | null
   isCancelled: boolean
   isFuture: boolean
+  makeupDurationMinutes: number | null
 }
 
 export interface ShootsSummaryOutDTO {
@@ -57,6 +58,7 @@ export interface ShootsSummaryOutDTO {
   totalHours: number
   lastShootDate: string | null
   avgCheck: number | null
+  totalMakeupMinutes: number
 }
 
 function toShootRowDTO(r: ShootRow): ShootRowDTO {
@@ -79,6 +81,7 @@ function toShootRowDTO(r: ShootRow): ShootRowDTO {
     comment: r.comment,
     isCancelled: r.isCancelled,
     isFuture: r.isFuture,
+    makeupDurationMinutes: r.makeupDurationMinutes,
   }
 }
 
@@ -88,6 +91,7 @@ function toSummaryDTO(s: ShootsSummaryDTO): ShootsSummaryOutDTO {
     totalHours: s.totalHours,
     lastShootDate: s.lastShootDate ? s.lastShootDate.toISOString() : null,
     avgCheck: s.avgCheck,
+    totalMakeupMinutes: s.totalMakeupMinutes,
   }
 }
 
@@ -102,7 +106,7 @@ async function loadShootRows(clientId: string): Promise<ShootRow[]> {
       select: {
         id: true, calendarEventId: true, startAt: true, endAt: true, room: true, format: true,
         estimatedPrice: true, paymentMethod: true, yandexDiskUrl: true, yandexDiskUrlExpiresAt: true,
-        nasBackupUrl: true, notes: true,
+        nasBackupUrl: true, notes: true, makeupDurationMinutes: true,
         subscriptionUsage: { select: { usedHours: true } },
         order: { select: { status: true } },
       },
@@ -123,6 +127,7 @@ async function loadShootRows(clientId: string): Promise<ShootRow[]> {
     yandexDiskUrlExpiresAt: e.yandexDiskUrlExpiresAt,
     nasBackupUrl: e.nasBackupUrl,
     notes: e.notes,
+    makeupDurationMinutes: e.makeupDurationMinutes,
     subscriptionUsedHours: e.subscriptionUsage?.usedHours ?? null,
     orderStatus: e.order?.status ?? null,
   }))
@@ -135,7 +140,7 @@ export async function getClientShootsData(clientId: string): Promise<
   | { ok: false; data: { shoots: ShootRowDTO[]; summary: ShootsSummaryOutDTO }; error: string }
 > {
   const authResult = await requireStaffSession()
-  const empty = { shoots: [], summary: { totalShoots: 0, totalHours: 0, lastShootDate: null, avgCheck: null } }
+  const empty = { shoots: [], summary: { totalShoots: 0, totalHours: 0, lastShootDate: null, avgCheck: null, totalMakeupMinutes: 0 } }
   if (!authResult.ok) return { ok: false, data: empty, error: authResult.error }
 
   try {

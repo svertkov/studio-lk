@@ -22,7 +22,7 @@ function event(overrides: Partial<ShootEventInput> = {}): ShootEventInput {
     startAt: new Date('2026-06-01T10:00:00Z'), endAt: new Date('2026-06-01T12:00:00Z'),
     room: 'Светлый зал', format: 'Подкаст', estimatedPrice: 12000, paymentMethod: 'CASH',
     yandexDiskUrl: null, yandexDiskUrlExpiresAt: null, nasBackupUrl: null,
-    notes: null, subscriptionUsedHours: null, orderStatus: null,
+    notes: null, makeupDurationMinutes: null, subscriptionUsedHours: null, orderStatus: null,
     ...overrides,
   }
 }
@@ -166,6 +166,32 @@ describe('computeShootsSummary — no double counting of hours/money', () => {
     const summary = computeShootsSummary(rows)
     expect(summary.totalShoots).toBe(1)
     expect(summary.totalHours).toBe(2)
+  })
+
+  it('sums makeup minutes across actual shoots as a separate figure from totalHours', () => {
+    const rows = mergeShoots([], [
+      event({ id: 'e1', makeupDurationMinutes: 60 }),
+      event({ id: 'e2', makeupDurationMinutes: 30 }),
+    ], NOW)
+    const summary = computeShootsSummary(rows)
+    expect(summary.totalMakeupMinutes).toBe(90)
+    expect(summary.totalHours).toBe(4) // не увеличилось из-за гримёра
+  })
+
+  it('excludes cancelled/future shoots from the makeup-minutes total too', () => {
+    const future = new Date(NOW.getTime() + 86_400_000)
+    const rows = mergeShoots([], [
+      event({ id: 'e-cancelled', orderStatus: 'CANCELLED', makeupDurationMinutes: 60 }),
+      event({ id: 'e-future', startAt: future, endAt: new Date(future.getTime() + 7_200_000), makeupDurationMinutes: 60 }),
+      event({ id: 'e-real', makeupDurationMinutes: 30 }),
+    ], NOW)
+    const summary = computeShootsSummary(rows)
+    expect(summary.totalMakeupMinutes).toBe(30)
+  })
+
+  it('treats no-makeup shoots as contributing 0, not null, to the total', () => {
+    const rows = mergeShoots([], [event({ id: 'e1', makeupDurationMinutes: null })], NOW)
+    expect(computeShootsSummary(rows).totalMakeupMinutes).toBe(0)
   })
 
   it('averages only rows with a known real amount, ignoring subscription/free/unknown/unpaid', () => {

@@ -30,12 +30,12 @@ async function requireStaffSession(): Promise<{ ok: true } | { ok: false; error:
 // ============================================================
 
 type OrderClient = Pick<Client, 'name' | 'phone' | 'telegram' | 'email' | 'type' | 'companyName'>
-type OrderScheduleEvent = Pick<ScheduleEvent, 'id' | 'camerasCount' | 'editingRequired' | 'yandexDiskUrl' | 'nasBackupUrl'>
+type OrderScheduleEvent = Pick<ScheduleEvent, 'id' | 'camerasCount' | 'editingRequired' | 'yandexDiskUrl' | 'nasBackupUrl' | 'notes' | 'makeupDurationMinutes'>
 type OrderWithRelations = Order & { client: OrderClient | null; scheduleEvent: OrderScheduleEvent | null }
 
 const ORDER_INCLUDE = {
   client: { select: { name: true, phone: true, telegram: true, email: true, type: true, companyName: true } },
-  scheduleEvent: { select: { id: true, camerasCount: true, editingRequired: true, yandexDiskUrl: true, nasBackupUrl: true } },
+  scheduleEvent: { select: { id: true, camerasCount: true, editingRequired: true, yandexDiskUrl: true, nasBackupUrl: true, notes: true, makeupDurationMinutes: true } },
 } as const
 
 export interface OrderDTO {
@@ -55,7 +55,6 @@ export interface OrderDTO {
   plannedStartTime: string | null
   plannedEndTime: string | null
   durationMinutes: number | null
-  makeupDurationMinutes: number | null
   preliminaryAmount: number | null
   paymentStatus: OrderPaymentStatus
   paymentMethod: PaymentMethod | null
@@ -68,6 +67,9 @@ export interface OrderDTO {
   camerasCount: number | null
   editingRequired: boolean | null
   hasMaterials: boolean
+  // Время на гримёра — источник правды на связанной ScheduleEvent (её
+  // редактируют через основную карточку записи), у заявок без записи всегда null.
+  makeupDurationMinutes: number | null
   createdAt: string
   updatedAt: string
   statusUpdatedAt: string
@@ -99,16 +101,21 @@ function toDTO(row: OrderWithRelations): OrderDTO {
     plannedStartTime: row.plannedStartTime ? row.plannedStartTime.toISOString() : null,
     plannedEndTime: row.plannedEndTime ? row.plannedEndTime.toISOString() : null,
     durationMinutes: row.durationMinutes,
-    makeupDurationMinutes: row.makeupDurationMinutes,
     preliminaryAmount: row.preliminaryAmount,
     paymentStatus: row.paymentStatus,
     paymentMethod: row.paymentMethod,
-    comment: row.comment,
+    // Реальная точка редактирования комментария — основная карточка записи
+    // (EventCardModal, поле "Комментарий / нюансы" -> ScheduleEvent.notes),
+    // не сама карточка заказа. Если запись уже существует, её notes и есть
+    // актуальный комментарий; Order.comment остаётся источником только для
+    // заявок без записи в расписании (единый источник данных, без дублей).
+    comment: row.scheduleEvent?.notes ?? row.comment,
     googleEventId: row.googleEventId,
     hasBooking: !!row.scheduleEvent,
     camerasCount: row.scheduleEvent?.camerasCount ?? null,
     editingRequired: row.scheduleEvent?.editingRequired ?? null,
     hasMaterials: !!(row.scheduleEvent?.yandexDiskUrl || row.scheduleEvent?.nasBackupUrl),
+    makeupDurationMinutes: row.scheduleEvent?.makeupDurationMinutes ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
     statusUpdatedAt: row.statusUpdatedAt.toISOString(),
@@ -253,10 +260,6 @@ export interface OrderInput {
   room?: string
   plannedStartTime?: string | null
   plannedEndTime?: string | null
-  // Длительность предварительного бронирования для гримёра, в минутах —
-  // null/0 означает "гримёр не предусмотрен". Не влияет на durationMinutes/
-  // plannedEndTime/preliminaryAmount основной съёмки (см. order-model.ts).
-  makeupDurationMinutes?: number | null
   // Заполняется только при создании заказа из кнопки "Создать заказ" на
   // странице Telegram-диалога (см. src/lib/actions/telegram.ts) — источник
   // заказа автоматически становится TELEGRAM_BOT, а не MANUAL.
@@ -297,7 +300,6 @@ export async function createOrder(
           plannedStartTime: input.plannedStartTime ? new Date(input.plannedStartTime) : null,
           plannedEndTime: input.plannedEndTime ? new Date(input.plannedEndTime) : null,
           durationMinutes: computeDurationMinutes(input.plannedStartTime, input.plannedEndTime),
-          makeupDurationMinutes: input.makeupDurationMinutes ?? null,
           preliminaryAmount: input.preliminaryAmount ?? null,
           paymentStatus: input.paymentStatus ?? 'NOT_SPECIFIED',
           paymentMethod: input.paymentMethod ?? null,
@@ -376,7 +378,6 @@ export async function updateOrder(
           durationMinutes: hasBookingTimeNow
             ? computeDurationMinutes(nextStart!.toISOString(), nextEnd!.toISOString())
             : null,
-          makeupDurationMinutes: input.makeupDurationMinutes !== undefined ? input.makeupDurationMinutes : undefined,
           preliminaryAmount: input.preliminaryAmount !== undefined ? input.preliminaryAmount : undefined,
           paymentStatus: input.paymentStatus !== undefined ? input.paymentStatus : undefined,
           paymentMethod: input.paymentMethod !== undefined ? input.paymentMethod : undefined,

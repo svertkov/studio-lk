@@ -417,6 +417,13 @@ model ScheduleEvent {
   estimatedPrice           Float?                    @map("estimated_price")
   paymentMethod            PaymentMethod?            @map("payment_method")
   notes                    String?
+  // Предварительное бронирование студии для гримёра ПЕРЕД основной съёмкой —
+  // отдельный интервал, не часть длительности/стоимости самой съёмки.
+  // Источник правды — длительность в минутах; время начала гримёра всегда
+  // пересчитывается от startAt (см. computeMakeupInterval, schedule-model.ts),
+  // а не хранится отдельно, чтобы перенос съёмки не рассинхронизировал его.
+  // null/0 — гримёр не предусмотрен.
+  makeupDurationMinutes    Int?                      @map("makeup_duration_minutes")
   yandexDiskUrl            String?                   @map("yandex_disk_url")
   yandexDiskUrlAddedAt     DateTime?                  @map("yandex_disk_url_added_at")
   yandexDiskUrlExpiresAt   DateTime?                  @map("yandex_disk_url_expires_at")
@@ -477,13 +484,6 @@ model Order {
   plannedStartTime  DateTime?          @map("planned_start_time")
   plannedEndTime    DateTime?          @map("planned_end_time")
   durationMinutes   Int?               @map("duration_minutes")
-  // Предварительное бронирование студии для гримёра ПЕРЕД основной съёмкой —
-  // отдельный интервал, не часть durationMinutes/plannedStartTime основной
-  // съёмки. Источник правды — длительность в минутах; время начала гримёра
-  // всегда пересчитывается от plannedStartTime (см. computeMakeupInterval,
-  // order-model.ts), а не хранится отдельно, чтобы не рассинхронизироваться
-  // при переносе съёмки. null/0 — гримёр не предусмотрен.
-  makeupDurationMinutes Int?           @map("makeup_duration_minutes")
   preliminaryAmount Float?             @map("preliminary_amount")
   paymentStatus     OrderPaymentStatus @default(NOT_SPECIFIED) @map("payment_status")
   paymentMethod     PaymentMethod?     @map("payment_method")

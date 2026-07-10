@@ -23,7 +23,11 @@ import {
   SUBSCRIPTION_ARCHIVED_BADGE_LABEL, SUBSCRIPTION_ARCHIVED_BADGE_CLASS,
   getSubscriptionDisplayStatus,
 } from '@/lib/subscription-model'
-import { PAYMENT_METHOD_LABELS, mergeScheduleEvent, type ScheduleEventVM } from '@/lib/schedule-model'
+import {
+  PAYMENT_METHOD_LABELS, mergeScheduleEvent, type ScheduleEventVM,
+  computeMakeupInterval, formatMakeupBadgeLabel, formatDurationMinutes,
+  QUICK_COMMENT_TEMPLATES, hasQuickCommentTemplate,
+} from '@/lib/schedule-model'
 import { isValidHttpUrl } from '@/lib/url'
 import type { CalendarEvent } from '@/lib/google-calendar'
 import DonutChart from '@/components/ui/donut-chart'
@@ -176,28 +180,69 @@ function InfoRow({ label, value }: { label: string; value?: string | null }) {
   )
 }
 
+// Плашка акции — чисто визуальная производная от текста комментария (ищем
+// подстроку шаблона), не отдельная сущность/поле: если комментарий вручную
+// изменят или уберут фразу, плашка исчезнет сама при следующей отрисовке.
+const PROMO_TEMPLATE_TEXT = QUICK_COMMENT_TEMPLATES[0]?.text
+
+function makeupTooltip(shootStart: Date | null, minutes: number): string {
+  const interval = computeMakeupInterval(shootStart, minutes)
+  if (!interval) return 'Интервал будет рассчитан после выбора времени съёмки'
+  const time = (d: Date) => d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
+  return `Гримёр: ${time(interval.start)}–${time(interval.end)}`
+}
+
 // Комментарий может быть очень длинным (старые импортированные заметки) —
 // по умолчанию режем до 2 строк по словам (line-clamp, не посимвольно) и
 // даём кнопку "Показать полностью" вместо обрыва текста (ТЗ, часть 5/13).
 // Тот же приглушённый вторичный текст (text-xs text-zinc-400/500), что и
 // остальные некритичные данные таблицы — комментарий не "основное" значение.
-function CommentCell({ comment }: { comment: string | null }) {
+// Плашки гримёра/акции — переиспользуют общий GlowPill, а не свой дизайн;
+// гримёр показывается компактно здесь (а не в узкой колонке "Часы", которой
+// не хватит ширины на "Гримёр 1 ч 30 мин"), полный интервал — во всплывающей
+// подсказке (title), как и просит ТЗ.
+function CommentCell({ comment, makeupDurationMinutes, shootStart }: {
+  comment: string | null
+  makeupDurationMinutes: number | null
+  shootStart: Date | null
+}) {
   const [expanded, setExpanded] = useState(false)
-  if (!comment) return <span className="text-zinc-600 text-xs">—</span>
-  const isLong = comment.length > LONG_COMMENT_THRESHOLD
+  const hasMakeup = makeupDurationMinutes != null && makeupDurationMinutes > 0
+  const hasPromo = !!comment && !!PROMO_TEMPLATE_TEXT && hasQuickCommentTemplate(comment, PROMO_TEMPLATE_TEXT)
+
+  if (!comment && !hasMakeup) return <span className="text-zinc-600 text-xs">—</span>
+
+  const isLong = !!comment && comment.length > LONG_COMMENT_THRESHOLD
+
   return (
-    <div className="min-w-0">
-      <p className={`text-zinc-400 text-xs leading-snug whitespace-pre-wrap break-words ${!expanded && isLong ? 'line-clamp-2' : ''}`}>
-        {comment}
-      </p>
-      {isLong && (
-        <button
-          type="button"
-          onClick={e => { e.stopPropagation(); setExpanded(v => !v) }}
-          className="text-xs text-zinc-400 hover:text-white underline mt-0.5"
-        >
-          {expanded ? 'Свернуть' : 'Показать полностью'}
-        </button>
+    <div className="min-w-0 space-y-1">
+      {(hasMakeup || hasPromo) && (
+        <div className="flex flex-wrap items-center gap-1">
+          {hasMakeup && (
+            <GlowPill color="zinc" title={makeupTooltip(shootStart, makeupDurationMinutes!)}>
+              {formatMakeupBadgeLabel(makeupDurationMinutes!)}
+            </GlowPill>
+          )}
+          {hasPromo && (
+            <GlowPill color="green" title="Упомянуто в комментарии заказа">Первая запись −20%</GlowPill>
+          )}
+        </div>
+      )}
+      {comment && (
+        <>
+          <p className={`text-zinc-400 text-xs leading-snug whitespace-pre-wrap break-words ${!expanded && isLong ? 'line-clamp-2' : ''}`}>
+            {comment}
+          </p>
+          {isLong && (
+            <button
+              type="button"
+              onClick={e => { e.stopPropagation(); setExpanded(v => !v) }}
+              className="text-xs text-zinc-400 hover:text-white underline mt-0.5"
+            >
+              {expanded ? 'Свернуть' : 'Показать полностью'}
+            </button>
+          )}
+        </>
       )}
     </div>
   )
@@ -485,6 +530,7 @@ export default function ClientTabs({ client, subscriptions, shoots, shootsSummar
                 <MetricCard icon={Calendar} label="Съёмок" value={String(shootsSummary.totalShoots)} />
                 <MetricCard icon={Clock} label="Часов в студии" value={formatHours(shootsSummary.totalHours)} />
                 <MetricCard icon={DollarSign} label="Средний чек" value={formatMoneyCompact(shootsSummary.avgCheck)} />
+                <MetricCard icon={Clock} label="Время на гримёра" value={formatDurationMinutes(shootsSummary.totalMakeupMinutes)} />
               </div>
 
               {/* Диаграммы */}
@@ -564,7 +610,11 @@ export default function ClientTabs({ client, subscriptions, shoots, shootsSummar
                               <BackupCell row={row} />
                             </div>
                             <div role="cell" className="px-4 py-2.5 min-w-0" onClick={e => e.stopPropagation()}>
-                              <CommentCell comment={row.comment} />
+                              <CommentCell
+                                comment={row.comment}
+                                makeupDurationMinutes={row.makeupDurationMinutes}
+                                shootStart={row.startAt ? new Date(row.startAt) : null}
+                              />
                             </div>
                             <div role="cell" className="px-2 py-2 flex items-center justify-center">
                               {clickable && (

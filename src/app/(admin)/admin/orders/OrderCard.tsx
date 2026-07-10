@@ -3,10 +3,15 @@
 import type { CSSProperties } from 'react'
 import { format, parseISO } from 'date-fns'
 import { ru } from 'date-fns/locale'
-import { CalendarClock, UserX, Film, CheckCircle2, Paperclip } from 'lucide-react'
+import { CalendarClock, UserX, Film, CheckCircle2, Paperclip, Clock } from 'lucide-react'
 import type { DraggableAttributes, DraggableSyntheticListeners } from '@dnd-kit/core'
 import type { OrderDTO } from '@/lib/actions/orders'
 import { ORDER_PAYMENT_STATUS_LABELS, ORDER_PAYMENT_STATUS_COLORS, ORDER_SOURCE_LABELS, getOrderStatusVars } from '@/lib/order-model'
+import { formatMakeupBadgeLabel, QUICK_COMMENT_TEMPLATES, hasQuickCommentTemplate } from '@/lib/schedule-model'
+
+// Плашка акции — визуальная производная от текста комментария, не отдельное
+// поле/сущность (см. schedule-model.ts: QUICK_COMMENT_TEMPLATES).
+const PROMO_TEMPLATE_TEXT = QUICK_COMMENT_TEMPLATES[0]?.text
 
 interface Props {
   order: OrderDTO
@@ -41,6 +46,8 @@ export default function OrderCard({ order, onClick, dragAttributes, dragListener
     ? `${format(parseISO(order.plannedStartTime), 'd MMMM', { locale: ru })}, ${format(parseISO(order.plannedStartTime), 'HH:mm')}–${format(parseISO(order.plannedEndTime), 'HH:mm')}`
     : null
   const amount = formatMoney(order.preliminaryAmount)
+  const hasMakeup = order.makeupDurationMinutes != null && order.makeupDurationMinutes > 0
+  const hasPromo = !!order.comment && !!PROMO_TEMPLATE_TEXT && hasQuickCommentTemplate(order.comment, PROMO_TEMPLATE_TEXT)
 
   return (
     <button
@@ -59,13 +66,29 @@ export default function OrderCard({ order, onClick, dragAttributes, dragListener
           {when}
         </p>
       )}
+      {order.comment && (
+        <p className="text-zinc-500 text-xs line-clamp-2" title={order.comment}>
+          {order.comment}
+        </p>
+      )}
       <div className="flex items-center justify-between gap-2 pt-0.5">
         <span className={`text-xs font-medium ${ORDER_PAYMENT_STATUS_COLORS[order.paymentStatus]}`}>
           {amount ? `${amount} · ` : ''}{ORDER_PAYMENT_STATUS_LABELS[order.paymentStatus]}
         </span>
       </div>
-      {(order.source === 'GOOGLE_CALENDAR' || !order.clientId || order.editingRequired !== null || order.hasMaterials) && (
+      {(order.source === 'GOOGLE_CALENDAR' || !order.clientId || order.editingRequired !== null || order.hasMaterials || hasMakeup || hasPromo) && (
         <div className="flex flex-wrap items-center gap-1.5 pt-1">
+          {hasPromo && (
+            <span className="text-[11px] font-medium px-2 py-0.5 rounded-full border border-green-800 text-green-400 bg-green-950/30">
+              Первая запись −20%
+            </span>
+          )}
+          {hasMakeup && (
+            <span className="text-[11px] font-medium px-2 py-0.5 rounded-full border border-zinc-700 text-zinc-400 bg-zinc-800/40 flex items-center gap-1">
+              <Clock className="w-3 h-3" />
+              {formatMakeupBadgeLabel(order.makeupDurationMinutes!)}
+            </span>
+          )}
           {order.source === 'GOOGLE_CALENDAR' && (
             <span className="text-[11px] font-medium px-2 py-0.5 rounded-full border border-blue-800 text-blue-400 bg-blue-950/30">
               {ORDER_SOURCE_LABELS.GOOGLE_CALENDAR}

@@ -5,14 +5,9 @@ import Link from 'next/link'
 import { format, parseISO } from 'date-fns'
 import { Search, Link2, UserPlus, ChevronDown, ArchiveRestore } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import GlowPill from '@/components/ui/glow-pill'
 import { createOrder, updateOrder, updateOrderStatus, unarchiveOrder, type OrderDTO, type OrderInput } from '@/lib/actions/orders'
 import { getClients } from '@/lib/actions/clients'
-import {
-  ORDER_BOARD_COLUMNS, ORDER_STATUS_LABELS, ORDER_PAYMENT_STATUS_LABELS, ORDER_PAYMENT_METHOD_LABELS, ARCHIVE_REASON_LABELS,
-  MAKEUP_QUICK_OPTIONS, MAKEUP_DURATION_MAX_MINUTES, normalizeMakeupDurationMinutes, computeMakeupInterval, type MakeupInterval,
-  QUICK_COMMENT_TEMPLATES, hasQuickCommentTemplate, applyQuickCommentTemplate,
-} from '@/lib/order-model'
+import { ORDER_BOARD_COLUMNS, ORDER_STATUS_LABELS, ORDER_PAYMENT_STATUS_LABELS, ORDER_PAYMENT_METHOD_LABELS, ARCHIVE_REASON_LABELS } from '@/lib/order-model'
 import { CLIENT_TYPE_LABELS } from '@/lib/client-model'
 import { ROOM_DICTIONARY, FORMAT_DICTIONARY } from '@/lib/import/normalize'
 import type { ClientType, OrderStatus, OrderPaymentStatus, PaymentMethod } from '@prisma/client'
@@ -83,26 +78,10 @@ function splitDateTime(iso: string | null): { date: string; time: string } {
   return { date: format(d, 'yyyy-MM-dd'), time: format(d, 'HH:mm') }
 }
 
-function combineDateTimeDate(date: string, time: string): Date | null {
+function combineDateTime(date: string, time: string): string | null {
   if (!date || !time) return null
   const d = new Date(`${date}T${time}:00`)
-  return Number.isNaN(d.getTime()) ? null : d
-}
-
-function combineDateTime(date: string, time: string): string | null {
-  const d = combineDateTimeDate(date, time)
-  return d ? d.toISOString() : null
-}
-
-// "08:00–09:00", либо с датой спереди, если гримёр уходит на предыдущий
-// календарный день ("9 мар., 23:00–09:00" — начало съёмки в 00:xx).
-function formatMakeupRange(interval: MakeupInterval): string {
-  const time = (d: Date) => d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
-  const sameDay = interval.start.toDateString() === interval.end.toDateString()
-  const startLabel = sameDay
-    ? time(interval.start)
-    : `${interval.start.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })}, ${time(interval.start)}`
-  return `${startLabel}–${time(interval.end)}`
+  return Number.isNaN(d.getTime()) ? null : d.toISOString()
 }
 
 export default function OrderFormModal({ order, onOpenChange, onSaved, initialValues, telegramConversationId }: Props) {
@@ -132,13 +111,6 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
   const [date, setDate] = useState(startSplit.date)
   const [startTime, setStartTime] = useState(startSplit.time)
   const [endTime, setEndTime] = useState(endSplit.time)
-
-  // Гримёр — длительность хранится строкой + единицей измерения только для
-  // удобства ручного ввода; в БД (Order.makeupDurationMinutes) и при сохранении
-  // всегда уходят целые минуты через normalizeMakeupDurationMinutes (ТЗ, часть 6).
-  const initialMakeupMinutes = order?.makeupDurationMinutes ?? initialValues?.makeupDurationMinutes ?? null
-  const [makeupDurationInput, setMakeupDurationInput] = useState(initialMakeupMinutes != null ? String(initialMakeupMinutes) : '')
-  const [makeupDurationUnit, setMakeupDurationUnit] = useState<'minutes' | 'hours'>('minutes')
 
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState<ClientOption[]>([])
@@ -182,9 +154,6 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
     setClientId(null)
   }
 
-  const makeupDurationMinutes = normalizeMakeupDurationMinutes(makeupDurationInput, makeupDurationUnit)
-  const makeupInterval = computeMakeupInterval(combineDateTimeDate(date, startTime), makeupDurationMinutes)
-
   async function handleSave() {
     if (!clientId && !clientName.trim()) {
       setError('Укажите имя клиента или название заявки')
@@ -210,7 +179,6 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
       paymentStatus,
       plannedStartTime: combineDateTime(date, startTime),
       plannedEndTime: combineDateTime(date, endTime),
-      makeupDurationMinutes,
       ...(telegramConversationId ? { telegramConversationId } : {}),
     }
 
@@ -350,8 +318,8 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
                     </div>
                   )}
                   <button type="button" onClick={() => setAddClientOpen(true)}
-                    className="w-full flex items-center justify-center gap-2 bg-[#00c26b] hover:bg-[#00b360] disabled:opacity-50 text-white font-semibold text-sm py-2.5 rounded-lg transition-colors mt-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#00c26b]">
-                    <UserPlus className="w-4 h-4" />
+                    className="flex items-center gap-1.5 text-xs text-zinc-400 hover:text-white underline mt-2">
+                    <UserPlus className="w-3.5 h-3.5" />
                     Создать нового клиента
                   </button>
                 </div>
@@ -378,27 +346,6 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
             <Field>
               <Label>Комментарий</Label>
               <textarea className={TEXTAREA} rows={2} value={comment} onChange={e => setComment(e.target.value)} />
-              {QUICK_COMMENT_TEMPLATES.length > 0 && (
-                <div className="flex flex-wrap items-center gap-1.5 mt-1">
-                  <span className="text-zinc-500 text-[11px]">Быстрые комментарии:</span>
-                  {QUICK_COMMENT_TEMPLATES.map(t => {
-                    const active = hasQuickCommentTemplate(comment, t.text)
-                    return (
-                      <GlowPill
-                        key={t.id}
-                        as="button"
-                        color={active ? 'green' : 'zinc'}
-                        disabled={active}
-                        onClick={() => setComment(c => applyQuickCommentTemplate(c, t.text))}
-                        title={active ? 'Уже добавлено в комментарий' : 'Добавить в комментарий'}
-                        ariaLabel={active ? `${t.label} — уже добавлено в комментарий` : `Добавить в комментарий: ${t.label}`}
-                      >
-                        {t.label}
-                      </GlowPill>
-                    )
-                  })}
-                </div>
-              )}
             </Field>
 
             <p className={SECTION}>Запись в студию</p>
@@ -422,63 +369,6 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
                 У заказа уже есть запись в расписании платформы — при изменении даты/времени она обновится.
               </p>
             )}
-
-            <p className={SECTION}>Гримёр</p>
-            <Field>
-              <Label>Время на гримёра до съёмки</Label>
-              <div className="flex items-center gap-2">
-                <input
-                  className={`${INPUT} flex-1`}
-                  type="number"
-                  min="0"
-                  inputMode="decimal"
-                  placeholder="0"
-                  value={makeupDurationInput}
-                  onChange={e => setMakeupDurationInput(e.target.value)}
-                />
-                <div className="flex items-center gap-1 bg-zinc-800 border border-zinc-700 rounded-lg p-1 flex-shrink-0">
-                  {(['minutes', 'hours'] as const).map(u => (
-                    <button
-                      key={u}
-                      type="button"
-                      onClick={() => setMakeupDurationUnit(u)}
-                      className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
-                        makeupDurationUnit === u ? 'bg-zinc-700 text-white' : 'text-zinc-400 hover:text-zinc-200'
-                      }`}
-                    >
-                      {u === 'minutes' ? 'мин' : 'ч'}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </Field>
-            <div className="flex flex-wrap items-center gap-1.5">
-              {MAKEUP_QUICK_OPTIONS.map(opt => {
-                const active = makeupDurationUnit === 'minutes' && makeupDurationMinutes === opt.minutes
-                return (
-                  <GlowPill
-                    key={opt.minutes}
-                    as="button"
-                    color={active ? 'green' : 'zinc'}
-                    onClick={() => { setMakeupDurationInput(String(opt.minutes)); setMakeupDurationUnit('minutes') }}
-                    title={`Гримёр: ${opt.label}`}
-                    ariaLabel={`Установить время гримёра: ${opt.label}`}
-                  >
-                    {opt.label}
-                  </GlowPill>
-                )
-              })}
-            </div>
-            {makeupDurationMinutes != null && (
-              makeupInterval ? (
-                <p className="text-zinc-400 text-xs">Гримёр: {formatMakeupRange(makeupInterval)}</p>
-              ) : (
-                <p className="text-zinc-500 text-xs">Интервал будет рассчитан после выбора времени съёмки</p>
-              )
-            )}
-            <p className="text-zinc-600 text-[11px]">
-              Не входит в длительность и стоимость основной съёмки. Максимум — {MAKEUP_DURATION_MAX_MINUTES / 60} часов.
-            </p>
 
             <p className={SECTION}>Оплата</p>
             <Row>

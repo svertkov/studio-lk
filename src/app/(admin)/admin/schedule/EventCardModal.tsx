@@ -4,8 +4,9 @@ import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { format, parseISO } from 'date-fns'
 import { ru } from 'date-fns/locale'
-import { Copy, Check, ExternalLink, AlertTriangle } from 'lucide-react'
+import { Copy, Check, ExternalLink, AlertTriangle, UserPlus } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import GlowPill from '@/components/ui/glow-pill'
 import { upsertScheduleEvent, findSimilarClientsForEvent, confirmScheduleClient, type SimilarClientMatch } from '@/lib/actions/schedule'
 import { chargeEventToSubscription, createSubscription, removeEventSubscriptionCharge } from '@/lib/actions/subscriptions'
 import { parseEventTitle } from '@/lib/event-category'
@@ -14,6 +15,8 @@ import {
   MATERIALS_WARNING_TEXT,
   getEffectiveEventType, isPastBooking, shouldShowMaterialsBadge,
   type ClientConfirmationStatus,
+  MAKEUP_QUICK_OPTIONS, MAKEUP_DURATION_MAX_MINUTES, normalizeMakeupDurationMinutes, computeMakeupInterval, type MakeupInterval,
+  QUICK_COMMENT_TEMPLATES, hasQuickCommentTemplate, applyQuickCommentTemplate,
 } from '@/lib/schedule-model'
 import { EVENT_TYPE_LABELS, type EventType } from '@/lib/event-type'
 import { PAYMENT_METHOD_LABELS, ONE_TIME_PAYMENT_METHODS, type PaymentMethod } from '@/lib/schedule-model'
@@ -21,6 +24,17 @@ import { ROOM_DICTIONARY, FORMAT_DICTIONARY } from '@/lib/import/normalize'
 import MaterialsStatusBadge from './MaterialsStatusBadge'
 import SubscriptionPaymentBlock, { type SubscriptionPaymentHandle } from './SubscriptionPaymentBlock'
 import AddClientModal from '../clients/AddClientModal'
+
+// "08:00–09:00", либо с датой спереди, если гримёр уходит на предыдущий
+// календарный день ("9 мар., 23:00–09:00" — начало съёмки в 00:xx).
+function formatMakeupRange(interval: MakeupInterval): string {
+  const time = (d: Date) => d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
+  const sameDay = interval.start.toDateString() === interval.end.toDateString()
+  const startLabel = sameDay
+    ? time(interval.start)
+    : `${interval.start.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })}, ${time(interval.start)}`
+  return `${startLabel}–${time(interval.end)}`
+}
 
 const ROOM_OPTIONS = ROOM_DICTIONARY.map(e => e.canonical)
 const FORMAT_OPTIONS = FORMAT_DICTIONARY.map(e => e.canonical)
@@ -67,6 +81,14 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
   const [contactRaw, setContactRaw] = useState(annotation?.contactRaw ?? '')
   const [companyRaw, setCompanyRaw] = useState(annotation?.companyRaw ?? '')
 
+  // Гримёр — длительность хранится строкой + единицей измерения только для
+  // удобства ручного ввода; в БД (ScheduleEvent.makeupDurationMinutes) и при
+  // сохранении всегда уходят целые минуты через normalizeMakeupDurationMinutes.
+  const [makeupDurationInput, setMakeupDurationInput] = useState(
+    annotation?.makeupDurationMinutes != null ? String(annotation.makeupDurationMinutes) : '',
+  )
+  const [makeupDurationUnit, setMakeupDurationUnit] = useState<'minutes' | 'hours'>('minutes')
+
   const [paymentMode, setPaymentMode] = useState<'ONE_TIME' | 'SUBSCRIPTION'>(
     annotation?.subscriptionUsage ? 'SUBSCRIPTION' : 'ONE_TIME',
   )
@@ -92,6 +114,8 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
   const warningText = MATERIALS_WARNING_TEXT[materialsStatus]
   const hasClient = !!clientId
   const eventDurationHours = Math.max(0, (new Date(calendarEvent.end).getTime() - new Date(calendarEvent.start).getTime()) / 3600000)
+  const makeupDurationMinutes = normalizeMakeupDurationMinutes(makeupDurationInput, makeupDurationUnit)
+  const makeupInterval = computeMakeupInterval(new Date(calendarEvent.start), makeupDurationMinutes)
   const isBookingPast = isPastBooking(vm)
   // Лёгкая, СОВЕТУЮЩАЯ (не блокирующая) проверка формата — только для живой
   // подсказки под полем; сохранить ссылку можно в любом случае, даже если она
@@ -219,6 +243,7 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
         clientNameRaw,
         contactRaw,
         companyRaw,
+        makeupDurationMinutes,
         ...(confirmationOverride && { clientConfirmationStatus: confirmationOverride }),
       })
       if (!result.ok) {
@@ -300,6 +325,27 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
           <div>
             <label className={LABEL}>Комментарий / нюансы</label>
             <textarea className={`${INPUT} resize-none`} rows={2} value={notes} onChange={e => setNotes(e.target.value)} />
+            {QUICK_COMMENT_TEMPLATES.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                <span className="text-zinc-500 text-[11px]">Быстрые комментарии:</span>
+                {QUICK_COMMENT_TEMPLATES.map(t => {
+                  const active = hasQuickCommentTemplate(notes, t.text)
+                  return (
+                    <GlowPill
+                      key={t.id}
+                      as="button"
+                      color={active ? 'green' : 'zinc'}
+                      disabled={active}
+                      onClick={() => setNotes(n => applyQuickCommentTemplate(n, t.text))}
+                      title={active ? 'Уже добавлено в комментарий' : 'Добавить в комментарий'}
+                      ariaLabel={active ? `${t.label} — уже добавлено в комментарий` : `Добавить в комментарий: ${t.label}`}
+                    >
+                      {t.label}
+                    </GlowPill>
+                  )
+                })}
+              </div>
+            )}
           </div>
 
           {eventType !== 'STUDIO_BOOKING' && (
@@ -332,6 +378,63 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
             <input className={INPUT} type="number" min="0" placeholder="напр. 3" value={camerasCount}
               onChange={e => setCamerasCount(e.target.value)} />
           </div>
+
+          <p className={SECTION}>Гримёр</p>
+          <div>
+            <label className={LABEL}>Время на гримёра до съёмки</label>
+            <div className="flex items-center gap-2">
+              <input
+                className={`${INPUT} flex-1`}
+                type="number"
+                min="0"
+                inputMode="decimal"
+                placeholder="0"
+                value={makeupDurationInput}
+                onChange={e => setMakeupDurationInput(e.target.value)}
+              />
+              <div className="flex items-center gap-1 bg-zinc-800 border border-zinc-700 rounded-lg p-1 flex-shrink-0">
+                {(['minutes', 'hours'] as const).map(u => (
+                  <button
+                    key={u}
+                    type="button"
+                    onClick={() => setMakeupDurationUnit(u)}
+                    className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
+                      makeupDurationUnit === u ? 'bg-zinc-700 text-white' : 'text-zinc-400 hover:text-zinc-200'
+                    }`}
+                  >
+                    {u === 'minutes' ? 'мин' : 'ч'}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {MAKEUP_QUICK_OPTIONS.map(opt => {
+              const active = makeupDurationUnit === 'minutes' && makeupDurationMinutes === opt.minutes
+              return (
+                <GlowPill
+                  key={opt.minutes}
+                  as="button"
+                  color={active ? 'green' : 'zinc'}
+                  onClick={() => { setMakeupDurationInput(String(opt.minutes)); setMakeupDurationUnit('minutes') }}
+                  title={`Гримёр: ${opt.label}`}
+                  ariaLabel={`Установить время гримёра: ${opt.label}`}
+                >
+                  {opt.label}
+                </GlowPill>
+              )
+            })}
+          </div>
+          {makeupDurationMinutes != null && (
+            makeupInterval ? (
+              <p className="text-zinc-400 text-xs">Гримёр: {formatMakeupRange(makeupInterval)}</p>
+            ) : (
+              <p className="text-zinc-500 text-xs">Интервал будет рассчитан после выбора времени съёмки</p>
+            )
+          )}
+          <p className="text-zinc-600 text-[11px]">
+            Не входит в длительность и стоимость основной съёмки. Максимум — {MAKEUP_DURATION_MAX_MINUTES / 60} часов.
+          </p>
 
           <p className={SECTION}>Клиент</p>
           {hasClient ? (
@@ -413,16 +516,17 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
                     onChange={e => setCompanyRaw(e.target.value)} />
                 </div>
               </div>
-              <div className="flex items-center gap-4">
+              <div className="flex flex-col items-start gap-2">
                 <button type="button" onClick={() => setAddClientOpen(true)}
-                  className="text-xs text-zinc-400 hover:text-white underline">
+                  className="inline-flex items-center gap-1.5 bg-[#00c26b] hover:bg-[#00b360] disabled:opacity-50 text-white font-semibold text-xs px-3 py-2 rounded-lg transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#00c26b]">
+                  <UserPlus className="w-3.5 h-3.5" />
                   Создать нового клиента
                 </button>
                 {annotation?.clientConfirmationStatus === 'PENDING' ? (
                   <p className="text-amber-400 text-xs">Ожидает подтверждения в разделе «Клиенты»</p>
                 ) : (
                   <button type="button" onClick={() => handleSave('PENDING')} disabled={saving || !clientNameRaw.trim()}
-                    className="text-xs text-[#00c26b] hover:underline disabled:opacity-40 disabled:no-underline">
+                    className="text-xs text-zinc-500 hover:text-zinc-300 hover:underline disabled:opacity-40 disabled:no-underline">
                     Отметить как ожидает подтверждения
                   </button>
                 )}

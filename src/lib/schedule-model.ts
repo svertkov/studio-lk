@@ -345,6 +345,7 @@ export interface ScheduleEventDTO {
   clientConfirmationStatus: ClientConfirmationStatus
   subscriptionUsage: ScheduleEventSubscriptionInfo | null
   eventType: EventType
+  makeupDurationMinutes: number | null
 }
 
 // Снэпшот абонемента, которым оплачена эта конкретная запись — только для
@@ -388,5 +389,114 @@ export function getVmMaterialsDisplay(vm: ScheduleEventVM): MaterialsDisplay {
 // показываются всегда — они не пугают и не вводят в заблуждение.
 export function shouldShowMaterialsBadge(vm: ScheduleEventVM, now: Date = new Date()): boolean {
   return getVmMaterialsDisplay(vm).severity !== 'danger' || canCheckBookingIssues(vm, now)
+}
+
+// ============================================================
+// ГРИМЁР — предварительное бронирование студии перед основной съёмкой.
+// Источник истины — длительность в минутах (ScheduleEvent.makeupDurationMinutes),
+// НЕ отдельно хранимое время начала: интервал гримёра всегда пересчитывается
+// от startAt самой записи (см. computeMakeupInterval), поэтому перенос
+// съёмки не может рассинхронизировать сохранённое "время гримёра".
+// ============================================================
+
+// Разумный потолок длительности гримёра — защита от опечатки при ручном
+// вводе (например, лишний ноль), а не жёсткое бизнес-ограничение.
+export const MAKEUP_DURATION_MAX_MINUTES = 480
+
+export interface MakeupQuickOption {
+  minutes: number
+  label: string
+}
+
+// Быстрые варианты длительности гримёра — используются как плашки в карточке
+// записи, не ограничивают ручной ввод.
+export const MAKEUP_QUICK_OPTIONS: MakeupQuickOption[] = [
+  { minutes: 30, label: '30 минут' },
+  { minutes: 60, label: '1 час' },
+  { minutes: 90, label: '1 час 30 минут' },
+  { minutes: 120, label: '2 часа' },
+]
+
+export type MakeupDurationUnit = 'minutes' | 'hours'
+
+// Единая точка нормализации введённой пользователем длительности гримёра —
+// что для ручного ввода в минутах, что для ввода в часах (в т.ч. дробных,
+// «1,5 часа» -> 90). Всегда возвращает целые минуты либо null (пусто/0/
+// отрицательное/NaN — во всех этих случаях гримёр считается не предусмотренным).
+export function normalizeMakeupDurationMinutes(rawValue: string, unit: MakeupDurationUnit = 'minutes'): number | null {
+  const trimmed = rawValue.trim().replace(',', '.')
+  if (!trimmed) return null
+
+  const num = parseFloat(trimmed)
+  if (!Number.isFinite(num) || num < 0) return null
+
+  const minutes = unit === 'hours' ? num * 60 : num
+  const rounded = Math.round(minutes)
+  if (rounded <= 0) return null
+
+  return Math.min(rounded, MAKEUP_DURATION_MAX_MINUTES)
+}
+
+export interface MakeupInterval {
+  start: Date
+  end: Date
+}
+
+// Интервал гримёра = [начало съёмки − длительность гримёра, начало съёмки).
+// Не меняет и не читает длительность/стоимость/время окончания основной
+// съёмки — целиком отдельный расчёт поверх уже существующих значений.
+export function computeMakeupInterval(shootStart: Date | null, makeupDurationMinutes: number | null): MakeupInterval | null {
+  if (!shootStart || !makeupDurationMinutes || makeupDurationMinutes <= 0) return null
+  return { start: new Date(shootStart.getTime() - makeupDurationMinutes * 60_000), end: shootStart }
+}
+
+// Единый helper форматирования минут — переиспользуется в карточке записи,
+// карточке клиента, списке заказов и tooltip'ах, чтобы не дублировать
+// логику "минуты -> человекочитаемая строка" в нескольких компонентах.
+// 0 -> '0 мин', 30 -> '30 мин', 60 -> '1 ч', 90 -> '1 ч 30 мин', 150 -> '2 ч 30 мин'.
+export function formatDurationMinutes(minutes: number): string {
+  const hours = Math.floor(minutes / 60)
+  const mins = minutes % 60
+  if (hours === 0) return `${mins} мин`
+  if (mins === 0) return `${hours} ч`
+  return `${hours} ч ${mins} мин`
+}
+
+export function formatMakeupBadgeLabel(minutes: number): string {
+  return `Гримёр ${formatDurationMinutes(minutes)}`
+}
+
+// ============================================================
+// БЫСТРЫЕ ШАБЛОНЫ КОММЕНТАРИЯ ("нюансы") — конфигурация массивом, а не
+// отдельными кнопками в JSX, чтобы новые шаблоны добавлялись без переписывания
+// компонента. Пока один шаблон — про акцию на первую запись.
+// ============================================================
+
+export interface QuickCommentTemplate {
+  id: string
+  label: string
+  text: string
+}
+
+export const QUICK_COMMENT_TEMPLATES: QuickCommentTemplate[] = [
+  { id: 'promo-first-booking-20', label: 'Акция! 20% скидка на первую запись', text: 'Акция! 20% скидка на первую запись' },
+]
+
+// true, если текст шаблона уже присутствует в комментарии — используется и
+// для дедупликации при вставке, и чтобы плашка отображалась как уже применённая,
+// и как визуальный признак "заказ со скидкой" в списке заказов/карточке клиента
+// (без отдельной сущности акции — это по-прежнему обычный текст комментария).
+export function hasQuickCommentTemplate(comment: string | null | undefined, templateText: string): boolean {
+  return !!comment && comment.includes(templateText)
+}
+
+// Вставляет текст шаблона в комментарий: в пустой — просто текст, в
+// непустой — отдельной строкой снизу. Не трогает уже применённый шаблон
+// (защита от дублей при повторном клике, хотя в UI плашка для этого
+// становится disabled — здесь дублирующая проверка на уровне чистой функции).
+export function applyQuickCommentTemplate(comment: string, templateText: string): string {
+  if (hasQuickCommentTemplate(comment, templateText)) return comment
+  if (!comment.trim()) return templateText
+  return `${comment}\n${templateText}`
 }
 

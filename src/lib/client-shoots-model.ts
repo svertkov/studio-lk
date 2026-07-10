@@ -50,6 +50,11 @@ export interface ShootRow {
   comment: string | null
   isCancelled: boolean
   isFuture: boolean
+  // Предварительное бронирование гримёра перед этой съёмкой, в минутах — null,
+  // если не указано (ClientVisit-only строки тоже всегда null, у исторических
+  // визитов такого понятия не было). Источник — ScheduleEvent.makeupDurationMinutes,
+  // не отдельно хранимое время (см. computeMakeupInterval, schedule-model.ts).
+  makeupDurationMinutes: number | null
 }
 
 export interface ShootVisitInput {
@@ -81,6 +86,7 @@ export interface ShootEventInput {
   yandexDiskUrlExpiresAt: Date | null
   nasBackupUrl: string | null
   notes: string | null
+  makeupDurationMinutes: number | null
   subscriptionUsedHours: number | null
   // Статус связанного заказа (Order.status), если запись была создана из
   // заказа — единственный существующий в схеме сигнал "эта съёмка отменена"
@@ -180,6 +186,7 @@ export function mergeShoots(
       comment: e.notes,
       isCancelled,
       isFuture,
+      makeupDurationMinutes: e.makeupDurationMinutes,
     })
   }
 
@@ -229,6 +236,7 @@ export function mergeShoots(
         comment: v.comment,
         isCancelled: false,
         isFuture: false,
+        makeupDurationMinutes: null,
       })
     }
   }
@@ -284,6 +292,10 @@ export interface ShootsSummaryDTO {
   totalHours: number
   lastShootDate: Date | null
   avgCheck: number | null
+  // Суммарное время гримёра по всем фактическим съёмкам клиента, в минутах —
+  // отдельный показатель, никогда не прибавляется к totalHours (ТЗ: "основные
+  // часы съёмки и время гримёра должны оставаться разными показателями").
+  totalMakeupMinutes: number
 }
 
 // Показатели считаются только по фактически состоявшимся съёмкам: без
@@ -291,6 +303,7 @@ export interface ShootsSummaryDTO {
 export function computeShootsSummary(rows: ShootRow[]): ShootsSummaryDTO {
   const actual = rows.filter(r => !r.isCancelled && !r.isFuture)
   const totalHours = actual.reduce((s, r) => s + (r.durationHours ?? 0), 0)
+  const totalMakeupMinutes = actual.reduce((s, r) => s + (r.makeupDurationMinutes ?? 0), 0)
   const knownAmounts = actual
     .map(r => (r.amount.kind === 'amount' ? r.amount.amount : null))
     .filter((v): v is number => v != null)
@@ -307,6 +320,7 @@ export function computeShootsSummary(rows: ShootRow[]): ShootsSummaryDTO {
     totalHours,
     lastShootDate: dates[0] ?? null,
     avgCheck,
+    totalMakeupMinutes,
   }
 }
 
