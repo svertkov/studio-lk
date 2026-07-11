@@ -89,7 +89,7 @@ function StatusBadge({ status }: { status: OrderStatus }) {
   return (
     <span
       style={getOrderStatusVars(status) as CSSProperties}
-      className="inline-flex items-center gap-1.5 text-xs font-medium px-2 py-0.5 rounded-full border border-[color:var(--status-border)] bg-zinc-900/60 whitespace-nowrap"
+      className="inline-flex items-center gap-1.5 text-zinc-300 text-xs font-medium px-2 py-0.5 rounded-full border border-[color:var(--status-border)] bg-zinc-900/60 whitespace-nowrap"
     >
       <span className="w-1.5 h-1.5 rounded-full bg-[color:var(--status-color)] flex-shrink-0" />
       {config.label}
