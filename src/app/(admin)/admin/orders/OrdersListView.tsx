@@ -1,29 +1,27 @@
 'use client'
 
-import { useMemo, useState, type CSSProperties } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useRouter } from 'next/navigation'
 import { format, parseISO, startOfDay, endOfDay, startOfWeek, endOfWeek, startOfMonth, endOfMonth, subMonths, isWithinInterval } from 'date-fns'
 import { ru } from 'date-fns/locale'
-import {
-  Search, Plus, Table2, ArrowUp, ArrowDown, ArrowUpDown, Cloud, CloudOff, Server, Clock,
-} from 'lucide-react'
-import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
+import { Search, Plus, Table2, ArrowUp, ArrowDown, ArrowUpDown, Cloud, CloudOff, Server } from 'lucide-react'
 import GlowPill from '@/components/ui/glow-pill'
 import type { OrderDTO } from '@/lib/actions/orders'
 import {
   ORDER_BOARD_COLUMNS, ORDER_STATUS_LABELS, getOrderStatusConfig, getOrderStatusVars,
   ORDER_PAYMENT_STATUS_LABELS, ORDER_PAYMENT_STATUS_COLORS,
   orderTableDate, compareOrdersForTable, orderTableSearchHaystack,
+  orderShootDisplay, orderDurationSecondaryLabel, orderPaymentCellDisplay,
+  getOrdersTableTier, type OrdersTableTier,
   type OrderTableSortKey, type SortDirection,
 } from '@/lib/order-model'
-import {
-  formatDurationMinutes, formatMakeupBadgeLabel, QUICK_COMMENT_TEMPLATES, hasQuickCommentTemplate,
-} from '@/lib/schedule-model'
+import { formatDurationMinutes, QUICK_COMMENT_TEMPLATES, hasQuickCommentTemplate } from '@/lib/schedule-model'
 import { computeMaterialsCapsules, getVisibleShoots, getHiddenShootsCount } from '@/lib/client-shoots-model'
 import { isValidHttpUrl } from '@/lib/url'
 import { ROOM_DICTIONARY, FORMAT_DICTIONARY } from '@/lib/import/normalize'
 import type { OrderStatus, OrderPaymentStatus } from '@prisma/client'
 import OrderFormModal from '../crm/OrderFormModal'
+import OrderCard from '../crm/OrderCard'
 
 const PROMO_TEMPLATE_TEXT = QUICK_COMMENT_TEMPLATES[0]?.text
 const TABLE_DEFAULT_LIMIT = 25
@@ -31,10 +29,19 @@ const TABLE_DEFAULT_LIMIT = 25
 type Period = 'ALL' | 'TODAY' | 'WEEK' | 'MONTH' | 'PREV_MONTH' | 'CUSTOM'
 type TriFilter = 'ANY' | 'YES' | 'NO'
 
-function formatMoney(v: number | null) {
-  if (v == null) return null
-  return new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB', maximumFractionDigits: 0 }).format(v)
-}
+// Единая сетка колонок для заголовка и строк — CSS Grid, не HTML-таблица (та
+// же техника, что и в "Истории съёмок" на карточке клиента, см.
+// ClientTabs.tsx: SHOOTS_GRID_COLS). 8 колонок в 'full' (обычный десктоп,
+// включая 1280px — см. getOrdersTableTier в order-model.ts), 7 в 'compact'
+// (без "Комментарий" — узкое окно ноутбука/планшет). minmax(px, fr) не даёт
+// колонке сжаться меньше указанного и одновременно съедает лишнее место через
+// fr, поэтому сумма минимумов — единственное, что может вызвать overflow, и
+// она подобрана и проверена вживую с запасом под 1280px (см. комментарий у
+// getOrdersTableTier).
+const FULL_GRID_COLS =
+  'grid-cols-[minmax(100px,0.85fr)_minmax(100px,1fr)_minmax(110px,1.05fr)_minmax(80px,0.65fr)_minmax(100px,0.85fr)_minmax(126px,0.75fr)_minmax(110px,0.95fr)_minmax(110px,1.3fr)]'
+const COMPACT_GRID_COLS =
+  'grid-cols-[minmax(100px,0.95fr)_minmax(100px,1.1fr)_minmax(110px,1.15fr)_minmax(80px,0.7fr)_minmax(100px,0.95fr)_minmax(126px,0.85fr)_minmax(110px,1.05fr)]'
 
 function formatDate(iso: string) {
   try { return format(parseISO(iso), 'd MMM yyyy', { locale: ru }) } catch { return '—' }
@@ -78,8 +85,8 @@ function SortBtn({ k, label, sortKey, sortDir, onToggle }: {
     <button type="button" onClick={() => onToggle(k)} className="flex items-center gap-1 hover:text-white transition-colors">
       {label}
       {isActive ? (
-        sortDir === 'asc' ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />
-      ) : <ArrowUpDown className="w-3 h-3 opacity-30" />}
+        sortDir === 'asc' ? <ArrowUp className="w-3 h-3 flex-shrink-0" /> : <ArrowDown className="w-3 h-3 flex-shrink-0" />
+      ) : <ArrowUpDown className="w-3 h-3 opacity-30 flex-shrink-0" />}
     </button>
   )
 }
@@ -89,10 +96,10 @@ function StatusBadge({ status }: { status: OrderStatus }) {
   return (
     <span
       style={getOrderStatusVars(status) as CSSProperties}
-      className="inline-flex items-center gap-1.5 text-zinc-300 text-xs font-medium px-2 py-0.5 rounded-full border border-[color:var(--status-border)] bg-zinc-900/60 whitespace-nowrap"
+      className="inline-flex max-w-full items-center gap-1.5 text-zinc-300 text-xs font-medium px-2 py-0.5 rounded-full border border-[color:var(--status-border)] bg-zinc-900/60"
     >
       <span className="w-1.5 h-1.5 rounded-full bg-[color:var(--status-color)] flex-shrink-0" />
-      {config.label}
+      <span className="truncate">{config.label}</span>
     </span>
   )
 }
@@ -110,8 +117,11 @@ function MaterialsCell({ order }: { order: OrderDTO }) {
     return <span className="text-zinc-600 text-xs">Нет материалов</span>
   }
 
+  // flex-wrap — плашки идут в ряд, если хватает ширины колонки, и переносятся
+  // друг под друга, если нет (см. ТЗ п.6) — сама колонка при этом не
+  // расширяется, потому что у ячейки задан min-w-0 (см. Cell ниже).
   return (
-    <div className="flex flex-wrap items-center gap-1">
+    <div className="flex flex-wrap items-center gap-1 min-w-0">
       {state.yandex === 'active' && (
         <GlowPill as="a" href={yandexUrl!} color="green" icon={Cloud} onClick={e => e.stopPropagation()}
           title="Открыть материалы на Яндекс.Диске" ariaLabel="Открыть материалы на Яндекс.Диске">
@@ -134,19 +144,34 @@ function MaterialsCell({ order }: { order: OrderDTO }) {
   )
 }
 
+// Комментарий — максимум одна строка на десктопе (ТЗ п.7): промо-плашка
+// (если есть) и текст комментария в одной flex-строке, у текста truncate —
+// ни плашка, ни длинный текст не могут расширить саму колонку, потому что
+// родительская ячейка имеет min-w-0. Полный текст — через нативный title
+// (тот же приём tooltip, что и в остальной таблице/carточке клиента) и целиком
+// в карточке заказа.
 function CommentCell({ order }: { order: OrderDTO }) {
   const hasPromo = !!order.comment && !!PROMO_TEMPLATE_TEXT && hasQuickCommentTemplate(order.comment, PROMO_TEMPLATE_TEXT)
   if (!order.comment && !hasPromo) return <span className="text-zinc-600 text-xs">—</span>
   return (
-    <div className="min-w-0 max-w-[240px] space-y-1">
+    <div className="flex items-center gap-1.5 min-w-0" title={order.comment ?? undefined}>
       {hasPromo && (
-        <GlowPill color="green" title="Упомянуто в комментарии заказа">Первая запись −20%</GlowPill>
+        <GlowPill color="green" className="flex-shrink-0" title="Упомянуто в комментарии заказа">Первая запись −20%</GlowPill>
       )}
-      {order.comment && (
-        <p className="text-zinc-400 text-xs leading-snug line-clamp-2" title={order.comment}>{order.comment}</p>
-      )}
+      {order.comment && <span className="text-zinc-400 text-xs truncate">{order.comment}</span>}
     </div>
   )
+}
+
+// Общий контракт ячейки: min-w-0 обязателен на КАЖДОЙ — без него браузер
+// считает intrinsic-ширину содержимого (длинный текст, несколько плашек) как
+// нижнюю границу трека CSS Grid и раздвигает колонки вместо того, чтобы дать
+// сработать truncate/ellipsis/flex-wrap внутри (ТЗ п.12 — самая частая причина
+// horizontal overflow в таблицах на CSS Grid).
+function Cell({ children, className = '', onClick }: {
+  children: React.ReactNode; className?: string; onClick?: (e: React.MouseEvent) => void
+}) {
+  return <div role="cell" onClick={onClick} className={`min-w-0 px-2.5 py-2.5 ${className}`}>{children}</div>
 }
 
 interface Props {
@@ -174,6 +199,25 @@ export default function OrdersListView({ initialOrders }: Props) {
 
   const [editingOrder, setEditingOrder] = useState<OrderDTO | null>(null)
   const [creating, setCreating] = useState(false)
+
+  // Уровень таблицы решается по РЕАЛЬНО измеренной ширине контейнера, не по
+  // viewport (левое меню платформы фиксировано и не сворачивается — см.
+  // комментарий у getOrdersTableTier в order-model.ts). 1200 — разумное
+  // начальное предположение (полный десктопный вид) до первого замера, чтобы
+  // не мигать мобильной вёрсткой на старте.
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [containerWidth, setContainerWidth] = useState(1200)
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const observer = new ResizeObserver(entries => {
+      const width = entries[0]?.contentRect.width
+      if (width) setContainerWidth(width)
+    })
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
+  const tier: OrdersTableTier = getOrdersTableTier(containerWidth)
 
   function toggleSort(key: OrderTableSortKey) {
     if (key === sortKey) setSortDir(d => (d === 'asc' ? 'desc' : 'asc'))
@@ -211,6 +255,9 @@ export default function OrdersListView({ initialOrders }: Props) {
   const visible = getVisibleShoots(sorted, expanded, TABLE_DEFAULT_LIMIT)
   const hiddenCount = getHiddenShootsCount(sorted.length, TABLE_DEFAULT_LIMIT)
 
+  const hasActiveFilters = !!search || period !== 'ALL' || roomFilter !== 'ALL' || formatFilter !== 'ALL' || statusFilter !== 'ALL' ||
+    paymentFilter !== 'ALL' || materialsFilter !== 'ANY' || nasFilter !== 'ANY' || editingFilter !== 'ANY' || makeupFilter !== 'ANY'
+
   function resetFilters() {
     setSearch(''); setPeriod('ALL'); setCustomFrom(''); setCustomTo('')
     setRoomFilter('ALL'); setFormatFilter('ALL'); setStatusFilter('ALL'); setPaymentFilter('ALL')
@@ -221,22 +268,29 @@ export default function OrdersListView({ initialOrders }: Props) {
     router.refresh()
   }
 
+  function openOrder(order: OrderDTO) {
+    setEditingOrder(order)
+  }
+
   const triLabel: Record<TriFilter, string> = { ANY: 'Любые', YES: 'Есть', NO: 'Нет' }
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="relative flex-1 min-w-56">
+      {/* Фильтры — первый ряд: поиск + основные select'ы, кнопка создания
+          справа. flex-wrap сам переносит их на вторую строку на узком
+          ноутбуке (ТЗ п.15), явных media query для этого не нужно. */}
+      <div className="flex flex-wrap items-center gap-2.5">
+        <div className="relative flex-1 min-w-[200px]">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500 pointer-events-none" />
           <input
             value={search}
             onChange={e => setSearch(e.target.value)}
-            placeholder="Клиент, телефон, Telegram, email, компания, комментарий..."
+            placeholder="Клиент, телефон, Telegram, email, компания..."
             className="w-full bg-zinc-900 border border-zinc-800 text-zinc-100 placeholder-zinc-600 rounded-lg pl-9 pr-3 py-2.5 text-sm outline-none focus:border-zinc-600 transition-colors"
           />
         </div>
         <select value={period} onChange={e => setPeriod(e.target.value as Period)}
-          className="bg-zinc-900 border border-zinc-800 text-zinc-300 text-sm rounded-lg px-3 py-2.5 outline-none focus:border-zinc-600 cursor-pointer">
+          className="flex-shrink-0 bg-zinc-900 border border-zinc-800 text-zinc-300 text-sm rounded-lg px-3 py-2.5 outline-none focus:border-zinc-600 cursor-pointer">
           <option value="ALL">Всё время</option>
           <option value="TODAY">Сегодня</option>
           <option value="WEEK">Текущая неделя</option>
@@ -247,28 +301,28 @@ export default function OrdersListView({ initialOrders }: Props) {
         {period === 'CUSTOM' && (
           <>
             <input type="date" value={customFrom} onChange={e => setCustomFrom(e.target.value)}
-              className="bg-zinc-900 border border-zinc-800 text-zinc-300 text-sm rounded-lg px-3 py-2.5 outline-none focus:border-zinc-600" />
+              className="flex-shrink-0 bg-zinc-900 border border-zinc-800 text-zinc-300 text-sm rounded-lg px-3 py-2.5 outline-none focus:border-zinc-600" />
             <input type="date" value={customTo} onChange={e => setCustomTo(e.target.value)}
-              className="bg-zinc-900 border border-zinc-800 text-zinc-300 text-sm rounded-lg px-3 py-2.5 outline-none focus:border-zinc-600" />
+              className="flex-shrink-0 bg-zinc-900 border border-zinc-800 text-zinc-300 text-sm rounded-lg px-3 py-2.5 outline-none focus:border-zinc-600" />
           </>
         )}
         <select value={roomFilter} onChange={e => setRoomFilter(e.target.value)}
-          className="bg-zinc-900 border border-zinc-800 text-zinc-300 text-sm rounded-lg px-3 py-2.5 outline-none focus:border-zinc-600 cursor-pointer">
+          className="flex-shrink-0 bg-zinc-900 border border-zinc-800 text-zinc-300 text-sm rounded-lg px-3 py-2.5 outline-none focus:border-zinc-600 cursor-pointer">
           <option value="ALL">Все залы</option>
           {ROOM_DICTIONARY.map(r => <option key={r.canonical} value={r.canonical}>{r.canonical}</option>)}
         </select>
         <select value={formatFilter} onChange={e => setFormatFilter(e.target.value)}
-          className="bg-zinc-900 border border-zinc-800 text-zinc-300 text-sm rounded-lg px-3 py-2.5 outline-none focus:border-zinc-600 cursor-pointer">
+          className="flex-shrink-0 bg-zinc-900 border border-zinc-800 text-zinc-300 text-sm rounded-lg px-3 py-2.5 outline-none focus:border-zinc-600 cursor-pointer">
           <option value="ALL">Все форматы</option>
           {FORMAT_DICTIONARY.map(f => <option key={f.canonical} value={f.canonical}>{f.canonical}</option>)}
         </select>
         <select value={statusFilter} onChange={e => setStatusFilter(e.target.value as OrderStatus | 'ALL')}
-          className="bg-zinc-900 border border-zinc-800 text-zinc-300 text-sm rounded-lg px-3 py-2.5 outline-none focus:border-zinc-600 cursor-pointer">
+          className="flex-shrink-0 bg-zinc-900 border border-zinc-800 text-zinc-300 text-sm rounded-lg px-3 py-2.5 outline-none focus:border-zinc-600 cursor-pointer">
           <option value="ALL">Все статусы</option>
           {ORDER_BOARD_COLUMNS.map(s => <option key={s} value={s}>{ORDER_STATUS_LABELS[s]}</option>)}
         </select>
         <select value={paymentFilter} onChange={e => setPaymentFilter(e.target.value as OrderPaymentStatus | 'ALL')}
-          className="bg-zinc-900 border border-zinc-800 text-zinc-300 text-sm rounded-lg px-3 py-2.5 outline-none focus:border-zinc-600 cursor-pointer">
+          className="flex-shrink-0 bg-zinc-900 border border-zinc-800 text-zinc-300 text-sm rounded-lg px-3 py-2.5 outline-none focus:border-zinc-600 cursor-pointer">
           <option value="ALL">Любая оплата</option>
           {(Object.keys(ORDER_PAYMENT_STATUS_LABELS) as OrderPaymentStatus[]).map(s => (
             <option key={s} value={s}>{ORDER_PAYMENT_STATUS_LABELS[s]}</option>
@@ -281,6 +335,7 @@ export default function OrdersListView({ initialOrders }: Props) {
         </button>
       </div>
 
+      {/* Второй ряд — второстепенные тумблер-фильтры + сброс + счётчик. */}
       <div className="flex flex-wrap items-center gap-2">
         {([
           ['Материалы', materialsFilter, setMaterialsFilter],
@@ -303,15 +358,21 @@ export default function OrdersListView({ initialOrders }: Props) {
             {label}: {triLabel[value]}
           </button>
         ))}
-        {(search || period !== 'ALL' || roomFilter !== 'ALL' || formatFilter !== 'ALL' || statusFilter !== 'ALL' ||
-          paymentFilter !== 'ALL' || materialsFilter !== 'ANY' || nasFilter !== 'ANY' || editingFilter !== 'ANY' || makeupFilter !== 'ANY') && (
+        {hasActiveFilters && (
           <button type="button" onClick={resetFilters} className="text-xs text-zinc-500 hover:text-white underline">
             Сбросить фильтры
           </button>
         )}
-        <span className="text-zinc-500 text-xs ml-auto">Найдено: {sorted.length} заказов</span>
+        <span className="text-zinc-500 text-xs ml-auto flex-shrink-0">Найдено: {sorted.length} заказов</span>
       </div>
 
+      {/* containerRef живёт на ОДНОМ всегда отрендеренном узле-обёртке —
+          не на условно рендерящихся ветках ниже (пустое состояние / мобильный
+          список / десктопная таблица). ResizeObserver подписывается на DOM-узел
+          один раз при монтировании (см. эффект выше); если бы ref прыгал между
+          разными элементами при смене tier, обсервер продолжил бы слушать уже
+          отмонтированный старый узел и переставал бы обновлять containerWidth. */}
+      <div ref={containerRef} className="w-full min-w-0">
       {sorted.length === 0 ? (
         <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-14 text-center">
           <Table2 className="w-10 h-10 text-zinc-600 mx-auto mb-4" />
@@ -327,91 +388,101 @@ export default function OrdersListView({ initialOrders }: Props) {
             Создать заказ
           </button>
         </div>
+      ) : tier === 'mobile' ? (
+        // Мобильный/узкий вид — переиспользует ту же карточку заказа, что и
+        // канбан CRM (OrderCard), а не отдельную мобильную вёрстку с нуля
+        // (ТЗ п.18: "используй существующий мобильный паттерн проекта").
+        <div className="space-y-2.5">
+          {visible.map(order => (
+            <OrderCard key={order.id} order={order} onClick={() => openOrder(order)} />
+          ))}
+          {hiddenCount > 0 && (
+            <button type="button" onClick={() => setExpanded(true)}
+              className="w-full text-center text-sm text-zinc-400 hover:text-white underline py-2">
+              Показать ещё {hiddenCount}
+            </button>
+          )}
+        </div>
       ) : (
         <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
-          <div className="overflow-x-auto">
-            <Table>
-              <TableHeader>
-                <TableRow className="border-zinc-800 hover:bg-transparent">
-                  <TableHead className="text-zinc-400 text-xs uppercase tracking-wider whitespace-nowrap">
-                    <SortBtn k="date" label="Дата и время" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
-                  </TableHead>
-                  <TableHead className="text-zinc-400 text-xs uppercase tracking-wider">
-                    <SortBtn k="client" label="Клиент" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
-                  </TableHead>
-                  <TableHead className="text-zinc-400 text-xs uppercase tracking-wider">Зал</TableHead>
-                  <TableHead className="text-zinc-400 text-xs uppercase tracking-wider">Формат</TableHead>
-                  <TableHead className="text-zinc-400 text-xs uppercase tracking-wider whitespace-nowrap">
-                    <SortBtn k="duration" label="Продолж-ть" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
-                  </TableHead>
-                  <TableHead className="text-zinc-400 text-xs uppercase tracking-wider">
-                    <SortBtn k="amount" label="Стоимость" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
-                  </TableHead>
-                  <TableHead className="text-zinc-400 text-xs uppercase tracking-wider">Оплата</TableHead>
-                  <TableHead className="text-zinc-400 text-xs uppercase tracking-wider">
-                    <SortBtn k="status" label="Статус" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
-                  </TableHead>
-                  <TableHead className="text-zinc-400 text-xs uppercase tracking-wider">Материалы</TableHead>
-                  <TableHead className="text-zinc-400 text-xs uppercase tracking-wider">Комментарий</TableHead>
-                  <TableHead className="text-zinc-400 text-xs uppercase tracking-wider" />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
+          {/* width:100% + min-w-0 — сетка никогда не задаёт контейнеру
+              собственную минимальную ширину больше, чем у него есть (ТЗ п.12).
+              overflow-x-auto оставлен подстраховкой на случай непредвиденно
+              длинного контента, но при верных minmax-порогах не должен
+              когда-либо реально включаться на проверяемых разрешениях. */}
+          <div className="w-full min-w-0 overflow-x-auto">
+            <div role="table" aria-label="Заказы" className="w-full min-w-0">
+              <div role="row" className={`grid ${tier === 'compact' ? COMPACT_GRID_COLS : FULL_GRID_COLS} gap-x-3 border-b border-zinc-800 bg-zinc-800/40`}>
+                <div role="columnheader" className="min-w-0 px-2.5 py-2.5 text-zinc-400 text-xs uppercase tracking-wider">
+                  <SortBtn k="date" label="Дата" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                </div>
+                <div role="columnheader" className="min-w-0 px-2.5 py-2.5 text-zinc-400 text-xs uppercase tracking-wider">
+                  <SortBtn k="client" label="Клиент" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                </div>
+                <div role="columnheader" className="min-w-0 px-2.5 py-2.5 text-zinc-400 text-xs uppercase tracking-wider">Съёмка</div>
+                <div role="columnheader" className="min-w-0 px-2.5 py-2.5 text-zinc-400 text-xs uppercase tracking-wider">
+                  <SortBtn k="duration" label="Длит-ть" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                </div>
+                <div role="columnheader" className="min-w-0 px-2.5 py-2.5 text-zinc-400 text-xs uppercase tracking-wider">
+                  <SortBtn k="amount" label="Оплата" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                </div>
+                <div role="columnheader" className="min-w-0 px-2.5 py-2.5 text-zinc-400 text-xs uppercase tracking-wider">
+                  <SortBtn k="status" label="Статус" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
+                </div>
+                <div role="columnheader" className="min-w-0 px-2.5 py-2.5 text-zinc-400 text-xs uppercase tracking-wider">Материалы</div>
+                {tier === 'full' && (
+                  <div role="columnheader" className="min-w-0 px-2.5 py-2.5 text-zinc-400 text-xs uppercase tracking-wider">Комментарий</div>
+                )}
+              </div>
+
+              <div role="rowgroup">
                 {visible.map(order => {
                   const dateIso = orderTableDate(order)
                   const timeRange = formatTimeRange(order.plannedStartTime, order.plannedEndTime)
-                  const amount = formatMoney(order.preliminaryAmount)
-                  const hasMakeup = order.makeupDurationMinutes != null && order.makeupDurationMinutes > 0
+                  const shoot = orderShootDisplay(order)
+                  const makeupLabel = orderDurationSecondaryLabel(order)
+                  const payment = orderPaymentCellDisplay(order)
+                  const rowLabel = `Открыть заказ: ${order.clientName || order.title || 'клиент не привязан'}, ${formatDate(dateIso)}`
                   return (
-                    <TableRow
+                    <div
                       key={order.id}
-                      onClick={() => setEditingOrder(order)}
-                      className="border-zinc-800 hover:bg-zinc-800/50 cursor-pointer"
+                      role="row"
+                      tabIndex={0}
+                      aria-label={rowLabel}
+                      onClick={() => openOrder(order)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openOrder(order) }
+                      }}
+                      className={`grid ${tier === 'compact' ? COMPACT_GRID_COLS : FULL_GRID_COLS} gap-x-3 items-center border-b border-zinc-800/60 last:border-b-0 cursor-pointer transition-colors hover:bg-white/[0.04] focus:outline-none focus-visible:bg-white/[0.05] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[#00c26b] focus-visible:-outline-offset-1`}
                     >
-                      <TableCell className="whitespace-nowrap">
-                        <p className="text-zinc-200 text-sm">{formatDate(dateIso)}</p>
-                        {timeRange && <p className="text-zinc-500 text-xs mt-0.5">{timeRange}</p>}
-                      </TableCell>
-                      <TableCell className="text-zinc-100 max-w-[180px]">
-                        <p className="truncate">{order.clientName || order.title || 'Клиент не привязан'}</p>
-                        {order.companyName && <p className="text-zinc-500 text-xs truncate">{order.companyName}</p>}
-                      </TableCell>
-                      <TableCell className="text-zinc-400 whitespace-nowrap">{order.room ?? '—'}</TableCell>
-                      <TableCell className="text-zinc-400 whitespace-nowrap">{order.serviceType ?? '—'}</TableCell>
-                      <TableCell className="whitespace-nowrap">
-                        <p className="text-zinc-300 text-sm">{order.durationMinutes != null ? formatDurationMinutes(order.durationMinutes) : '—'}</p>
-                        {hasMakeup && (
-                          <p className="text-zinc-500 text-xs mt-0.5 flex items-center gap-1">
-                            <Clock className="w-3 h-3" />
-                            {formatMakeupBadgeLabel(order.makeupDurationMinutes!)}
-                          </p>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-zinc-200 text-sm whitespace-nowrap">
-                        {order.paymentStatus === 'SUBSCRIPTION' ? 'Абонемент' : amount ?? 'Нет данных'}
-                      </TableCell>
-                      <TableCell>
-                        <span className={`text-xs font-medium whitespace-nowrap ${ORDER_PAYMENT_STATUS_COLORS[order.paymentStatus]}`}>
-                          {ORDER_PAYMENT_STATUS_LABELS[order.paymentStatus]}
-                        </span>
-                      </TableCell>
-                      <TableCell><StatusBadge status={order.status} /></TableCell>
-                      <TableCell onClick={e => e.stopPropagation()}><MaterialsCell order={order} /></TableCell>
-                      <TableCell><CommentCell order={order} /></TableCell>
-                      <TableCell>
-                        <button
-                          type="button"
-                          onClick={e => { e.stopPropagation(); setEditingOrder(order) }}
-                          className="text-xs font-semibold text-zinc-200 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 px-3 py-1.5 rounded-lg transition-colors whitespace-nowrap"
-                        >
-                          Открыть
-                        </button>
-                      </TableCell>
-                    </TableRow>
+                      <Cell>
+                        <p className="text-zinc-200 text-sm truncate">{formatDate(dateIso)}</p>
+                        {timeRange && <p className="text-zinc-500 text-xs mt-0.5 truncate">{timeRange}</p>}
+                      </Cell>
+                      <Cell>
+                        <p className="text-zinc-100 text-sm truncate">{order.clientName || order.title || 'Клиент не привязан'}</p>
+                        {order.companyName && <p className="text-zinc-500 text-xs mt-0.5 truncate">{order.companyName}</p>}
+                      </Cell>
+                      <Cell>
+                        <p className="text-zinc-200 text-sm truncate" title={shoot.format}>{shoot.format}</p>
+                        {shoot.room && <p className="text-zinc-500 text-xs mt-0.5 truncate">{shoot.room}</p>}
+                      </Cell>
+                      <Cell>
+                        <p className="text-zinc-300 text-sm truncate">{order.durationMinutes != null ? formatDurationMinutes(order.durationMinutes) : '—'}</p>
+                        {makeupLabel && <p className="text-zinc-500 text-xs mt-0.5 truncate" title={makeupLabel}>{makeupLabel}</p>}
+                      </Cell>
+                      <Cell>
+                        <p className="text-zinc-200 text-sm truncate">{payment.primary}</p>
+                        <p className={`text-xs mt-0.5 truncate ${ORDER_PAYMENT_STATUS_COLORS[order.paymentStatus]}`}>{payment.secondary}</p>
+                      </Cell>
+                      <Cell><StatusBadge status={order.status} /></Cell>
+                      <Cell onClick={e => e.stopPropagation()}><MaterialsCell order={order} /></Cell>
+                      {tier === 'full' && <Cell><CommentCell order={order} /></Cell>}
+                    </div>
                   )
                 })}
-              </TableBody>
-            </Table>
+              </div>
+            </div>
           </div>
           {hiddenCount > 0 && (
             <div className="px-4 py-3 border-t border-zinc-800 text-center">
@@ -422,6 +493,7 @@ export default function OrdersListView({ initialOrders }: Props) {
           )}
         </div>
       )}
+      </div>
 
       {creating && (
         <OrderFormModal order={null} onOpenChange={setCreating} onSaved={handleChanged} />

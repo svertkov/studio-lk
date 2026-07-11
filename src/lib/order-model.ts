@@ -1,4 +1,5 @@
 import type { OrderStatus, OrderSource, OrderPaymentStatus, PaymentMethod, ArchiveReason } from '@prisma/client'
+import { formatDurationMinutes, formatMakeupBadgeLabel } from '@/lib/schedule-model'
 
 export type { OrderStatus, OrderSource, OrderPaymentStatus, ArchiveReason }
 
@@ -384,4 +385,91 @@ export function orderTableSearchHaystack(order: OrderTableRow): string {
     order.clientName, order.clientPhone, order.clientTelegram, order.clientEmail, order.companyName,
     order.serviceType, order.room, order.comment, order.preliminaryAmount?.toString(),
   ].filter(Boolean).join(' ').toLowerCase()
+}
+
+// ============================================================
+// СПИСОК ЗАКАЗОВ — ОБЪЕДИНЁННЫЕ ЯЧЕЙКИ (переработка таблицы 2026-07-11):
+// вместо 11 узких колонок таблица показывает 8, часть данных объединена в
+// одну ячейку двумя строками (основная/вторичная). Логика объединения
+// вынесена в чистые функции — тестируется без рендера React, см.
+// order-model.test.ts.
+// ============================================================
+
+// «Съёмка» = Зал + Формат в одной ячейке. Формат — основная строка (если не
+// указан, явное "Не указан", а не пустая строка — ячейка не должна выглядеть
+// сломанной). Зал — вторичная строка, показывается только если задан.
+export interface OrderShootDisplay {
+  format: string
+  room: string | null
+}
+
+export function orderShootDisplay(order: Pick<OrderTableRow, 'serviceType' | 'room'>): OrderShootDisplay {
+  return { format: order.serviceType ?? 'Не указан', room: order.room }
+}
+
+// «Длительность»: основная строка — сама продолжительность; вторичная — время
+// гримёра, ТОЛЬКО если оно задано и больше нуля (см. существующее правило в
+// OrderCard.tsx/EventCardModal — гримёр НЕ прибавляется к длительности,
+// показывается отдельной строкой). Переиспользует общий formatMakeupBadgeLabel
+// (schedule-model.ts) — тот же текст "Гримёр Х", что и везде в проекте.
+export function orderDurationSecondaryLabel(order: Pick<OrderTableRow, 'makeupDurationMinutes'>): string | null {
+  const minutes = order.makeupDurationMinutes
+  return minutes != null && minutes > 0 ? formatMakeupBadgeLabel(minutes) : null
+}
+
+// «Оплата» = Стоимость + Статус оплаты в одной ячейке. Абонемент — особый
+// случай: основная строка "Абонемент", вторичная — длительность съёмки как
+// "Списано Х" (сколько времени абонемента ушло на этот заказ), а не обычный
+// лейбл статуса оплаты, иначе вторичная строка задвоила бы слово "Абонемент".
+export interface OrderPaymentCellDisplay {
+  primary: string
+  secondary: string
+}
+
+function formatOrderAmount(amount: number): string {
+  return new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB', maximumFractionDigits: 0 }).format(amount)
+}
+
+export function orderPaymentCellDisplay(
+  order: Pick<OrderTableRow, 'paymentStatus' | 'preliminaryAmount' | 'durationMinutes'>,
+): OrderPaymentCellDisplay {
+  if (order.paymentStatus === 'SUBSCRIPTION') {
+    return {
+      primary: 'Абонемент',
+      secondary: order.durationMinutes != null ? `Списано ${formatDurationMinutes(order.durationMinutes)}` : ORDER_PAYMENT_STATUS_LABELS.SUBSCRIPTION,
+    }
+  }
+  return {
+    primary: order.preliminaryAmount != null ? formatOrderAmount(order.preliminaryAmount) : 'Нет данных',
+    secondary: ORDER_PAYMENT_STATUS_LABELS[order.paymentStatus],
+  }
+}
+
+// ============================================================
+// СПИСОК ЗАКАЗОВ — АДАПТИВНЫЕ УРОВНИ ТАБЛИЦЫ. Решение принимается по РЕАЛЬНО
+// измеренной ширине контейнера (ResizeObserver в OrdersListView.tsx), а не по
+// ширине viewport — левое меню платформы фиксировано (240px, не сворачивается
+// на узких экранах), поэтому доступная ширина контента всегда меньше
+// viewport, и предположение "ширина экрана = доступная ширина" было бы неверным.
+//
+// full    — все 8 колонок (обычный десктоп/ноутбук, включая 1280px);
+// compact — 7 колонок, без "Комментарий" (узкое окно ноутбука/планшет);
+// mobile  — карточный список вместо таблицы (переиспользует OrderCard).
+//
+// Пороги подобраны так, чтобы на 1280px viewport (реальная минимальная
+// ширина из требований) таблица оставалась в 'full' с запасом — доступная
+// ширина контента там ~976px (1280 - 240 сайдбар - 64 паддинг страницы),
+// что выше ORDERS_TABLE_COMPACT_MAX_WIDTH. Точные числа проверены и в
+// order-model.test.ts, и вживую в браузере на 1920/1680/1440/1366/1280px.
+// ============================================================
+
+export const ORDERS_TABLE_MOBILE_MAX_WIDTH = 799
+export const ORDERS_TABLE_COMPACT_MAX_WIDTH = 959
+
+export type OrdersTableTier = 'mobile' | 'compact' | 'full'
+
+export function getOrdersTableTier(containerWidth: number): OrdersTableTier {
+  if (containerWidth <= ORDERS_TABLE_MOBILE_MAX_WIDTH) return 'mobile'
+  if (containerWidth <= ORDERS_TABLE_COMPACT_MAX_WIDTH) return 'compact'
+  return 'full'
 }

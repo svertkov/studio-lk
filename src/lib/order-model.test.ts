@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import {
   orderTableDate, compareOrdersForTable, orderTableSearchHaystack, type OrderTableRow,
+  orderShootDisplay, orderDurationSecondaryLabel, orderPaymentCellDisplay,
+  getOrdersTableTier, ORDERS_TABLE_MOBILE_MAX_WIDTH, ORDERS_TABLE_COMPACT_MAX_WIDTH,
 } from './order-model'
 
 function makeRow(overrides: Partial<OrderTableRow> = {}): OrderTableRow {
@@ -110,5 +112,89 @@ describe('orderTableSearchHaystack — поиск по списку заказо
       companyName: null, serviceType: null, room: null, comment: null, preliminaryAmount: null,
     })
     expect(orderTableSearchHaystack(row)).toBe('')
+  })
+})
+
+describe('orderShootDisplay — объединённая колонка "Съёмка" (зал + формат)', () => {
+  it('returns the format as-is and the room when both are set', () => {
+    expect(orderShootDisplay({ serviceType: 'Подкаст', room: 'Светлый зал' }))
+      .toEqual({ format: 'Подкаст', room: 'Светлый зал' })
+  })
+
+  it('falls back to an explicit "Не указан" label when format is missing, keeping the room', () => {
+    expect(orderShootDisplay({ serviceType: null, room: 'Светлый зал' }))
+      .toEqual({ format: 'Не указан', room: 'Светлый зал' })
+  })
+
+  it('returns a null room when the room is not set, without inventing one', () => {
+    expect(orderShootDisplay({ serviceType: 'Подкаст', room: null }))
+      .toEqual({ format: 'Подкаст', room: null })
+  })
+})
+
+describe('orderDurationSecondaryLabel — гримёр под длительностью', () => {
+  it('returns null when there is no makeup time', () => {
+    expect(orderDurationSecondaryLabel({ makeupDurationMinutes: null })).toBeNull()
+  })
+
+  it('returns null when makeup time is zero (not just missing)', () => {
+    expect(orderDurationSecondaryLabel({ makeupDurationMinutes: 0 })).toBeNull()
+  })
+
+  it('formats 30 minutes as "Гримёр 30 мин"', () => {
+    expect(orderDurationSecondaryLabel({ makeupDurationMinutes: 30 })).toBe('Гримёр 30 мин')
+  })
+
+  it('formats 60 minutes as "Гримёр 1 ч"', () => {
+    expect(orderDurationSecondaryLabel({ makeupDurationMinutes: 60 })).toBe('Гримёр 1 ч')
+  })
+
+  it('formats 90 minutes as "Гримёр 1 ч 30 мин"', () => {
+    expect(orderDurationSecondaryLabel({ makeupDurationMinutes: 90 })).toBe('Гримёр 1 ч 30 мин')
+  })
+})
+
+const RUB = new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB', maximumFractionDigits: 0 })
+
+describe('orderPaymentCellDisplay — объединённая колонка "Оплата" (стоимость + статус)', () => {
+  it('shows the amount as primary and the payment status label as secondary', () => {
+    // Built via the same Intl.NumberFormat as the implementation, not a hardcoded
+    // literal — ru-RU currency formatting uses a non-breaking space as the
+    // thousands separator, which is easy to mistype as a plain space in a test.
+    expect(orderPaymentCellDisplay({ paymentStatus: 'UNPAID', preliminaryAmount: 9000, durationMinutes: 120 }))
+      .toEqual({ primary: RUB.format(9000), secondary: 'Не оплачено' })
+  })
+
+  it('shows "Нет данных" as primary when no amount is set', () => {
+    expect(orderPaymentCellDisplay({ paymentStatus: 'NOT_SPECIFIED', preliminaryAmount: null, durationMinutes: 60 }))
+      .toEqual({ primary: 'Нет данных', secondary: 'Не указана' })
+  })
+
+  it('shows "Абонемент" with consumed duration for subscription orders, not the generic payment label', () => {
+    expect(orderPaymentCellDisplay({ paymentStatus: 'SUBSCRIPTION', preliminaryAmount: null, durationMinutes: 120 }))
+      .toEqual({ primary: 'Абонемент', secondary: 'Списано 2 ч' })
+  })
+
+  it('falls back to the generic subscription label when duration is unknown', () => {
+    expect(orderPaymentCellDisplay({ paymentStatus: 'SUBSCRIPTION', preliminaryAmount: null, durationMinutes: null }))
+      .toEqual({ primary: 'Абонемент', secondary: 'По абонементу' })
+  })
+})
+
+describe('getOrdersTableTier — адаптивные уровни таблицы по измеренной ширине', () => {
+  it('is "mobile" at and below the mobile breakpoint', () => {
+    expect(getOrdersTableTier(320)).toBe('mobile')
+    expect(getOrdersTableTier(ORDERS_TABLE_MOBILE_MAX_WIDTH)).toBe('mobile')
+  })
+
+  it('is "compact" just above the mobile breakpoint and at the compact breakpoint', () => {
+    expect(getOrdersTableTier(ORDERS_TABLE_MOBILE_MAX_WIDTH + 1)).toBe('compact')
+    expect(getOrdersTableTier(ORDERS_TABLE_COMPACT_MAX_WIDTH)).toBe('compact')
+  })
+
+  it('is "full" above the compact breakpoint, including the 1280px viewport content width', () => {
+    expect(getOrdersTableTier(ORDERS_TABLE_COMPACT_MAX_WIDTH + 1)).toBe('full')
+    // 1280px viewport minus the 240px sidebar and 64px page padding.
+    expect(getOrdersTableTier(1280 - 240 - 64)).toBe('full')
   })
 })
