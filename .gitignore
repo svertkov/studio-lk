@@ -46,3 +46,10 @@ CREDENTIALS.md
 # резервные копии данных перед разовыми backfill-скриптами — локальные
 # артефакты для отката, не часть кода
 scripts/backfill-visit-times/backups/
+
+# db backups — по умолчанию пишутся вне папки проекта (см.
+# scripts/db-backup/README.md), но на случай если BACKUP_DIR переопределят
+# внутрь репозитория, файлы дампа никогда не должны попасть в git.
+*.sql.gz
+*.sql.gz.sha256
+scripts/db-backup/backup.log

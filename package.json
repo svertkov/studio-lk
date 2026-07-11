@@ -8,7 +8,12 @@
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "db:backup": "node scripts/db-backup/create.mjs",
+    "db:backup:list": "node scripts/db-backup/list.mjs",
+    "db:backup:verify": "node scripts/db-backup/verify.mjs",
+    "db:restore:test": "node scripts/db-backup/restore-test.mjs",
+    "db:restore:prod": "node scripts/db-backup/restore-prod.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.109.1",
