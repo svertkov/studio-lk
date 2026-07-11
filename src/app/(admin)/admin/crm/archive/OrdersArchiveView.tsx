@@ -103,15 +103,16 @@ export default function OrdersArchiveView({ initialOrders }: Props) {
     <div className="space-y-6">
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <h1 className="text-2xl font-bold text-white">Архив заказов</h1>
-          <p className="text-zinc-400 text-sm mt-1">Здесь хранятся завершённые заказы и отказы старше 7 дней.</p>
+          <h1 className="text-2xl font-bold text-white">Архив CRM</h1>
+          <p className="text-zinc-400 text-sm mt-1">Здесь хранятся завершённые заказы и отказы CRM-воронки старше 7 дней.</p>
         </div>
         <Link
-          href="/admin/orders"
+          href="/admin/crm"
+          aria-label="Вернуться в активную CRM-воронку"
           className="flex items-center gap-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-200 text-sm font-semibold px-4 py-2 rounded-lg transition-colors flex-shrink-0"
         >
           <ArrowLeft className="w-4 h-4" />
-          К активным заказам
+          К CRM
         </Link>
       </div>
 

@@ -5,9 +5,9 @@ import { usePathname } from 'next/navigation'
 import { signOut } from 'next-auth/react'
 import { cn } from '@/lib/utils'
 import {
-  LayoutDashboard, Users, ShoppingBag, Calendar, Film,
+  LayoutDashboard, Users, Calendar, Film,
   DollarSign, FileText, HardDrive, BarChart3, UserCheck,
-  Settings, LogOut, MessageCircle,
+  Settings, LogOut, MessageCircle, Kanban, Table2,
 } from 'lucide-react'
 
 interface Props {
@@ -18,7 +18,8 @@ const navByRole: Record<string, { href: string; label: string; icon: React.Eleme
   OWNER: [
     { href: '/admin/dashboard',  label: 'Дашборд',    icon: LayoutDashboard },
     { href: '/admin/clients',    label: 'Клиенты',    icon: Users },
-    { href: '/admin/orders',     label: 'Заказы',     icon: ShoppingBag },
+    { href: '/admin/crm',        label: 'CRM',        icon: Kanban },
+    { href: '/admin/orders',     label: 'Заказы',     icon: Table2 },
     { href: '/admin/telegram',   label: 'Telegram',   icon: MessageCircle },
     { href: '/admin/schedule',   label: 'Расписание', icon: Calendar },
     { href: '/admin/editing',    label: 'Монтаж',     icon: Film },
@@ -32,7 +33,8 @@ const navByRole: Record<string, { href: string; label: string; icon: React.Eleme
   ADMIN: [
     { href: '/admin/dashboard',  label: 'Дашборд',    icon: LayoutDashboard },
     { href: '/admin/clients',    label: 'Клиенты',    icon: Users },
-    { href: '/admin/orders',     label: 'Заказы',     icon: ShoppingBag },
+    { href: '/admin/crm',        label: 'CRM',        icon: Kanban },
+    { href: '/admin/orders',     label: 'Заказы',     icon: Table2 },
     { href: '/admin/telegram',   label: 'Telegram',   icon: MessageCircle },
     { href: '/admin/schedule',   label: 'Расписание', icon: Calendar },
   ],

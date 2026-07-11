@@ -31,6 +31,7 @@ export async function createLeadOrderFromTelegramConversation(conversation: {
         clientTelegram: conversation.telegramUsername ? `@${conversation.telegramUsername}` : null,
       },
     })
+    revalidatePath('/admin/crm')
     revalidatePath('/admin/orders')
   } catch (e) {
     // P2002 = telegramConversationId уже занят — заказ для этого диалога уже

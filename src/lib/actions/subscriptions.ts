@@ -43,6 +43,7 @@ function revalidateSubscriptionConsumers(clientId: string) {
   revalidatePath(`/admin/clients/${clientId}`)
   revalidatePath('/admin/finance/subscriptions')
   revalidatePath('/admin/schedule')
+  revalidatePath('/admin/crm')
   revalidatePath('/admin/orders')
 }
 

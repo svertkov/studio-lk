@@ -311,11 +311,12 @@ export async function upsertScheduleEvent(
     if (input.clientConfirmationStatus !== undefined || input.clientId !== undefined) {
       revalidatePath('/admin/clients')
     }
-    // Карточка клиента (вкладка "Съёмки") и список заказов читают notes/
-    // makeupDurationMinutes/материалы этой же записи — без явной инвалидации
-    // здесь администратор увидел бы изменения только после ручной перезагрузки.
+    // Карточка клиента (вкладка "Съёмки"), CRM-воронка и список заказов читают
+    // notes/makeupDurationMinutes/материалы этой же записи — без явной
+    // инвалидации здесь администратор увидел бы изменения только после
+    // ручной перезагрузки.
     if (row.clientId) revalidatePath(`/admin/clients/${row.clientId}`)
-    if (row.orderId) revalidatePath('/admin/orders')
+    if (row.orderId) { revalidatePath('/admin/crm'); revalidatePath('/admin/orders') }
 
     return { ok: true, data: toDTO(row) }
   } catch (e) {

@@ -1,16 +1,16 @@
-import { getActiveOrders } from '@/lib/actions/orders'
-import OrdersBoard from './OrdersBoard'
+import { getAllOrders } from '@/lib/actions/orders'
+import OrdersListView from './OrdersListView'
 
-export default async function OrdersPage() {
-  const result = await getActiveOrders()
+export default async function OrdersListPage() {
+  const result = await getAllOrders()
 
   return (
     <div className="p-8 space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-white">Заказы</h1>
-        <p className="text-zinc-400 text-sm mt-1">CRM-воронка заявок, записей и работ студии</p>
+        <p className="text-zinc-400 text-sm mt-1">Все заказы студии</p>
       </div>
-      <OrdersBoard initialOrders={result.data} />
+      <OrdersListView initialOrders={result.data} />
     </div>
   )
 }

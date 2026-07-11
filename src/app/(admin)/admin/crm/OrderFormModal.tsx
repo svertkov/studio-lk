@@ -108,6 +108,17 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
   )
   const [status, setStatus] = useState<OrderStatus>(order?.status ?? 'LEAD')
 
+  // Материалы/гримёр/монтаж — есть чему их редактировать только когда у
+  // заказа уже есть своя запись в расписании (order.hasBooking): источник
+  // правды на ScheduleEvent, см. комментарий у OrderDTO.yandexDiskUrl.
+  const [makeupDurationMinutes, setMakeupDurationMinutes] = useState(order?.makeupDurationMinutes?.toString() ?? '')
+  const [editingRequired, setEditingRequired] = useState<'' | 'true' | 'false'>(
+    order?.editingRequired === true ? 'true' : order?.editingRequired === false ? 'false' : ''
+  )
+  const [yandexDiskUrl, setYandexDiskUrl] = useState(order?.yandexDiskUrl ?? '')
+  const [nasBackupUrl, setNasBackupUrl] = useState(order?.nasBackupUrl ?? '')
+  const [materialsComment, setMaterialsComment] = useState(order?.materialsComment ?? '')
+
   const [date, setDate] = useState(startSplit.date)
   const [startTime, setStartTime] = useState(startSplit.time)
   const [endTime, setEndTime] = useState(endSplit.time)
@@ -180,6 +191,15 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
       plannedStartTime: combineDateTime(date, startTime),
       plannedEndTime: combineDateTime(date, endTime),
       ...(telegramConversationId ? { telegramConversationId } : {}),
+      // Материалы/гримёр/монтаж применяются только когда секция реально
+      // видна (isEdit && order.hasBooking) — см. условие рендера ниже.
+      ...(isEdit && order!.hasBooking ? {
+        makeupDurationMinutes: makeupDurationMinutes ? parseInt(makeupDurationMinutes, 10) : null,
+        editingRequired: editingRequired === '' ? null : editingRequired === 'true',
+        yandexDiskUrl: yandexDiskUrl.trim(),
+        nasBackupUrl: nasBackupUrl.trim(),
+        materialsComment: materialsComment.trim(),
+      } : {}),
     }
 
     const result = isEdit ? await updateOrder(order!.id, input) : await createOrder(input)
@@ -368,6 +388,41 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
               <p className="text-zinc-500 text-xs">
                 У заказа уже есть запись в расписании платформы — при изменении даты/времени она обновится.
               </p>
+            )}
+
+            {isEdit && order?.hasBooking && (
+              <>
+                <p className={SECTION}>Материалы и монтаж</p>
+                <Row>
+                  <Field>
+                    <Label>Гримёр, мин</Label>
+                    <input className={INPUT} type="number" min="0" placeholder="напр. 30" value={makeupDurationMinutes}
+                      onChange={e => setMakeupDurationMinutes(e.target.value)} />
+                  </Field>
+                  <Field>
+                    <Label>Монтаж</Label>
+                    <SelectField value={editingRequired} onChange={e => setEditingRequired(e.target.value as '' | 'true' | 'false')}>
+                      <option value="">Не указано</option>
+                      <option value="true">Нужен</option>
+                      <option value="false">Не нужен</option>
+                    </SelectField>
+                  </Field>
+                </Row>
+                <Field>
+                  <Label>Яндекс.Диск</Label>
+                  <input className={INPUT} placeholder="https://disk.yandex.ru/..." value={yandexDiskUrl}
+                    onChange={e => setYandexDiskUrl(e.target.value)} />
+                </Field>
+                <Field>
+                  <Label>NAS</Label>
+                  <input className={INPUT} placeholder="Ссылка на резервную копию" value={nasBackupUrl}
+                    onChange={e => setNasBackupUrl(e.target.value)} />
+                </Field>
+                <Field>
+                  <Label>Комментарий к материалам</Label>
+                  <textarea className={TEXTAREA} rows={2} value={materialsComment} onChange={e => setMaterialsComment(e.target.value)} />
+                </Field>
+              </>
             )}
 
             <p className={SECTION}>Оплата</p>

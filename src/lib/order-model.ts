@@ -307,3 +307,81 @@ export function archiveReasonForStatus(status: OrderStatus): ArchiveReason | nul
   if (status === 'CANCELLED') return 'REJECTED'
   return null
 }
+
+// ============================================================
+// СПИСОК ЗАКАЗОВ (раздел "Заказы") — чистые хелперы сортировки/поиска
+// таблицы, вынесены сюда (а не в клиентский компонент), чтобы их можно было
+// покрыть unit-тестами без рендера React (см. src/lib/order-model.test.ts).
+// ============================================================
+
+export interface OrderTableRow {
+  id: string
+  status: OrderStatus
+  clientName: string | null
+  clientPhone: string | null
+  clientTelegram: string | null
+  clientEmail: string | null
+  companyName: string | null
+  serviceType: string | null
+  room: string | null
+  comment: string | null
+  preliminaryAmount: number | null
+  paymentStatus: OrderPaymentStatus
+  plannedStartTime: string | null
+  durationMinutes: number | null
+  createdAt: string
+  hasMaterials: boolean
+  nasBackupUrl: string | null
+  editingRequired: boolean | null
+  makeupDurationMinutes: number | null
+}
+
+// Дата, по которой заказ занимает место в хронологическом списке — дата
+// запланированной записи, если она есть, иначе дата создания заявки (для
+// заявок, у которых ещё нет даты студийной записи). Тот же принцип, что и
+// orderDate в архиве CRM (см. OrdersArchiveView.tsx), но без дублирования —
+// оттуда эта функция не переиспользуется напрямую только потому, что архив
+// показывает отдельно "дату финального статуса", а не общую хронологию.
+export function orderTableDate(order: Pick<OrderTableRow, 'plannedStartTime' | 'createdAt'>): string {
+  return order.plannedStartTime ?? order.createdAt
+}
+
+export type OrderTableSortKey = 'date' | 'client' | 'duration' | 'amount' | 'status'
+export type SortDirection = 'asc' | 'desc'
+
+// Сравнение по одной из колонок списка заказов — статус сравнивается по
+// порядку из ORDER_STATUS_CONFIG (тот же порядок, что и колонки канбана CRM),
+// не по алфавиту лейбла, иначе "Завершено" оказалось бы раньше "Заявки".
+export function compareOrdersForTable(
+  a: OrderTableRow, b: OrderTableRow, key: OrderTableSortKey, direction: SortDirection,
+): number {
+  let cmp = 0
+  switch (key) {
+    case 'date':
+      cmp = new Date(orderTableDate(a)).getTime() - new Date(orderTableDate(b)).getTime()
+      break
+    case 'client':
+      cmp = (a.clientName ?? '').localeCompare(b.clientName ?? '', 'ru')
+      break
+    case 'duration':
+      cmp = (a.durationMinutes ?? -1) - (b.durationMinutes ?? -1)
+      break
+    case 'amount':
+      cmp = (a.preliminaryAmount ?? -1) - (b.preliminaryAmount ?? -1)
+      break
+    case 'status':
+      cmp = ORDER_STATUS_CONFIG[a.status].order - ORDER_STATUS_CONFIG[b.status].order
+      break
+  }
+  return direction === 'asc' ? cmp : -cmp
+}
+
+// Единая строка поиска — те же поля, что уже ищет архив CRM (см.
+// searchHaystack в OrdersArchiveView.tsx), плюс телефон/Telegram/email и
+// компания, которых архиву не требовалось.
+export function orderTableSearchHaystack(order: OrderTableRow): string {
+  return [
+    order.clientName, order.clientPhone, order.clientTelegram, order.clientEmail, order.companyName,
+    order.serviceType, order.room, order.comment, order.preliminaryAmount?.toString(),
+  ].filter(Boolean).join(' ').toLowerCase()
+}

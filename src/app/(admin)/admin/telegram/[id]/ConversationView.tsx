@@ -16,7 +16,7 @@ import {
   type TelegramConversationDetailDTO,
 } from '@/lib/actions/telegram'
 import { getClients } from '@/lib/actions/clients'
-import OrderFormModal from '../../orders/OrderFormModal'
+import OrderFormModal from '../../crm/OrderFormModal'
 import AddClientModal from '../../clients/AddClientModal'
 import TelegramMessageThread from '@/components/telegram/TelegramMessageThread'
 import TelegramComposer from '@/components/telegram/TelegramComposer'
@@ -361,8 +361,8 @@ export default function ConversationView({ initialData, currentUserId, currentUs
         <div className="border-t border-zinc-800 pt-4 space-y-2">
           <p className="text-zinc-500 text-[11px] font-semibold uppercase tracking-wider mb-2">Заказ</p>
           {conversation.orderId ? (
-            <Link href="/admin/orders" className="flex items-center gap-1.5 text-sm text-[#00c26b] hover:underline">
-              Открыть «Заказы» <ExternalLink className="w-3 h-3" />
+            <Link href="/admin/crm" className="flex items-center gap-1.5 text-sm text-[#00c26b] hover:underline">
+              Открыть в CRM <ExternalLink className="w-3 h-3" />
             </Link>
           ) : (
             <button type="button" onClick={() => setOrderFormOpen(true)}

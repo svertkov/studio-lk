@@ -120,7 +120,7 @@ export default function OrdersBoard({ initialOrders }: Props) {
         </div>
         <div className="flex items-center gap-2.5 flex-shrink-0">
           <Link
-            href="/admin/orders/archive"
+            href="/admin/crm/archive"
             className="flex items-center gap-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-200 text-sm font-semibold px-4 py-2 rounded-lg transition-colors"
           >
             <Archive className="w-4 h-4" />

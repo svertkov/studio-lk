@@ -8,6 +8,7 @@ import type {
   OrderStatus, OrderSource, OrderPaymentStatus, PaymentMethod, ClientType,
 } from '@prisma/client'
 import { computeDurationMinutes, isOrderReadyForArchive, archiveReasonForStatus } from '@/lib/order-model'
+import { computeMaterialsStatus, computeYandexLinkExpiry } from '@/lib/schedule-model'
 import { parseEventTitle } from '@/lib/event-category'
 import type { ArchiveReason } from '@prisma/client'
 
@@ -25,17 +26,33 @@ async function requireStaffSession(): Promise<{ ok: true } | { ok: false; error:
   }
 }
 
+// CRM-воронка (/admin/crm) и список заказов (/admin/orders) читают одни и те
+// же строки Order — любая мутация заказа должна инвалидировать оба экрана
+// разом, иначе один из них показывает устаревшие данные до ручного refresh.
+function revalidateOrderPaths(): void {
+  revalidatePath('/admin/crm')
+  revalidatePath('/admin/orders')
+}
+
 // ============================================================
 // СЕРИАЛИЗАЦИЯ
 // ============================================================
 
 type OrderClient = Pick<Client, 'name' | 'phone' | 'telegram' | 'email' | 'type' | 'companyName'>
-type OrderScheduleEvent = Pick<ScheduleEvent, 'id' | 'camerasCount' | 'editingRequired' | 'yandexDiskUrl' | 'nasBackupUrl' | 'notes' | 'makeupDurationMinutes'>
+type OrderScheduleEvent = Pick<ScheduleEvent,
+  'id' | 'camerasCount' | 'editingRequired' | 'yandexDiskUrl' | 'yandexDiskUrlExpiresAt' | 'nasBackupUrl' |
+  'materialsComment' | 'notes' | 'makeupDurationMinutes'>
 type OrderWithRelations = Order & { client: OrderClient | null; scheduleEvent: OrderScheduleEvent | null }
 
 const ORDER_INCLUDE = {
   client: { select: { name: true, phone: true, telegram: true, email: true, type: true, companyName: true } },
-  scheduleEvent: { select: { id: true, camerasCount: true, editingRequired: true, yandexDiskUrl: true, nasBackupUrl: true, notes: true, makeupDurationMinutes: true } },
+  scheduleEvent: {
+    select: {
+      id: true, camerasCount: true, editingRequired: true,
+      yandexDiskUrl: true, yandexDiskUrlExpiresAt: true, nasBackupUrl: true, materialsComment: true,
+      notes: true, makeupDurationMinutes: true,
+    },
+  },
 } as const
 
 export interface OrderDTO {
@@ -67,6 +84,14 @@ export interface OrderDTO {
   camerasCount: number | null
   editingRequired: boolean | null
   hasMaterials: boolean
+  // Сырые ссылки на материалы — источник правды на связанной ScheduleEvent,
+  // здесь только для отображения кликабельных плашек в списке заказов и для
+  // редактирования из карточки заказа (см. OrderFormModal, раздел
+  // "Материалы и монтаж" — доступен только когда hasBooking).
+  yandexDiskUrl: string | null
+  yandexDiskUrlExpiresAt: string | null
+  nasBackupUrl: string | null
+  materialsComment: string | null
   // Время на гримёра — источник правды на связанной ScheduleEvent (её
   // редактируют через основную карточку записи), у заявок без записи всегда null.
   makeupDurationMinutes: number | null
@@ -115,6 +140,11 @@ function toDTO(row: OrderWithRelations): OrderDTO {
     camerasCount: row.scheduleEvent?.camerasCount ?? null,
     editingRequired: row.scheduleEvent?.editingRequired ?? null,
     hasMaterials: !!(row.scheduleEvent?.yandexDiskUrl || row.scheduleEvent?.nasBackupUrl),
+    yandexDiskUrl: row.scheduleEvent?.yandexDiskUrl ?? null,
+    yandexDiskUrlExpiresAt: row.scheduleEvent?.yandexDiskUrlExpiresAt
+      ? row.scheduleEvent.yandexDiskUrlExpiresAt.toISOString() : null,
+    nasBackupUrl: row.scheduleEvent?.nasBackupUrl ?? null,
+    materialsComment: row.scheduleEvent?.materialsComment ?? null,
     makeupDurationMinutes: row.scheduleEvent?.makeupDurationMinutes ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
@@ -240,6 +270,36 @@ export async function getArchivedOrders(): Promise<
 }
 
 // ============================================================
+// СПИСОК ЗАКАЗОВ — ПОЛНЫЙ (раздел "Заказы") — единый источник для
+// хронологического списка/таблицы всех реальных заказов, активных и
+// архивных разом (см. ТЗ раздела "Заказы": "не скрывать исторические заказы
+// навсегда"). Использует ту же ORDER_INCLUDE/toDTO, что и getActiveOrders/
+// getArchivedOrders — те же строки Order, без отдельной сущности или копии
+// данных. ARCHIVED (статус, не путать с isArchived) по-прежнему исключён —
+// ему никогда ничего не присваивается, см. order-model.ts.
+// ============================================================
+
+export async function getAllOrders(): Promise<
+  { ok: true; data: OrderDTO[] } | { ok: false; data: OrderDTO[]; error: string }
+> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, data: [], error: authResult.error }
+
+  try {
+    await archiveEligibleOrders()
+    const rows = await prisma.order.findMany({
+      where: { status: { not: 'ARCHIVED' } },
+      orderBy: { createdAt: 'desc' },
+      include: ORDER_INCLUDE,
+    })
+    return { ok: true, data: rows.map(toDTO) }
+  } catch (e) {
+    console.error('[getAllOrders]', e)
+    return { ok: false, data: [], error: 'Не удалось загрузить заказы' }
+  }
+}
+
+// ============================================================
 // СОЗДАТЬ / ОБНОВИТЬ ЗАКАЗ (вручную, из раздела "Заказы")
 // ============================================================
 
@@ -264,6 +324,16 @@ export interface OrderInput {
   // странице Telegram-диалога (см. src/lib/actions/telegram.ts) — источник
   // заказа автоматически становится TELEGRAM_BOT, а не MANUAL.
   telegramConversationId?: string | null
+  // Материалы/гримёр/монтаж — применяются только когда у заказа уже есть своя
+  // запись в расписании (см. OrderFormModal, секция "Материалы и монтаж",
+  // видима только при order.hasBooking). Источник правды остаётся на
+  // ScheduleEvent, как и для остальных полей записи — см. комментарий у
+  // OrderDTO.yandexDiskUrl.
+  makeupDurationMinutes?: number | null
+  editingRequired?: boolean | null
+  yandexDiskUrl?: string | null
+  nasBackupUrl?: string | null
+  materialsComment?: string
 }
 
 export async function createOrder(
@@ -326,7 +396,7 @@ export async function createOrder(
       return tx.order.findUniqueOrThrow({ where: { id: created.id }, include: ORDER_INCLUDE })
     })
 
-    revalidatePath('/admin/orders')
+    revalidateOrderPaths()
     return { ok: true, data: toDTO(order) }
   } catch (e) {
     console.error('[createOrder]', e)
@@ -357,6 +427,15 @@ export async function updateOrder(
       : existing.plannedEndTime
     const hasBookingTimeNow = !!(nextStart && nextEnd)
     const hadBookingBefore = !!existing.scheduleEvent
+
+    // Автоперевод статуса (см. ниже) обязан выполниться ПОСЛЕ коммита
+    // транзакции: updateOrderStatus пишет через отдельный prisma-клиент, а не
+    // через tx, и вызов его изнутри ещё не закоммиченной транзакции держал бы
+    // её в ожидании лока на той же строке Order, которую tx.order.update уже
+    // заблокировал — классический self-deadlock. Поэтому транзакция только
+    // решает, нужен ли автоперевод (autoTransitionStatus), а сам вызов — уже
+    // после await prisma.$transaction(...).
+    let autoTransitionStatus: 'EDITING' | 'COMPLETED' | null = null
 
     const order = await prisma.$transaction(async tx => {
       const updated = await tx.order.update({
@@ -393,8 +472,31 @@ export async function updateOrder(
 
       if (hasBookingTimeNow) {
         if (updated.scheduleEvent) {
+          // Материалы/гримёр/монтаж — та же логика вычисления даты добавления
+          // ссылки и срока её жизни, что и в upsertScheduleEvent (см.
+          // src/lib/actions/schedule.ts): сервер сам решает "возраст" ссылки,
+          // клиенту не доверяем. Эта ветка (обновление уже существующей
+          // ScheduleEvent) — единственное место в orders.ts, где эти поля
+          // реально применяются, см. OrderInput.yandexDiskUrl и др.
+          const se = updated.scheduleEvent
+          const nextYandexUrl = input.yandexDiskUrl === undefined
+            ? se.yandexDiskUrl
+            : (input.yandexDiskUrl?.trim() || null)
+          const yandexDiskUrlAddedAt = nextYandexUrl === null
+            ? null
+            : nextYandexUrl !== se.yandexDiskUrl
+              ? new Date()
+              : (se.yandexDiskUrlAddedAt ?? new Date())
+          const nextNasUrl = input.nasBackupUrl === undefined
+            ? se.nasBackupUrl
+            : (input.nasBackupUrl?.trim() || null)
+          const materialsStatus = computeMaterialsStatus({
+            yandexDiskUrl: nextYandexUrl, yandexDiskUrlAddedAt, nasBackupUrl: nextNasUrl,
+          })
+          const yandexDiskUrlExpiresAt = yandexDiskUrlAddedAt ? computeYandexLinkExpiry(yandexDiskUrlAddedAt) : null
+
           await tx.scheduleEvent.update({
-            where: { id: updated.scheduleEvent.id },
+            where: { id: se.id },
             data: {
               clientId: nextClientId,
               title: nextTitle,
@@ -403,8 +505,27 @@ export async function updateOrder(
               room: nextRoom,
               format: nextServiceType,
               notes: nextComment,
+              yandexDiskUrl: nextYandexUrl,
+              yandexDiskUrlAddedAt,
+              yandexDiskUrlExpiresAt,
+              nasBackupUrl: nextNasUrl,
+              materialsStatus,
+              ...(input.materialsComment !== undefined && { materialsComment: input.materialsComment?.trim() || null }),
+              ...(input.editingRequired !== undefined && { editingRequired: input.editingRequired }),
+              ...(input.makeupDurationMinutes !== undefined && { makeupDurationMinutes: input.makeupDurationMinutes }),
             },
           })
+
+          // Тот же автоперевод по воронке, что и при сохранении карточки
+          // записи из "Расписания" (см. upsertScheduleEvent) — решение по
+          // монтажу только что сохранено (true/false, не null) и заказ ещё
+          // в "Записан в студию" -> двигаем на "Монтаж"/"Завершено". Если
+          // заказ уже продвинут вручную дальше, повторное сохранение карточки
+          // (например, правка комментария) его не трогает. Сам вызов
+          // updateOrderStatus — после транзакции, см. autoTransitionStatus выше.
+          if (input.editingRequired !== undefined && input.editingRequired !== null && existing.status === 'BOOKED') {
+            autoTransitionStatus = input.editingRequired ? 'EDITING' : 'COMPLETED'
+          }
         } else {
           await tx.scheduleEvent.create({
             data: {
@@ -428,7 +549,16 @@ export async function updateOrder(
       return tx.order.findUniqueOrThrow({ where: { id }, include: ORDER_INCLUDE })
     })
 
-    revalidatePath('/admin/orders')
+    // Автоперевод статуса (см. autoTransitionStatus выше) — уже вне
+    // транзакции. updateOrderStatus сама делает revalidateOrderPaths и
+    // возвращает свежий DTO с обновлённым статусом — используем его, чтобы
+    // не возвращать вызывающей стороне устаревший (дотранзакционный) статус.
+    if (autoTransitionStatus) {
+      const statusResult = await updateOrderStatus(id, autoTransitionStatus)
+      if (statusResult.ok) return statusResult
+    }
+
+    revalidateOrderPaths()
     return { ok: true, data: toDTO(order) }
   } catch (e) {
     console.error('[updateOrder]', e)
@@ -469,7 +599,7 @@ export async function updateOrderStatus(
       include: ORDER_INCLUDE,
     })
 
-    revalidatePath('/admin/orders')
+    revalidateOrderPaths()
     return { ok: true, data: toDTO(updated) }
   } catch (e) {
     console.error('[updateOrderStatus]', e)
@@ -505,8 +635,8 @@ export async function unarchiveOrder(
       include: ORDER_INCLUDE,
     })
 
-    revalidatePath('/admin/orders')
-    revalidatePath('/admin/orders/archive')
+    revalidateOrderPaths()
+    revalidatePath('/admin/crm/archive')
     return { ok: true, data: toDTO(updated) }
   } catch (e) {
     console.error('[unarchiveOrder]', e)
@@ -548,7 +678,7 @@ export async function linkOrderClient(
       return tx.order.findUniqueOrThrow({ where: { id: orderId }, include: ORDER_INCLUDE })
     })
 
-    revalidatePath('/admin/orders')
+    revalidateOrderPaths()
     return { ok: true, data: toDTO(order) }
   } catch (e) {
     console.error('[linkOrderClient]', e)
@@ -627,7 +757,7 @@ export async function ensureOrderForNewBooking(params: EnsureOrderInput): Promis
       },
     })
 
-    revalidatePath('/admin/orders')
+    revalidateOrderPaths()
     return created.id
   } catch (e) {
     console.error('[ensureOrderForNewBooking]', e)

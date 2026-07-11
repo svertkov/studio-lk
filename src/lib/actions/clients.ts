@@ -262,6 +262,7 @@ export async function createClient(input: CreateClientInput) {
     if (input.telegramConversationId) {
       revalidatePath('/admin/telegram')
       revalidatePath(`/admin/telegram/${input.telegramConversationId}`)
+      revalidatePath('/admin/crm')
       revalidatePath('/admin/orders')
     }
     return { ok: true as const, data: client }
