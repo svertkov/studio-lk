@@ -15,15 +15,15 @@ import {
   getOrdersTableTier, type OrdersTableTier,
   type OrderTableSortKey, type SortDirection,
 } from '@/lib/order-model'
-import { formatDurationMinutes, QUICK_COMMENT_TEMPLATES, hasQuickCommentTemplate } from '@/lib/schedule-model'
+import { formatDurationMinutes } from '@/lib/schedule-model'
 import { computeMaterialsCapsules, getVisibleShoots, getHiddenShootsCount } from '@/lib/client-shoots-model'
 import { isValidHttpUrl } from '@/lib/url'
 import { ROOM_DICTIONARY, FORMAT_DICTIONARY } from '@/lib/import/normalize'
+import { getOrderPromotion, getVisibleOrderComment, PROMOTION_PILL_LABEL } from '@/lib/promotion-model'
 import type { OrderStatus, OrderPaymentStatus } from '@prisma/client'
 import OrderFormModal from '../crm/OrderFormModal'
 import OrderCard from '../crm/OrderCard'
 
-const PROMO_TEMPLATE_TEXT = QUICK_COMMENT_TEMPLATES[0]?.text
 const TABLE_DEFAULT_LIMIT = 25
 
 type Period = 'ALL' | 'TODAY' | 'WEEK' | 'MONTH' | 'PREV_MONTH' | 'CUSTOM'
@@ -151,14 +151,22 @@ function MaterialsCell({ order }: { order: OrderDTO }) {
 // (тот же приём tooltip, что и в остальной таблице/carточке клиента) и целиком
 // в карточке заказа.
 function CommentCell({ order }: { order: OrderDTO }) {
-  const hasPromo = !!order.comment && !!PROMO_TEMPLATE_TEXT && hasQuickCommentTemplate(order.comment, PROMO_TEMPLATE_TEXT)
-  if (!order.comment && !hasPromo) return <span className="text-zinc-600 text-xs">—</span>
+  // Акция и обычный комментарий больше не дублируются: капсула читает
+  // структурированную/распознанную акцию (getOrderPromotion), а текст рядом —
+  // уже ОЧИЩЕННЫЙ от акционной фразы комментарий (getVisibleOrderComment).
+  // Раньше здесь рендерился один и тот же order.comment целиком рядом с
+  // капсулой — если акция определялась текстом внутри него, полная фраза
+  // "Акция! 20% скидка..." показывалась second раз рядом с капсулой И
+  // выталкивала её за пределы ячейки (см. src/lib/promotion-model.ts).
+  const promotion = getOrderPromotion(order)
+  const visibleComment = getVisibleOrderComment(order)
+  if (!visibleComment && !promotion) return <span className="text-zinc-600 text-xs">—</span>
   return (
-    <div className="flex items-center gap-1.5 min-w-0" title={order.comment ?? undefined}>
-      {hasPromo && (
-        <GlowPill color="green" className="flex-shrink-0" title="Упомянуто в комментарии заказа">Первая запись −20%</GlowPill>
+    <div className="flex items-center gap-1.5 min-w-0" title={visibleComment ?? undefined}>
+      {promotion && (
+        <GlowPill color="green" className="flex-shrink-0" title="Акция «−20% первый визит»">{PROMOTION_PILL_LABEL[promotion]}</GlowPill>
       )}
-      {order.comment && <span className="text-zinc-400 text-xs truncate">{order.comment}</span>}
+      {visibleComment && <span className="text-zinc-400 text-xs truncate min-w-0">{visibleComment}</span>}
     </div>
   )
 }

@@ -16,11 +16,11 @@ import {
   getEffectiveEventType, isPastBooking, shouldShowMaterialsBadge,
   type ClientConfirmationStatus,
   MAKEUP_QUICK_OPTIONS, MAKEUP_DURATION_MAX_MINUTES, normalizeMakeupDurationMinutes, computeMakeupInterval, type MakeupInterval,
-  QUICK_COMMENT_TEMPLATES, hasQuickCommentTemplate, applyQuickCommentTemplate,
 } from '@/lib/schedule-model'
 import { EVENT_TYPE_LABELS, type EventType } from '@/lib/event-type'
 import { PAYMENT_METHOD_LABELS, ONE_TIME_PAYMENT_METHODS, type PaymentMethod } from '@/lib/schedule-model'
 import { ROOM_DICTIONARY, FORMAT_DICTIONARY } from '@/lib/import/normalize'
+import { getOrderPromotion, getVisibleOrderComment, PROMOTION_PILL_LABEL, type OrderPromotionType } from '@/lib/promotion-model'
 import MaterialsStatusBadge from './MaterialsStatusBadge'
 import SubscriptionPaymentBlock, { type SubscriptionPaymentHandle } from './SubscriptionPaymentBlock'
 import AddClientModal from '../clients/AddClientModal'
@@ -72,7 +72,15 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
   )
   const [estimatedPrice, setEstimatedPrice] = useState(annotation?.estimatedPrice?.toString() ?? '')
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | ''>(annotation?.paymentMethod ?? '')
-  const [notes, setNotes] = useState(annotation?.notes ?? '')
+  // Комментарий инициализируется УЖЕ очищенным от текста акции (см.
+  // src/lib/promotion-model.ts) — акция теперь отдельный тоггл (promotionType),
+  // а не часть свободного текста. Для старых записей, где акция ещё жила
+  // только как фраза в notes, это на первом же Save "мигрирует" её в
+  // структурированное поле и одновременно убирает дублирующий текст.
+  const [notes, setNotes] = useState(getVisibleOrderComment({ comment: annotation?.notes ?? null }) ?? '')
+  const [promotionType, setPromotionType] = useState<OrderPromotionType | null>(
+    getOrderPromotion({ promotionType: annotation?.promotionType ?? null, comment: annotation?.notes ?? null }),
+  )
   const [yandexDiskUrl, setYandexDiskUrl] = useState(annotation?.yandexDiskUrl ?? '')
   const [nasBackupUrl, setNasBackupUrl] = useState(annotation?.nasBackupUrl ?? '')
   const [materialsComment, setMaterialsComment] = useState(annotation?.materialsComment ?? '')
@@ -236,6 +244,7 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
         estimatedPrice: paymentMode === 'SUBSCRIPTION' ? null : (estimatedPrice ? parseFloat(estimatedPrice) : null),
         paymentMethod: paymentMode === 'SUBSCRIPTION' ? null : (paymentMethod || null),
         notes,
+        promotionType,
         yandexDiskUrl: yandexDiskUrl || null,
         nasBackupUrl: nasBackupUrl || null,
         materialsComment,
@@ -325,27 +334,21 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
           <div>
             <label className={LABEL}>Комментарий / нюансы</label>
             <textarea className={`${INPUT} resize-none`} rows={2} value={notes} onChange={e => setNotes(e.target.value)} />
-            {QUICK_COMMENT_TEMPLATES.length > 0 && (
-              <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
-                <span className="text-zinc-500 text-[11px]">Быстрые комментарии:</span>
-                {QUICK_COMMENT_TEMPLATES.map(t => {
-                  const active = hasQuickCommentTemplate(notes, t.text)
-                  return (
-                    <GlowPill
-                      key={t.id}
-                      as="button"
-                      color={active ? 'green' : 'zinc'}
-                      disabled={active}
-                      onClick={() => setNotes(n => applyQuickCommentTemplate(n, t.text))}
-                      title={active ? 'Уже добавлено в комментарий' : 'Добавить в комментарий'}
-                      ariaLabel={active ? `${t.label} — уже добавлено в комментарий` : `Добавить в комментарий: ${t.label}`}
-                    >
-                      {t.label}
-                    </GlowPill>
-                  )
-                })}
-              </div>
-            )}
+            {/* Акция — структурированный тоггл, а не текст, вставляемый в
+                комментарий (см. src/lib/promotion-model.ts). Повторный клик
+                снимает отметку; комментарий этим не затрагивается. */}
+            <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+              <span className="text-zinc-500 text-[11px]">Быстрые пометки:</span>
+              <GlowPill
+                as="button"
+                color={promotionType === 'FIRST_VISIT_20' ? 'green' : 'zinc'}
+                onClick={() => setPromotionType(p => p === 'FIRST_VISIT_20' ? null : 'FIRST_VISIT_20')}
+                title={promotionType === 'FIRST_VISIT_20' ? 'Убрать акцию' : 'Отметить акцию «−20% первый визит»'}
+                ariaLabel={promotionType === 'FIRST_VISIT_20' ? 'Акция «−20% первый визит» отмечена — нажмите, чтобы убрать' : 'Отметить акцию «−20% первый визит»'}
+              >
+                {PROMOTION_PILL_LABEL.FIRST_VISIT_20}
+              </GlowPill>
+            </div>
           </div>
 
           {eventType !== 'STUDIO_BOOKING' && (

@@ -7,11 +7,11 @@
 // снэпшот только для контекстов, которые не могут дёрнуть Google Calendar API
 // (например блок "Клиенты из расписания" на странице Клиентов).
 
-import type { ClientConfirmationStatus, MaterialsStatus, PaymentMethod } from '@prisma/client'
+import type { ClientConfirmationStatus, MaterialsStatus, PaymentMethod, OrderPromotionType } from '@prisma/client'
 import type { CalendarEvent } from '@/lib/google-calendar'
 import { type EventType, classifyEventType } from '@/lib/event-type'
 
-export type { MaterialsStatus, ClientConfirmationStatus, EventType, PaymentMethod }
+export type { MaterialsStatus, ClientConfirmationStatus, EventType, PaymentMethod, OrderPromotionType }
 
 export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
   CASH:         'Наличными',
@@ -335,6 +335,10 @@ export interface ScheduleEventDTO {
   estimatedPrice: number | null
   paymentMethod: PaymentMethod | null
   notes: string | null
+  // Структурированная пометка акции (см. src/lib/promotion-model.ts) —
+  // источник правды для записей с датой; для заявок без записи см.
+  // OrderDTO.promotionType (тот же принцип двойного источника, что и notes/comment).
+  promotionType: OrderPromotionType | null
   yandexDiskUrl: string | null
   yandexDiskUrlAddedAt: string | null
   yandexDiskUrlExpiresAt: string | null
@@ -469,39 +473,5 @@ export function formatDurationMinutes(minutes: number): string {
 
 export function formatMakeupBadgeLabel(minutes: number): string {
   return `Гримёр ${formatDurationMinutes(minutes)}`
-}
-
-// ============================================================
-// БЫСТРЫЕ ШАБЛОНЫ КОММЕНТАРИЯ ("нюансы") — конфигурация массивом, а не
-// отдельными кнопками в JSX, чтобы новые шаблоны добавлялись без переписывания
-// компонента. Пока один шаблон — про акцию на первую запись.
-// ============================================================
-
-export interface QuickCommentTemplate {
-  id: string
-  label: string
-  text: string
-}
-
-export const QUICK_COMMENT_TEMPLATES: QuickCommentTemplate[] = [
-  { id: 'promo-first-booking-20', label: 'Акция! 20% скидка на первую запись', text: 'Акция! 20% скидка на первую запись' },
-]
-
-// true, если текст шаблона уже присутствует в комментарии — используется и
-// для дедупликации при вставке, и чтобы плашка отображалась как уже применённая,
-// и как визуальный признак "заказ со скидкой" в списке заказов/карточке клиента
-// (без отдельной сущности акции — это по-прежнему обычный текст комментария).
-export function hasQuickCommentTemplate(comment: string | null | undefined, templateText: string): boolean {
-  return !!comment && comment.includes(templateText)
-}
-
-// Вставляет текст шаблона в комментарий: в пустой — просто текст, в
-// непустой — отдельной строкой снизу. Не трогает уже применённый шаблон
-// (защита от дублей при повторном клике, хотя в UI плашка для этого
-// становится disabled — здесь дублирующая проверка на уровне чистой функции).
-export function applyQuickCommentTemplate(comment: string, templateText: string): string {
-  if (hasQuickCommentTemplate(comment, templateText)) return comment
-  if (!comment.trim()) return templateText
-  return `${comment}\n${templateText}`
 }
 

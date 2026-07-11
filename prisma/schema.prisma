@@ -118,6 +118,14 @@ enum ArchiveReason {
   REJECTED
 }
 
+// Структурированная пометка акции — заменяет прежний подход "вставить текст
+// акции прямо в комментарий" (см. src/lib/promotion-model.ts). Единственное
+// значение пока — скидка 20% на первый визит; enum, а не boolean, потому что
+// на платформе позже могут появиться другие акции.
+enum OrderPromotionType {
+  FIRST_VISIT_20
+}
+
 enum OrderSource {
   MANUAL
   GOOGLE_CALENDAR
@@ -417,6 +425,11 @@ model ScheduleEvent {
   estimatedPrice           Float?                    @map("estimated_price")
   paymentMethod            PaymentMethod?            @map("payment_method")
   notes                    String?
+  // Структурированная пометка акции (см. OrderPromotionType выше и
+  // src/lib/promotion-model.ts) — источник правды по акции для записей с
+  // уже существующей студийной записью, тот же принцип двойного источника,
+  // что и у notes/Order.comment (см. toDTO в actions/orders.ts).
+  promotionType            OrderPromotionType?       @map("promotion_type")
   // Предварительное бронирование студии для гримёра ПЕРЕД основной съёмкой —
   // отдельный интервал, не часть длительности/стоимости самой съёмки.
   // Источник правды — длительность в минутах; время начала гримёра всегда
@@ -488,6 +501,11 @@ model Order {
   paymentStatus     OrderPaymentStatus @default(NOT_SPECIFIED) @map("payment_status")
   paymentMethod     PaymentMethod?     @map("payment_method")
   comment           String?
+  // Структурированная пометка акции (см. OrderPromotionType и
+  // src/lib/promotion-model.ts) — заявок без своей записи в расписании
+  // (LEAD без даты) касается напрямую; для заказов с записью источник
+  // правды — ScheduleEvent.promotionType, тот же принцип, что и у comment/notes.
+  promotionType     OrderPromotionType? @map("promotion_type")
   // Событие Google Calendar, из которого создан заказ (только source=GOOGLE_CALENDAR).
   // Используется для защиты от дублей при повторном импорте/сохранении события.
   googleEventId     String?            @unique @map("google_event_id")

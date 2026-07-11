@@ -5,11 +5,13 @@ import Link from 'next/link'
 import { format, parseISO } from 'date-fns'
 import { Search, Link2, UserPlus, ChevronDown, ArchiveRestore } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import GlowPill from '@/components/ui/glow-pill'
 import { createOrder, updateOrder, updateOrderStatus, unarchiveOrder, type OrderDTO, type OrderInput } from '@/lib/actions/orders'
 import { getClients } from '@/lib/actions/clients'
 import { ORDER_BOARD_COLUMNS, ORDER_STATUS_LABELS, ORDER_PAYMENT_STATUS_LABELS, ORDER_PAYMENT_METHOD_LABELS, ARCHIVE_REASON_LABELS } from '@/lib/order-model'
 import { CLIENT_TYPE_LABELS } from '@/lib/client-model'
 import { ROOM_DICTIONARY, FORMAT_DICTIONARY } from '@/lib/import/normalize'
+import { getOrderPromotion, getVisibleOrderComment, PROMOTION_PILL_LABEL, type OrderPromotionType } from '@/lib/promotion-model'
 import type { ClientType, OrderStatus, OrderPaymentStatus, PaymentMethod } from '@prisma/client'
 import AddClientModal from '../clients/AddClientModal'
 
@@ -98,7 +100,17 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
   const [companyName, setCompanyName] = useState(order?.companyName ?? initialValues?.companyName ?? '')
   const [serviceType, setServiceType] = useState(order?.serviceType ?? initialValues?.serviceType ?? '')
   const [room, setRoom] = useState(order?.room ?? initialValues?.room ?? '')
-  const [comment, setComment] = useState(order?.comment ?? initialValues?.comment ?? '')
+  // Комментарий инициализируется уже очищенным от текста акции (см.
+  // src/lib/promotion-model.ts) — акция теперь отдельный тоггл (promotionType),
+  // не часть свободного текста. Для старых заказов, где акция ещё жила только
+  // как фраза в комментарии, это на первом же Save "мигрирует" её в
+  // структурированное поле и одновременно убирает дублирующий текст.
+  const [comment, setComment] = useState(
+    getVisibleOrderComment({ comment: order?.comment ?? initialValues?.comment ?? null }) ?? ''
+  )
+  const [promotionType, setPromotionType] = useState<OrderPromotionType | null>(
+    getOrderPromotion({ promotionType: order?.promotionType ?? null, comment: order?.comment ?? initialValues?.comment ?? null }),
+  )
   const [preliminaryAmount, setPreliminaryAmount] = useState(
     order?.preliminaryAmount?.toString() ?? initialValues?.preliminaryAmount?.toString() ?? ''
   )
@@ -185,6 +197,7 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
       serviceType: serviceType.trim(),
       room: room.trim(),
       comment: comment.trim(),
+      promotionType,
       preliminaryAmount: preliminaryAmount ? parseFloat(preliminaryAmount) : null,
       paymentMethod: paymentMethod || null,
       paymentStatus,
@@ -366,6 +379,21 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
             <Field>
               <Label>Комментарий</Label>
               <textarea className={TEXTAREA} rows={2} value={comment} onChange={e => setComment(e.target.value)} />
+              {/* Акция — структурированный тоггл, а не текст, вставляемый в
+                  комментарий (см. src/lib/promotion-model.ts). Повторный клик
+                  снимает отметку; комментарий этим не затрагивается. */}
+              <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                <span className="text-zinc-500 text-[11px]">Быстрые пометки:</span>
+                <GlowPill
+                  as="button"
+                  color={promotionType === 'FIRST_VISIT_20' ? 'green' : 'zinc'}
+                  onClick={() => setPromotionType(p => p === 'FIRST_VISIT_20' ? null : 'FIRST_VISIT_20')}
+                  title={promotionType === 'FIRST_VISIT_20' ? 'Убрать акцию' : 'Отметить акцию «−20% первый визит»'}
+                  ariaLabel={promotionType === 'FIRST_VISIT_20' ? 'Акция «−20% первый визит» отмечена — нажмите, чтобы убрать' : 'Отметить акцию «−20% первый визит»'}
+                >
+                  {PROMOTION_PILL_LABEL.FIRST_VISIT_20}
+                </GlowPill>
+              </div>
             </Field>
 
             <p className={SECTION}>Запись в студию</p>

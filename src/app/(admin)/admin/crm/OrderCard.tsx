@@ -7,11 +7,9 @@ import { CalendarClock, UserX, Film, CheckCircle2, Paperclip, Clock } from 'luci
 import type { DraggableAttributes, DraggableSyntheticListeners } from '@dnd-kit/core'
 import type { OrderDTO } from '@/lib/actions/orders'
 import { ORDER_PAYMENT_STATUS_LABELS, ORDER_PAYMENT_STATUS_COLORS, ORDER_SOURCE_LABELS, getOrderStatusVars } from '@/lib/order-model'
-import { formatMakeupBadgeLabel, QUICK_COMMENT_TEMPLATES, hasQuickCommentTemplate } from '@/lib/schedule-model'
-
-// Плашка акции — визуальная производная от текста комментария, не отдельное
-// поле/сущность (см. schedule-model.ts: QUICK_COMMENT_TEMPLATES).
-const PROMO_TEMPLATE_TEXT = QUICK_COMMENT_TEMPLATES[0]?.text
+import { formatMakeupBadgeLabel } from '@/lib/schedule-model'
+import { getOrderPromotion, getVisibleOrderComment, PROMOTION_PILL_LABEL } from '@/lib/promotion-model'
+import GlowPill from '@/components/ui/glow-pill'
 
 interface Props {
   order: OrderDTO
@@ -47,7 +45,8 @@ export default function OrderCard({ order, onClick, dragAttributes, dragListener
     : null
   const amount = formatMoney(order.preliminaryAmount)
   const hasMakeup = order.makeupDurationMinutes != null && order.makeupDurationMinutes > 0
-  const hasPromo = !!order.comment && !!PROMO_TEMPLATE_TEXT && hasQuickCommentTemplate(order.comment, PROMO_TEMPLATE_TEXT)
+  const promotion = getOrderPromotion(order)
+  const visibleComment = getVisibleOrderComment(order)
 
   return (
     <button
@@ -66,9 +65,9 @@ export default function OrderCard({ order, onClick, dragAttributes, dragListener
           {when}
         </p>
       )}
-      {order.comment && (
-        <p className="text-zinc-500 text-xs line-clamp-2" title={order.comment}>
-          {order.comment}
+      {visibleComment && (
+        <p className="text-zinc-500 text-xs line-clamp-2" title={visibleComment}>
+          {visibleComment}
         </p>
       )}
       <div className="flex items-center justify-between gap-2 pt-0.5">
@@ -76,12 +75,10 @@ export default function OrderCard({ order, onClick, dragAttributes, dragListener
           {amount ? `${amount} · ` : ''}{ORDER_PAYMENT_STATUS_LABELS[order.paymentStatus]}
         </span>
       </div>
-      {(order.source === 'GOOGLE_CALENDAR' || !order.clientId || order.editingRequired !== null || order.hasMaterials || hasMakeup || hasPromo) && (
+      {(order.source === 'GOOGLE_CALENDAR' || !order.clientId || order.editingRequired !== null || order.hasMaterials || hasMakeup || promotion) && (
         <div className="flex flex-wrap items-center gap-1.5 pt-1">
-          {hasPromo && (
-            <span className="text-[11px] font-medium px-2 py-0.5 rounded-full border border-green-800 text-green-400 bg-green-950/30">
-              Первая запись −20%
-            </span>
+          {promotion && (
+            <GlowPill color="green" title="Акция «−20% первый визит»">{PROMOTION_PILL_LABEL[promotion]}</GlowPill>
           )}
           {hasMakeup && (
             <span className="text-[11px] font-medium px-2 py-0.5 rounded-full border border-zinc-700 text-zinc-400 bg-zinc-800/40 flex items-center gap-1">

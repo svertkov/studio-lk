@@ -26,8 +26,8 @@ import {
 import {
   PAYMENT_METHOD_LABELS, mergeScheduleEvent, type ScheduleEventVM,
   computeMakeupInterval, formatMakeupBadgeLabel, formatDurationMinutes,
-  QUICK_COMMENT_TEMPLATES, hasQuickCommentTemplate,
 } from '@/lib/schedule-model'
+import { getOrderPromotion, getVisibleOrderComment, PROMOTION_PILL_LABEL } from '@/lib/promotion-model'
 import { isValidHttpUrl } from '@/lib/url'
 import type { CalendarEvent } from '@/lib/google-calendar'
 import DonutChart from '@/components/ui/donut-chart'
@@ -180,11 +180,6 @@ function InfoRow({ label, value }: { label: string; value?: string | null }) {
   )
 }
 
-// Плашка акции — чисто визуальная производная от текста комментария (ищем
-// подстроку шаблона), не отдельная сущность/поле: если комментарий вручную
-// изменят или уберут фразу, плашка исчезнет сама при следующей отрисовке.
-const PROMO_TEMPLATE_TEXT = QUICK_COMMENT_TEMPLATES[0]?.text
-
 function makeupTooltip(shootStart: Date | null, minutes: number): string {
   const interval = computeMakeupInterval(shootStart, minutes)
   if (!interval) return 'Интервал будет рассчитан после выбора времени съёмки'
@@ -208,30 +203,35 @@ function CommentCell({ comment, makeupDurationMinutes, shootStart }: {
 }) {
   const [expanded, setExpanded] = useState(false)
   const hasMakeup = makeupDurationMinutes != null && makeupDurationMinutes > 0
-  const hasPromo = !!comment && !!PROMO_TEMPLATE_TEXT && hasQuickCommentTemplate(comment, PROMO_TEMPLATE_TEXT)
+  // ShootRow не хранит структурированную акцию (исторические визиты из
+  // ClientVisit её и не могут иметь) — promotionType всегда null здесь,
+  // getOrderPromotion падает на текстовое распознавание, тот же helper и
+  // регэксп, что и в таблице "Заказы" (см. src/lib/promotion-model.ts).
+  const promotion = getOrderPromotion({ promotionType: null, comment })
+  const visibleComment = getVisibleOrderComment({ comment })
 
-  if (!comment && !hasMakeup) return <span className="text-zinc-600 text-xs">—</span>
+  if (!visibleComment && !hasMakeup && !promotion) return <span className="text-zinc-600 text-xs">—</span>
 
-  const isLong = !!comment && comment.length > LONG_COMMENT_THRESHOLD
+  const isLong = !!visibleComment && visibleComment.length > LONG_COMMENT_THRESHOLD
 
   return (
     <div className="min-w-0 space-y-1">
-      {(hasMakeup || hasPromo) && (
+      {(hasMakeup || promotion) && (
         <div className="flex flex-wrap items-center gap-1">
           {hasMakeup && (
             <GlowPill color="zinc" title={makeupTooltip(shootStart, makeupDurationMinutes!)}>
               {formatMakeupBadgeLabel(makeupDurationMinutes!)}
             </GlowPill>
           )}
-          {hasPromo && (
-            <GlowPill color="green" title="Упомянуто в комментарии заказа">Первая запись −20%</GlowPill>
+          {promotion && (
+            <GlowPill color="green" title="Акция «−20% первый визит»">{PROMOTION_PILL_LABEL[promotion]}</GlowPill>
           )}
         </div>
       )}
-      {comment && (
+      {visibleComment && (
         <>
           <p className={`text-zinc-400 text-xs leading-snug whitespace-pre-wrap break-words ${!expanded && isLong ? 'line-clamp-2' : ''}`}>
-            {comment}
+            {visibleComment}
           </p>
           {isLong && (
             <button

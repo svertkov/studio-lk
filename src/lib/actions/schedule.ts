@@ -5,7 +5,7 @@ import { prisma } from '@/lib/prisma'
 import { auth } from '@/auth'
 import {
   type ClientConfirmationStatus, type ScheduleEvent, type SubscriptionUsage, type ClientSubscription,
-  type EventType, type PaymentMethod, type MaterialsStatus,
+  type EventType, type PaymentMethod, type MaterialsStatus, type OrderPromotionType,
   Prisma,
 } from '@prisma/client'
 import {
@@ -92,6 +92,7 @@ function toDTO(row: ScheduleEventWithClient): ScheduleEventDTO {
     estimatedPrice: row.estimatedPrice,
     paymentMethod: row.paymentMethod,
     notes: row.notes,
+    promotionType: row.promotionType,
     yandexDiskUrl: row.yandexDiskUrl,
     yandexDiskUrlAddedAt: row.yandexDiskUrlAddedAt ? row.yandexDiskUrlAddedAt.toISOString() : null,
     yandexDiskUrlExpiresAt: row.yandexDiskUrlExpiresAt ? row.yandexDiskUrlExpiresAt.toISOString() : null,
@@ -168,6 +169,8 @@ export interface UpsertScheduleEventInput {
   estimatedPrice?: number | null
   paymentMethod?: PaymentMethod | null
   notes?: string
+  // Структурированная пометка акции — см. src/lib/promotion-model.ts.
+  promotionType?: OrderPromotionType | null
   yandexDiskUrl?: string | null
   nasBackupUrl?: string | null
   materialsComment?: string
@@ -253,6 +256,7 @@ export async function upsertScheduleEvent(
         estimatedPrice: input.estimatedPrice ?? null,
         paymentMethod: input.paymentMethod ?? null,
         notes: input.notes?.trim() || null,
+        promotionType: input.promotionType ?? null,
         yandexDiskUrl: nextYandexUrl,
         yandexDiskUrlAddedAt,
         yandexDiskUrlExpiresAt,
@@ -280,6 +284,7 @@ export async function upsertScheduleEvent(
         ...(input.estimatedPrice !== undefined && { estimatedPrice: input.estimatedPrice }),
         ...(input.paymentMethod !== undefined && { paymentMethod: input.paymentMethod }),
         ...(input.notes !== undefined && { notes: input.notes?.trim() || null }),
+        ...(input.promotionType !== undefined && { promotionType: input.promotionType }),
         yandexDiskUrl: nextYandexUrl,
         yandexDiskUrlAddedAt,
         yandexDiskUrlExpiresAt,

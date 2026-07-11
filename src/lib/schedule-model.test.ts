@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest'
 import {
   normalizeMakeupDurationMinutes, computeMakeupInterval, MAKEUP_DURATION_MAX_MINUTES,
   formatDurationMinutes, formatMakeupBadgeLabel,
-  applyQuickCommentTemplate, hasQuickCommentTemplate, QUICK_COMMENT_TEMPLATES,
 } from './schedule-model'
 
 describe('normalizeMakeupDurationMinutes — гримёр, ввод длительности', () => {
@@ -107,30 +106,8 @@ describe('formatDurationMinutes / formatMakeupBadgeLabel — единый helper
   })
 })
 
-describe('quick comment templates — «Акция! 20% скидка на первую запись»', () => {
-  const promo = QUICK_COMMENT_TEMPLATES[0]
-
-  it('inserts the template text into an empty comment', () => {
-    expect(applyQuickCommentTemplate('', promo.text)).toBe(promo.text)
-  })
-
-  it('appends the template on a new line when a comment already exists', () => {
-    expect(applyQuickCommentTemplate('Клиент просил перенос', promo.text)).toBe(`Клиент просил перенос\n${promo.text}`)
-  })
-
-  it('does not duplicate the template on repeated clicks', () => {
-    const once = applyQuickCommentTemplate('', promo.text)
-    const twice = applyQuickCommentTemplate(once, promo.text)
-    expect(twice).toBe(once)
-  })
-
-  it('detects the template is already present via hasQuickCommentTemplate', () => {
-    expect(hasQuickCommentTemplate(`Заметка\n${promo.text}`, promo.text)).toBe(true)
-    expect(hasQuickCommentTemplate('Заметка без шаблона', promo.text)).toBe(false)
-  })
-
-  it('handles null/undefined comment safely', () => {
-    expect(hasQuickCommentTemplate(null, promo.text)).toBe(false)
-    expect(hasQuickCommentTemplate(undefined, promo.text)).toBe(false)
-  })
-})
+// Быстрый шаблон акции "Акция! 20% скидка на первую запись" был вставкой
+// текста в комментарий через applyQuickCommentTemplate/hasQuickCommentTemplate
+// (и покрывался тестами прямо здесь) — теперь акция хранится структурированно
+// (OrderPromotionType) и вся логика её определения/очистки живёт в
+// src/lib/promotion-model.ts, см. promotion-model.test.ts.

@@ -5,7 +5,7 @@ import { prisma } from '@/lib/prisma'
 import { auth } from '@/auth'
 import type {
   Order, Client, ScheduleEvent,
-  OrderStatus, OrderSource, OrderPaymentStatus, PaymentMethod, ClientType,
+  OrderStatus, OrderSource, OrderPaymentStatus, PaymentMethod, ClientType, OrderPromotionType,
 } from '@prisma/client'
 import { computeDurationMinutes, isOrderReadyForArchive, archiveReasonForStatus } from '@/lib/order-model'
 import { computeMaterialsStatus, computeYandexLinkExpiry } from '@/lib/schedule-model'
@@ -41,7 +41,7 @@ function revalidateOrderPaths(): void {
 type OrderClient = Pick<Client, 'name' | 'phone' | 'telegram' | 'email' | 'type' | 'companyName'>
 type OrderScheduleEvent = Pick<ScheduleEvent,
   'id' | 'camerasCount' | 'editingRequired' | 'yandexDiskUrl' | 'yandexDiskUrlExpiresAt' | 'nasBackupUrl' |
-  'materialsComment' | 'notes' | 'makeupDurationMinutes'>
+  'materialsComment' | 'notes' | 'makeupDurationMinutes' | 'promotionType'>
 type OrderWithRelations = Order & { client: OrderClient | null; scheduleEvent: OrderScheduleEvent | null }
 
 const ORDER_INCLUDE = {
@@ -50,7 +50,7 @@ const ORDER_INCLUDE = {
     select: {
       id: true, camerasCount: true, editingRequired: true,
       yandexDiskUrl: true, yandexDiskUrlExpiresAt: true, nasBackupUrl: true, materialsComment: true,
-      notes: true, makeupDurationMinutes: true,
+      notes: true, makeupDurationMinutes: true, promotionType: true,
     },
   },
 } as const
@@ -76,6 +76,11 @@ export interface OrderDTO {
   paymentStatus: OrderPaymentStatus
   paymentMethod: PaymentMethod | null
   comment: string | null
+  // Структурированная пометка акции — источник правды для карточки заказа и
+  // для отображения (см. src/lib/promotion-model.ts: getOrderPromotion). Тот
+  // же принцип двойного источника, что и у comment: если есть связанная
+  // ScheduleEvent, её promotionType побеждает.
+  promotionType: OrderPromotionType | null
   googleEventId: string | null
   hasBooking: boolean
   // Снимок части полей связанной записи расписания (см. ScheduleEvent) — их
@@ -135,6 +140,7 @@ function toDTO(row: OrderWithRelations): OrderDTO {
     // актуальный комментарий; Order.comment остаётся источником только для
     // заявок без записи в расписании (единый источник данных, без дублей).
     comment: row.scheduleEvent?.notes ?? row.comment,
+    promotionType: row.scheduleEvent?.promotionType ?? row.promotionType,
     googleEventId: row.googleEventId,
     hasBooking: !!row.scheduleEvent,
     camerasCount: row.scheduleEvent?.camerasCount ?? null,
@@ -314,6 +320,11 @@ export interface OrderInput {
   companyName?: string
   serviceType?: string
   comment?: string
+  // Структурированная пометка акции — см. OrderDTO.promotionType и
+  // src/lib/promotion-model.ts. Общее поле заказа (не завязано на наличие
+  // записи в расписании, в отличие от блока "Материалы и монтаж" ниже) —
+  // акцию можно отметить и на заявке без даты.
+  promotionType?: OrderPromotionType | null
   preliminaryAmount?: number | null
   paymentMethod?: PaymentMethod | null
   paymentStatus?: OrderPaymentStatus
@@ -374,6 +385,7 @@ export async function createOrder(
           paymentStatus: input.paymentStatus ?? 'NOT_SPECIFIED',
           paymentMethod: input.paymentMethod ?? null,
           comment: input.comment?.trim() || null,
+          promotionType: input.promotionType ?? null,
         },
       })
 
@@ -388,6 +400,7 @@ export async function createOrder(
             room: created.room,
             format: created.serviceType,
             notes: created.comment,
+            promotionType: created.promotionType,
             eventType: 'STUDIO_BOOKING',
           },
         })
@@ -419,6 +432,7 @@ export async function updateOrder(
     const nextRoom = input.room !== undefined ? (input.room?.trim() || null) : existing.room
     const nextServiceType = input.serviceType !== undefined ? (input.serviceType?.trim() || null) : existing.serviceType
     const nextComment = input.comment !== undefined ? (input.comment?.trim() || null) : existing.comment
+    const nextPromotionType = input.promotionType !== undefined ? input.promotionType : existing.promotionType
     const nextStart = input.plannedStartTime !== undefined
       ? (input.plannedStartTime ? new Date(input.plannedStartTime) : null)
       : existing.plannedStartTime
@@ -452,6 +466,7 @@ export async function updateOrder(
           serviceType: nextServiceType,
           room: nextRoom,
           comment: nextComment,
+          promotionType: nextPromotionType,
           plannedStartTime: nextStart,
           plannedEndTime: nextEnd,
           durationMinutes: hasBookingTimeNow
@@ -505,6 +520,7 @@ export async function updateOrder(
               room: nextRoom,
               format: nextServiceType,
               notes: nextComment,
+              promotionType: nextPromotionType,
               yandexDiskUrl: nextYandexUrl,
               yandexDiskUrlAddedAt,
               yandexDiskUrlExpiresAt,
@@ -537,6 +553,7 @@ export async function updateOrder(
               room: nextRoom,
               format: nextServiceType,
               notes: nextComment,
+              promotionType: nextPromotionType,
               eventType: 'STUDIO_BOOKING',
             },
           })
