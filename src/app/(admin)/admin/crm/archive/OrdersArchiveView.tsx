@@ -8,6 +8,7 @@ import { ru } from 'date-fns/locale'
 import { ArrowLeft, Search, Archive, Paperclip } from 'lucide-react'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
 import type { OrderDTO } from '@/lib/actions/orders'
+import { getOrderPaymentSummary } from '@/lib/payment-model'
 
 type Tab = 'ALL' | 'COMPLETED' | 'CANCELLED'
 
@@ -27,10 +28,6 @@ const FINAL_STATUS_LABEL: Record<'COMPLETED' | 'CANCELLED', string> = {
   CANCELLED: 'Отказ',
 }
 
-function formatMoney(v: number | null) {
-  if (v == null) return '—'
-  return new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB', maximumFractionDigits: 0 }).format(v)
-}
 
 function formatDate(iso: string | null) {
   if (!iso) return '—'
@@ -176,7 +173,7 @@ export default function OrdersArchiveView({ initialOrders }: Props) {
                       <TableCell className="text-zinc-100">{order.clientName || order.title || 'Без имени'}</TableCell>
                       <TableCell className="text-zinc-400">{order.serviceType ?? '—'}</TableCell>
                       <TableCell className="text-zinc-400">{order.room ?? '—'}</TableCell>
-                      <TableCell className="text-zinc-300 whitespace-nowrap">{formatMoney(order.preliminaryAmount)}</TableCell>
+                      <TableCell className="text-zinc-300 whitespace-nowrap">{getOrderPaymentSummary(order).displayPrimary}</TableCell>
                       <TableCell>
                         <span className={`text-[11px] font-medium px-2 py-0.5 rounded-full whitespace-nowrap ${FINAL_STATUS_BADGE[finalStatus]}`}>
                           {FINAL_STATUS_LABEL[finalStatus]}

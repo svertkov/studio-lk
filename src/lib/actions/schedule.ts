@@ -322,6 +322,12 @@ export async function upsertScheduleEvent(
     // ручной перезагрузки.
     if (row.clientId) revalidatePath(`/admin/clients/${row.clientId}`)
     if (row.orderId) { revalidatePath('/admin/crm'); revalidatePath('/admin/orders') }
+    // Стоимость/способ оплаты/абонемент этой же записи считаются в "Финансы"
+    // (выручка, средний чек) и влияют на карточки "Требуют внимания" на
+    // дашборде — та же логика, что и выше: без явной инвалидации оба раздела
+    // показали бы устаревшие цифры до ручной перезагрузки.
+    revalidatePath('/admin/finance')
+    revalidatePath('/admin/dashboard')
 
     return { ok: true, data: toDTO(row) }
   } catch (e) {

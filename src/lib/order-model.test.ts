@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   orderTableDate, compareOrdersForTable, orderTableSearchHaystack, type OrderTableRow,
-  orderShootDisplay, orderDurationSecondaryLabel, orderPaymentCellDisplay,
+  orderShootDisplay, orderDurationSecondaryLabel,
   getOrdersTableTier, ORDERS_TABLE_MOBILE_MAX_WIDTH, ORDERS_TABLE_COMPACT_MAX_WIDTH,
 } from './order-model'
 
@@ -154,32 +154,9 @@ describe('orderDurationSecondaryLabel — гримёр под длительно
   })
 })
 
-const RUB = new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB', maximumFractionDigits: 0 })
-
-describe('orderPaymentCellDisplay — объединённая колонка "Оплата" (стоимость + статус)', () => {
-  it('shows the amount as primary and the payment status label as secondary', () => {
-    // Built via the same Intl.NumberFormat as the implementation, not a hardcoded
-    // literal — ru-RU currency formatting uses a non-breaking space as the
-    // thousands separator, which is easy to mistype as a plain space in a test.
-    expect(orderPaymentCellDisplay({ paymentStatus: 'UNPAID', preliminaryAmount: 9000, durationMinutes: 120 }))
-      .toEqual({ primary: RUB.format(9000), secondary: 'Не оплачено' })
-  })
-
-  it('shows "Нет данных" as primary when no amount is set', () => {
-    expect(orderPaymentCellDisplay({ paymentStatus: 'NOT_SPECIFIED', preliminaryAmount: null, durationMinutes: 60 }))
-      .toEqual({ primary: 'Нет данных', secondary: 'Не указана' })
-  })
-
-  it('shows "Абонемент" with consumed duration for subscription orders, not the generic payment label', () => {
-    expect(orderPaymentCellDisplay({ paymentStatus: 'SUBSCRIPTION', preliminaryAmount: null, durationMinutes: 120 }))
-      .toEqual({ primary: 'Абонемент', secondary: 'Списано 2 ч' })
-  })
-
-  it('falls back to the generic subscription label when duration is unknown', () => {
-    expect(orderPaymentCellDisplay({ paymentStatus: 'SUBSCRIPTION', preliminaryAmount: null, durationMinutes: null }))
-      .toEqual({ primary: 'Абонемент', secondary: 'По абонементу' })
-  })
-})
+// Тесты бывшей orderPaymentCellDisplay перенесены в payment-model.test.ts —
+// логика теперь живёт в getOrderPaymentSummary (src/lib/payment-model.ts),
+// единой для всех экранов с оплатой заказа, не только для этой таблицы.
 
 describe('getOrdersTableTier — адаптивные уровни таблицы по измеренной ширине', () => {
   it('is "mobile" at and below the mobile breakpoint', () => {

@@ -12,6 +12,7 @@ import { ORDER_BOARD_COLUMNS, ORDER_STATUS_LABELS, ORDER_PAYMENT_STATUS_LABELS, 
 import { CLIENT_TYPE_LABELS } from '@/lib/client-model'
 import { ROOM_DICTIONARY, FORMAT_DICTIONARY } from '@/lib/import/normalize'
 import { getOrderPromotion, getVisibleOrderComment, PROMOTION_PILL_LABEL, type OrderPromotionType } from '@/lib/promotion-model'
+import { getOrderPaymentSummary } from '@/lib/payment-model'
 import type { ClientType, OrderStatus, OrderPaymentStatus, PaymentMethod } from '@prisma/client'
 import AddClientModal from '../clients/AddClientModal'
 
@@ -118,6 +119,14 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
   const [paymentStatus, setPaymentStatus] = useState<OrderPaymentStatus>(
     order?.paymentStatus ?? initialValues?.paymentStatus ?? 'NOT_SPECIFIED'
   )
+  // Оплата абонементом — структурная связь на записи расписания, редактируется
+  // только через карточку записи (EventCardModal/SubscriptionPaymentBlock), не
+  // здесь. Пока она есть, поля суммы/способа/статуса ниже не отправляются при
+  // сохранении (см. handleSave) — иначе случайный "Сохранить" из этой формы
+  // мог бы перезаписать реальную стоимость записи устаревшим null/'' из формы,
+  // которая эту оплату вообще не видит и не умеет редактировать.
+  const hasSubscriptionPayment = !!order?.subscriptionUsage
+  const paymentSummary = order ? getOrderPaymentSummary(order) : null
   const [status, setStatus] = useState<OrderStatus>(order?.status ?? 'LEAD')
 
   // Материалы/гримёр/монтаж — есть чему их редактировать только когда у
@@ -198,9 +207,11 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
       room: room.trim(),
       comment: comment.trim(),
       promotionType,
-      preliminaryAmount: preliminaryAmount ? parseFloat(preliminaryAmount) : null,
-      paymentMethod: paymentMethod || null,
-      paymentStatus,
+      ...(hasSubscriptionPayment ? {} : {
+        preliminaryAmount: preliminaryAmount ? parseFloat(preliminaryAmount) : null,
+        paymentMethod: paymentMethod || null,
+        paymentStatus,
+      }),
       plannedStartTime: combineDateTime(date, startTime),
       plannedEndTime: combineDateTime(date, endTime),
       ...(telegramConversationId ? { telegramConversationId } : {}),
@@ -454,30 +465,42 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
             )}
 
             <p className={SECTION}>Оплата</p>
-            <Row>
-              <Field>
-                <Label>Предварительная стоимость, ₽</Label>
-                <input className={INPUT} type="number" min="0" placeholder="напр. 15000" value={preliminaryAmount}
-                  onChange={e => setPreliminaryAmount(e.target.value)} />
-              </Field>
-              <Field>
-                <Label>Способ оплаты</Label>
-                <SelectField value={paymentMethod} onChange={e => setPaymentMethod(e.target.value as PaymentMethod | '')}>
-                  <option value="">Не указан</option>
-                  {(Object.keys(ORDER_PAYMENT_METHOD_LABELS) as PaymentMethod[]).map(m => (
-                    <option key={m} value={m}>{ORDER_PAYMENT_METHOD_LABELS[m]}</option>
-                  ))}
-                </SelectField>
-              </Field>
-            </Row>
-            <Field>
-              <Label>Статус оплаты</Label>
-              <SelectField value={paymentStatus} onChange={e => setPaymentStatus(e.target.value as OrderPaymentStatus)}>
-                {(Object.keys(ORDER_PAYMENT_STATUS_LABELS) as OrderPaymentStatus[]).map(s => (
-                  <option key={s} value={s}>{ORDER_PAYMENT_STATUS_LABELS[s]}</option>
-                ))}
-              </SelectField>
-            </Field>
+            {hasSubscriptionPayment ? (
+              <div className="bg-blue-950/20 border border-blue-800/40 rounded-lg px-3 py-2.5 text-sm">
+                <p className="text-blue-300 font-medium">{paymentSummary!.displayPrimary}</p>
+                <p className="text-blue-400/80 text-xs mt-0.5">{paymentSummary!.displaySecondary}</p>
+                <p className="text-zinc-500 text-xs mt-1.5">
+                  Изменить абонемент или списанные часы можно в карточке записи (Расписание).
+                </p>
+              </div>
+            ) : (
+              <>
+                <Row>
+                  <Field>
+                    <Label>Предварительная стоимость, ₽</Label>
+                    <input className={INPUT} type="number" min="0" placeholder="напр. 15000" value={preliminaryAmount}
+                      onChange={e => setPreliminaryAmount(e.target.value)} />
+                  </Field>
+                  <Field>
+                    <Label>Способ оплаты</Label>
+                    <SelectField value={paymentMethod} onChange={e => setPaymentMethod(e.target.value as PaymentMethod | '')}>
+                      <option value="">Не указан</option>
+                      {(Object.keys(ORDER_PAYMENT_METHOD_LABELS) as PaymentMethod[]).map(m => (
+                        <option key={m} value={m}>{ORDER_PAYMENT_METHOD_LABELS[m]}</option>
+                      ))}
+                    </SelectField>
+                  </Field>
+                </Row>
+                <Field>
+                  <Label>Статус оплаты</Label>
+                  <SelectField value={paymentStatus} onChange={e => setPaymentStatus(e.target.value as OrderPaymentStatus)}>
+                    {(Object.keys(ORDER_PAYMENT_STATUS_LABELS) as OrderPaymentStatus[]).map(s => (
+                      <option key={s} value={s}>{ORDER_PAYMENT_STATUS_LABELS[s]}</option>
+                    ))}
+                  </SelectField>
+                </Field>
+              </>
+            )}
 
             {error && (
               <p className="text-red-400 text-sm bg-red-950/30 border border-red-800/40 rounded-lg px-3 py-2">{error}</p>

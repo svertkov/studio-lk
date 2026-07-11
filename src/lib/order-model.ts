@@ -1,5 +1,5 @@
 import type { OrderStatus, OrderSource, OrderPaymentStatus, PaymentMethod, ArchiveReason } from '@prisma/client'
-import { formatDurationMinutes, formatMakeupBadgeLabel } from '@/lib/schedule-model'
+import { formatMakeupBadgeLabel } from '@/lib/schedule-model'
 
 export type { OrderStatus, OrderSource, OrderPaymentStatus, ArchiveReason }
 
@@ -417,33 +417,15 @@ export function orderDurationSecondaryLabel(order: Pick<OrderTableRow, 'makeupDu
   return minutes != null && minutes > 0 ? formatMakeupBadgeLabel(minutes) : null
 }
 
-// «Оплата» = Стоимость + Статус оплаты в одной ячейке. Абонемент — особый
-// случай: основная строка "Абонемент", вторичная — длительность съёмки как
-// "Списано Х" (сколько времени абонемента ушло на этот заказ), а не обычный
-// лейбл статуса оплаты, иначе вторичная строка задвоила бы слово "Абонемент".
-export interface OrderPaymentCellDisplay {
-  primary: string
-  secondary: string
-}
-
-function formatOrderAmount(amount: number): string {
-  return new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB', maximumFractionDigits: 0 }).format(amount)
-}
-
-export function orderPaymentCellDisplay(
-  order: Pick<OrderTableRow, 'paymentStatus' | 'preliminaryAmount' | 'durationMinutes'>,
-): OrderPaymentCellDisplay {
-  if (order.paymentStatus === 'SUBSCRIPTION') {
-    return {
-      primary: 'Абонемент',
-      secondary: order.durationMinutes != null ? `Списано ${formatDurationMinutes(order.durationMinutes)}` : ORDER_PAYMENT_STATUS_LABELS.SUBSCRIPTION,
-    }
-  }
-  return {
-    primary: order.preliminaryAmount != null ? formatOrderAmount(order.preliminaryAmount) : 'Нет данных',
-    secondary: ORDER_PAYMENT_STATUS_LABELS[order.paymentStatus],
-  }
-}
+// «Оплата» = Стоимость + Статус оплаты в одной ячейке — логика вынесена в
+// getOrderPaymentSummary (src/lib/payment-model.ts), единый источник для
+// ВСЕХ экранов, где показывается оплата заказа (Заказы/CRM/карточка заказа),
+// не только для этой таблицы. Раньше здесь была локальная копия этой логики
+// (orderPaymentCellDisplay), которая для абонемента показывала "Списано Х" по
+// ДЛИТЕЛЬНОСТИ СЪЁМКИ (приближение), а не по реальному SubscriptionUsage.
+// usedHours — и не видела вовсе стоимость/способ оплаты, заполненные через
+// карточку записи (EventCardModal → ScheduleEvent), а не через саму карточку
+// заказа. См. payment-model.ts за подробным разбором причины расхождения.
 
 // ============================================================
 // СПИСОК ЗАКАЗОВ — АДАПТИВНЫЕ УРОВНИ ТАБЛИЦЫ. Решение принимается по РЕАЛЬНО

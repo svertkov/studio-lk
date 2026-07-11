@@ -6,9 +6,10 @@ import { ru } from 'date-fns/locale'
 import { CalendarClock, UserX, Film, CheckCircle2, Paperclip, Clock } from 'lucide-react'
 import type { DraggableAttributes, DraggableSyntheticListeners } from '@dnd-kit/core'
 import type { OrderDTO } from '@/lib/actions/orders'
-import { ORDER_PAYMENT_STATUS_LABELS, ORDER_PAYMENT_STATUS_COLORS, ORDER_SOURCE_LABELS, getOrderStatusVars } from '@/lib/order-model'
+import { ORDER_PAYMENT_STATUS_COLORS, ORDER_SOURCE_LABELS, getOrderStatusVars } from '@/lib/order-model'
 import { formatMakeupBadgeLabel } from '@/lib/schedule-model'
 import { getOrderPromotion, getVisibleOrderComment, PROMOTION_PILL_LABEL } from '@/lib/promotion-model'
+import { getOrderPaymentSummary } from '@/lib/payment-model'
 import GlowPill from '@/components/ui/glow-pill'
 
 interface Props {
@@ -22,11 +23,6 @@ interface Props {
   // true — карточка отрисована в DragOverlay (её "приподняли"): используем
   // усиленный акцент вместо hover, т.к. настоящего hover там не бывает.
   elevated?: boolean
-}
-
-function formatMoney(v: number | null) {
-  if (v == null) return null
-  return new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB', maximumFractionDigits: 0 }).format(v)
 }
 
 // Статичные Tailwind-классы, общие для всех статусов — конкретный цвет
@@ -43,7 +39,7 @@ export default function OrderCard({ order, onClick, dragAttributes, dragListener
   const when = order.plannedStartTime && order.plannedEndTime
     ? `${format(parseISO(order.plannedStartTime), 'd MMMM', { locale: ru })}, ${format(parseISO(order.plannedStartTime), 'HH:mm')}–${format(parseISO(order.plannedEndTime), 'HH:mm')}`
     : null
-  const amount = formatMoney(order.preliminaryAmount)
+  const payment = getOrderPaymentSummary(order)
   const hasMakeup = order.makeupDurationMinutes != null && order.makeupDurationMinutes > 0
   const promotion = getOrderPromotion(order)
   const visibleComment = getVisibleOrderComment(order)
@@ -71,8 +67,8 @@ export default function OrderCard({ order, onClick, dragAttributes, dragListener
         </p>
       )}
       <div className="flex items-center justify-between gap-2 pt-0.5">
-        <span className={`text-xs font-medium ${ORDER_PAYMENT_STATUS_COLORS[order.paymentStatus]}`}>
-          {amount ? `${amount} · ` : ''}{ORDER_PAYMENT_STATUS_LABELS[order.paymentStatus]}
+        <span className={`text-xs font-medium ${ORDER_PAYMENT_STATUS_COLORS[payment.paymentStatus]}`}>
+          {payment.paymentType !== 'UNKNOWN' ? `${payment.displayPrimary} · ` : ''}{payment.displaySecondary}
         </span>
       </div>
       {(order.source === 'GOOGLE_CALENDAR' || !order.clientId || order.editingRequired !== null || order.hasMaterials || hasMakeup || promotion) && (

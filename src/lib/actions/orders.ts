@@ -29,9 +29,17 @@ async function requireStaffSession(): Promise<{ ok: true } | { ok: false; error:
 // CRM-воронка (/admin/crm) и список заказов (/admin/orders) читают одни и те
 // же строки Order — любая мутация заказа должна инвалидировать оба экрана
 // разом, иначе один из них показывает устаревшие данные до ручного refresh.
-function revalidateOrderPaths(): void {
+// clientId — передаётся, когда мутация могла задеть данные, которые также
+// читает карточка клиента и Финансы/Дашборд (стоимость/оплата/акция записи,
+// см. createOrder/updateOrder) — без него оба раздела показали бы устаревшие
+// цифры до ручной перезагрузки, тот же принцип, что уже применяется в
+// upsertScheduleEvent (см. src/lib/actions/schedule.ts).
+function revalidateOrderPaths(clientId?: string | null): void {
   revalidatePath('/admin/crm')
   revalidatePath('/admin/orders')
+  if (clientId) revalidatePath(`/admin/clients/${clientId}`)
+  revalidatePath('/admin/finance')
+  revalidatePath('/admin/dashboard')
 }
 
 // ============================================================
@@ -41,7 +49,12 @@ function revalidateOrderPaths(): void {
 type OrderClient = Pick<Client, 'name' | 'phone' | 'telegram' | 'email' | 'type' | 'companyName'>
 type OrderScheduleEvent = Pick<ScheduleEvent,
   'id' | 'camerasCount' | 'editingRequired' | 'yandexDiskUrl' | 'yandexDiskUrlExpiresAt' | 'nasBackupUrl' |
-  'materialsComment' | 'notes' | 'makeupDurationMinutes' | 'promotionType'>
+  'materialsComment' | 'notes' | 'makeupDurationMinutes' | 'promotionType' | 'estimatedPrice' | 'paymentMethod'> & {
+    subscriptionUsage: {
+      usedHours: number
+      subscription: { packageHours: number; openingUsedHours: number; usages: { usedHours: number }[] }
+    } | null
+  }
 type OrderWithRelations = Order & { client: OrderClient | null; scheduleEvent: OrderScheduleEvent | null }
 
 const ORDER_INCLUDE = {
@@ -51,6 +64,20 @@ const ORDER_INCLUDE = {
       id: true, camerasCount: true, editingRequired: true,
       yandexDiskUrl: true, yandexDiskUrlExpiresAt: true, nasBackupUrl: true, materialsComment: true,
       notes: true, makeupDurationMinutes: true, promotionType: true,
+      // Реальные стоимость/способ оплаты студийной записи — заполняются через
+      // основную карточку записи (EventCardModal, дашборд/расписание/карточка
+      // клиента), НЕ через саму карточку заказа. См. OrderDTO.preliminaryAmount
+      // ниже — тот же принцип двойного источника, что и у comment/promotionType.
+      estimatedPrice: true, paymentMethod: true,
+      // Оплата абонементом — структурная связь, а не текст. У события может
+      // быть максимум одно списание (@@unique в схеме), поэтому здесь без
+      // риска накопления дублей при повторных чтениях/сохранениях.
+      subscriptionUsage: {
+        select: {
+          usedHours: true,
+          subscription: { select: { packageHours: true, openingUsedHours: true, usages: { select: { usedHours: true } } } },
+        },
+      },
     },
   },
 } as const
@@ -72,9 +99,19 @@ export interface OrderDTO {
   plannedStartTime: string | null
   plannedEndTime: string | null
   durationMinutes: number | null
+  // Дуал-сорсинг, как у comment/promotionType ниже: если у заказа есть своя
+  // запись в расписании, реальные стоимость и способ оплаты (заполняются
+  // через EventCardModal) побеждают собственные поля заказа. См.
+  // src/lib/payment-model.ts — единый helper, который берёт эти уже
+  // дуал-сорсенные поля и превращает их в готовое представление для экрана.
   preliminaryAmount: number | null
   paymentStatus: OrderPaymentStatus
   paymentMethod: PaymentMethod | null
+  // Оплата абонементом — структурная связь на ScheduleEvent.subscriptionUsage,
+  // не текст и не отдельная копия для заказа. null — абонемент не привязан
+  // (и у заявок без записи в расписании — всегда null, привязать абонемент
+  // можно только к реальной записи).
+  subscriptionUsage: { usedHours: number; remainingHours: number } | null
   comment: string | null
   // Структурированная пометка акции — источник правды для карточки заказа и
   // для отображения (см. src/lib/promotion-model.ts: getOrderPromotion). Тот
@@ -131,9 +168,15 @@ function toDTO(row: OrderWithRelations): OrderDTO {
     plannedStartTime: row.plannedStartTime ? row.plannedStartTime.toISOString() : null,
     plannedEndTime: row.plannedEndTime ? row.plannedEndTime.toISOString() : null,
     durationMinutes: row.durationMinutes,
-    preliminaryAmount: row.preliminaryAmount,
+    preliminaryAmount: row.scheduleEvent?.estimatedPrice ?? row.preliminaryAmount,
     paymentStatus: row.paymentStatus,
-    paymentMethod: row.paymentMethod,
+    paymentMethod: row.scheduleEvent?.paymentMethod ?? row.paymentMethod,
+    subscriptionUsage: row.scheduleEvent?.subscriptionUsage ? {
+      usedHours: row.scheduleEvent.subscriptionUsage.usedHours,
+      remainingHours: row.scheduleEvent.subscriptionUsage.subscription.packageHours
+        - row.scheduleEvent.subscriptionUsage.subscription.openingUsedHours
+        - row.scheduleEvent.subscriptionUsage.subscription.usages.reduce((sum, u) => sum + u.usedHours, 0),
+    } : null,
     // Реальная точка редактирования комментария — основная карточка записи
     // (EventCardModal, поле "Комментарий / нюансы" -> ScheduleEvent.notes),
     // не сама карточка заказа. Если запись уже существует, её notes и есть
@@ -401,6 +444,8 @@ export async function createOrder(
             format: created.serviceType,
             notes: created.comment,
             promotionType: created.promotionType,
+            estimatedPrice: created.preliminaryAmount,
+            paymentMethod: created.paymentMethod,
             eventType: 'STUDIO_BOOKING',
           },
         })
@@ -409,7 +454,7 @@ export async function createOrder(
       return tx.order.findUniqueOrThrow({ where: { id: created.id }, include: ORDER_INCLUDE })
     })
 
-    revalidateOrderPaths()
+    revalidateOrderPaths(order.clientId)
     return { ok: true, data: toDTO(order) }
   } catch (e) {
     console.error('[createOrder]', e)
@@ -433,6 +478,13 @@ export async function updateOrder(
     const nextServiceType = input.serviceType !== undefined ? (input.serviceType?.trim() || null) : existing.serviceType
     const nextComment = input.comment !== undefined ? (input.comment?.trim() || null) : existing.comment
     const nextPromotionType = input.promotionType !== undefined ? input.promotionType : existing.promotionType
+    // Дуал-сорсинг, как у comment/promotionType выше: карточка заказа
+    // (OrderFormModal) инициализирует свои поля стоимости/способа оплаты уже
+    // дуал-сорсенным значением (см. toDTO), поэтому повторная отправка того же
+    // значения сюда — идемпотентный no-op, а реальное изменение зеркалится в
+    // ScheduleEvent тем же способом, что и комментарий/акция.
+    const nextPreliminaryAmount = input.preliminaryAmount !== undefined ? input.preliminaryAmount : existing.preliminaryAmount
+    const nextPaymentMethod = input.paymentMethod !== undefined ? input.paymentMethod : existing.paymentMethod
     const nextStart = input.plannedStartTime !== undefined
       ? (input.plannedStartTime ? new Date(input.plannedStartTime) : null)
       : existing.plannedStartTime
@@ -521,6 +573,8 @@ export async function updateOrder(
               format: nextServiceType,
               notes: nextComment,
               promotionType: nextPromotionType,
+              estimatedPrice: nextPreliminaryAmount,
+              paymentMethod: nextPaymentMethod,
               yandexDiskUrl: nextYandexUrl,
               yandexDiskUrlAddedAt,
               yandexDiskUrlExpiresAt,
@@ -554,6 +608,8 @@ export async function updateOrder(
               format: nextServiceType,
               notes: nextComment,
               promotionType: nextPromotionType,
+              estimatedPrice: nextPreliminaryAmount,
+              paymentMethod: nextPaymentMethod,
               eventType: 'STUDIO_BOOKING',
             },
           })
@@ -575,7 +631,7 @@ export async function updateOrder(
       if (statusResult.ok) return statusResult
     }
 
-    revalidateOrderPaths()
+    revalidateOrderPaths(order.clientId)
     return { ok: true, data: toDTO(order) }
   } catch (e) {
     console.error('[updateOrder]', e)
@@ -616,7 +672,11 @@ export async function updateOrderStatus(
       include: ORDER_INCLUDE,
     })
 
-    revalidateOrderPaths()
+    // CANCELLED/обратно из него меняет, считается ли связанная съёмка
+    // "фактически состоявшейся" в Финансах/Истории съёмок клиента (см.
+    // client-shoots-model.ts: isCancelled). Дашборд тоже опирается на статус
+    // заказа в блоках "Требуют внимания".
+    revalidateOrderPaths(updated.clientId)
     return { ok: true, data: toDTO(updated) }
   } catch (e) {
     console.error('[updateOrderStatus]', e)
@@ -652,7 +712,7 @@ export async function unarchiveOrder(
       include: ORDER_INCLUDE,
     })
 
-    revalidateOrderPaths()
+    revalidateOrderPaths(updated.clientId)
     revalidatePath('/admin/crm/archive')
     return { ok: true, data: toDTO(updated) }
   } catch (e) {
@@ -695,7 +755,7 @@ export async function linkOrderClient(
       return tx.order.findUniqueOrThrow({ where: { id: orderId }, include: ORDER_INCLUDE })
     })
 
-    revalidateOrderPaths()
+    revalidateOrderPaths(order.clientId)
     return { ok: true, data: toDTO(order) }
   } catch (e) {
     console.error('[linkOrderClient]', e)

@@ -11,10 +11,11 @@ import {
   ORDER_BOARD_COLUMNS, ORDER_STATUS_LABELS, getOrderStatusConfig, getOrderStatusVars,
   ORDER_PAYMENT_STATUS_LABELS, ORDER_PAYMENT_STATUS_COLORS,
   orderTableDate, compareOrdersForTable, orderTableSearchHaystack,
-  orderShootDisplay, orderDurationSecondaryLabel, orderPaymentCellDisplay,
+  orderShootDisplay, orderDurationSecondaryLabel,
   getOrdersTableTier, type OrdersTableTier,
   type OrderTableSortKey, type SortDirection,
 } from '@/lib/order-model'
+import { getOrderPaymentSummary } from '@/lib/payment-model'
 import { formatDurationMinutes } from '@/lib/schedule-model'
 import { computeMaterialsCapsules, getVisibleShoots, getHiddenShootsCount } from '@/lib/client-shoots-model'
 import { isValidHttpUrl } from '@/lib/url'
@@ -245,7 +246,7 @@ export default function OrdersListView({ initialOrders }: Props) {
       if (roomFilter !== 'ALL' && o.room !== roomFilter) return false
       if (formatFilter !== 'ALL' && o.serviceType !== formatFilter) return false
       if (statusFilter !== 'ALL' && o.status !== statusFilter) return false
-      if (paymentFilter !== 'ALL' && o.paymentStatus !== paymentFilter) return false
+      if (paymentFilter !== 'ALL' && getOrderPaymentSummary(o).paymentStatus !== paymentFilter) return false
       if (materialsFilter !== 'ANY' && o.hasMaterials !== (materialsFilter === 'YES')) return false
       if (nasFilter !== 'ANY' && !!o.nasBackupUrl !== (nasFilter === 'YES')) return false
       if (editingFilter !== 'ANY' && (o.editingRequired === true) !== (editingFilter === 'YES')) return false
@@ -449,7 +450,7 @@ export default function OrdersListView({ initialOrders }: Props) {
                   const timeRange = formatTimeRange(order.plannedStartTime, order.plannedEndTime)
                   const shoot = orderShootDisplay(order)
                   const makeupLabel = orderDurationSecondaryLabel(order)
-                  const payment = orderPaymentCellDisplay(order)
+                  const payment = getOrderPaymentSummary(order)
                   const rowLabel = `Открыть заказ: ${order.clientName || order.title || 'клиент не привязан'}, ${formatDate(dateIso)}`
                   return (
                     <div
@@ -480,8 +481,8 @@ export default function OrdersListView({ initialOrders }: Props) {
                         {makeupLabel && <p className="text-zinc-500 text-xs mt-0.5 truncate" title={makeupLabel}>{makeupLabel}</p>}
                       </Cell>
                       <Cell>
-                        <p className="text-zinc-200 text-sm truncate">{payment.primary}</p>
-                        <p className={`text-xs mt-0.5 truncate ${ORDER_PAYMENT_STATUS_COLORS[order.paymentStatus]}`}>{payment.secondary}</p>
+                        <p className="text-zinc-200 text-sm truncate">{payment.displayPrimary}</p>
+                        <p className={`text-xs mt-0.5 truncate ${ORDER_PAYMENT_STATUS_COLORS[payment.paymentStatus]}`}>{payment.displaySecondary}</p>
                       </Cell>
                       <Cell><StatusBadge status={order.status} /></Cell>
                       <Cell onClick={e => e.stopPropagation()}><MaterialsCell order={order} /></Cell>
