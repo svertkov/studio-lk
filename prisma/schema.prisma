@@ -308,8 +308,16 @@ model ClientVisit {
   // ключ для безопасной автосинхронизации: позволяет отличить уже загруженную
   // строку от новой без риска задвоить визит при повторном запуске.
   sourceRowHash String?   @unique @map("source_row_hash")
+  // Заказ (Order), созданный "повышением" этого исторического визита до
+  // полноценного заказа (см. scripts/promote-visits-to-orders) — проставляется
+  // один раз в момент промоушена, дальше не меняется. Единственная цель —
+  // идемпотентность самого промоушена: запрос "visit где orderId IS NULL"
+  // находит только ещё не повышенные визиты, поэтому повторный запуск скрипта
+  // не может задвоить заказ, даже если его прервали и перезапустили посередине.
+  orderId       String?   @unique @map("order_id")
 
   client        Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  order         Order?    @relation(fields: [orderId], references: [id])
 
   @@index([clientId])
   @@map("cms_client_visit")
@@ -543,6 +551,10 @@ model Order {
   client            Client?            @relation(fields: [clientId], references: [id])
   scheduleEvent      ScheduleEvent?
   telegramConversation TelegramConversation? @relation(fields: [telegramConversationId], references: [id])
+  // Исторический визит (ClientVisit), из которого этот заказ был создан
+  // "повышением" при восстановлении истории студии — null для всех обычных
+  // заказов (ручных, из календаря, из Telegram). См. ClientVisit.orderId.
+  visit             ClientVisit?
 
   @@index([clientId])
   @@index([status])

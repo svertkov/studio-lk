@@ -13,19 +13,19 @@ import {
   orderTableDate, compareOrdersForTable, orderTableSearchHaystack,
   orderShootDisplay, orderDurationSecondaryLabel,
   getOrdersTableTier, type OrdersTableTier,
+  groupOrdersByMonth, getHiddenMonthsCount, pluralizeOrdersCount,
+  ORDERS_MONTHS_INITIAL_VISIBLE, ORDERS_MONTHS_REVEAL_STEP,
   type OrderTableSortKey, type SortDirection,
 } from '@/lib/order-model'
 import { getOrderPaymentSummary } from '@/lib/payment-model'
 import { formatDurationMinutes } from '@/lib/schedule-model'
-import { computeMaterialsCapsules, getVisibleShoots, getHiddenShootsCount } from '@/lib/client-shoots-model'
+import { computeMaterialsCapsules } from '@/lib/client-shoots-model'
 import { isValidHttpUrl } from '@/lib/url'
 import { ROOM_DICTIONARY, FORMAT_DICTIONARY } from '@/lib/import/normalize'
 import { getOrderPromotion, getVisibleOrderComment, PROMOTION_PILL_LABEL } from '@/lib/promotion-model'
 import type { OrderStatus, OrderPaymentStatus } from '@prisma/client'
 import OrderFormModal from '../crm/OrderFormModal'
 import OrderCard from '../crm/OrderCard'
-
-const TABLE_DEFAULT_LIMIT = 25
 
 type Period = 'ALL' | 'TODAY' | 'WEEK' | 'MONTH' | 'PREV_MONTH' | 'CUSTOM'
 type TriFilter = 'ANY' | 'YES' | 'NO'
@@ -204,7 +204,12 @@ export default function OrdersListView({ initialOrders }: Props) {
 
   const [sortKey, setSortKey] = useState<OrderTableSortKey>('date')
   const [sortDir, setSortDir] = useState<SortDirection>('desc')
-  const [expanded, setExpanded] = useState(false)
+  // Раздел "Заказы" — полный исторический архив студии (может быть несколько
+  // сотен заказов за всё время, см. scripts/promote-visits-to-orders), поэтому
+  // список группируется по календарному месяцу и рендерится не целиком сразу,
+  // а по несколько последних месяцев — остальные подгружаются по кнопке
+  // "Показать более ранние месяцы" (см. groupOrdersByMonth, order-model.ts).
+  const [visibleMonthsCount, setVisibleMonthsCount] = useState(ORDERS_MONTHS_INITIAL_VISIBLE)
 
   const [editingOrder, setEditingOrder] = useState<OrderDTO | null>(null)
   const [creating, setCreating] = useState(false)
@@ -261,8 +266,13 @@ export default function OrdersListView({ initialOrders }: Props) {
     [filtered, sortKey, sortDir],
   )
 
-  const visible = getVisibleShoots(sorted, expanded, TABLE_DEFAULT_LIMIT)
-  const hiddenCount = getHiddenShootsCount(sorted.length, TABLE_DEFAULT_LIMIT)
+  // Группировка — уже по ПОЛНОСТЬЮ отфильтрованному/отсортированному набору
+  // (поиск и фильтры действуют по всей истории, не только по показанным
+  // месяцам) — прогрессивно рендерится только несколько последних месяцев.
+  const monthGroups = useMemo(() => groupOrdersByMonth(sorted), [sorted])
+  const visibleMonthGroups = monthGroups.slice(0, visibleMonthsCount)
+  const hiddenMonthsCount = getHiddenMonthsCount(monthGroups.length, visibleMonthsCount)
+
 
   const hasActiveFilters = !!search || period !== 'ALL' || roomFilter !== 'ALL' || formatFilter !== 'ALL' || statusFilter !== 'ALL' ||
     paymentFilter !== 'ALL' || materialsFilter !== 'ANY' || nasFilter !== 'ANY' || editingFilter !== 'ANY' || makeupFilter !== 'ANY'
@@ -401,14 +411,22 @@ export default function OrdersListView({ initialOrders }: Props) {
         // Мобильный/узкий вид — переиспользует ту же карточку заказа, что и
         // канбан CRM (OrderCard), а не отдельную мобильную вёрстку с нуля
         // (ТЗ п.18: "используй существующий мобильный паттерн проекта").
-        <div className="space-y-2.5">
-          {visible.map(order => (
-            <OrderCard key={order.id} order={order} onClick={() => openOrder(order)} />
+        // Группировка по месяцам сохраняется и здесь — просто без табличной сетки.
+        <div className="space-y-4">
+          {visibleMonthGroups.map(group => (
+            <div key={group.key} className="space-y-2.5">
+              <p className="text-zinc-400 text-xs font-semibold uppercase tracking-wide px-0.5">
+                {group.label} · {pluralizeOrdersCount(group.orders.length)}
+              </p>
+              {group.orders.map(order => (
+                <OrderCard key={order.id} order={order} onClick={() => openOrder(order)} />
+              ))}
+            </div>
           ))}
-          {hiddenCount > 0 && (
-            <button type="button" onClick={() => setExpanded(true)}
+          {hiddenMonthsCount > 0 && (
+            <button type="button" onClick={() => setVisibleMonthsCount(c => c + ORDERS_MONTHS_REVEAL_STEP)}
               className="w-full text-center text-sm text-zinc-400 hover:text-white underline py-2">
-              Показать ещё {hiddenCount}
+              Показать более ранние месяцы ({hiddenMonthsCount})
             </button>
           )}
         </div>
@@ -444,59 +462,67 @@ export default function OrdersListView({ initialOrders }: Props) {
                 )}
               </div>
 
-              <div role="rowgroup">
-                {visible.map(order => {
-                  const dateIso = orderTableDate(order)
-                  const timeRange = formatTimeRange(order.plannedStartTime, order.plannedEndTime)
-                  const shoot = orderShootDisplay(order)
-                  const makeupLabel = orderDurationSecondaryLabel(order)
-                  const payment = getOrderPaymentSummary(order)
-                  const rowLabel = `Открыть заказ: ${order.clientName || order.title || 'клиент не привязан'}, ${formatDate(dateIso)}`
-                  return (
-                    <div
-                      key={order.id}
-                      role="row"
-                      tabIndex={0}
-                      aria-label={rowLabel}
-                      onClick={() => openOrder(order)}
-                      onKeyDown={e => {
-                        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openOrder(order) }
-                      }}
-                      className={`grid ${tier === 'compact' ? COMPACT_GRID_COLS : FULL_GRID_COLS} gap-x-3 items-center border-b border-zinc-800/60 last:border-b-0 cursor-pointer transition-colors hover:bg-white/[0.04] focus:outline-none focus-visible:bg-white/[0.05] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[#00c26b] focus-visible:-outline-offset-1`}
-                    >
-                      <Cell>
-                        <p className="text-zinc-200 text-sm truncate">{formatDate(dateIso)}</p>
-                        {timeRange && <p className="text-zinc-500 text-xs mt-0.5 truncate">{timeRange}</p>}
-                      </Cell>
-                      <Cell>
-                        <p className="text-zinc-100 text-sm truncate">{order.clientName || order.title || 'Клиент не привязан'}</p>
-                        {order.companyName && <p className="text-zinc-500 text-xs mt-0.5 truncate">{order.companyName}</p>}
-                      </Cell>
-                      <Cell>
-                        <p className="text-zinc-200 text-sm truncate" title={shoot.format}>{shoot.format}</p>
-                        {shoot.room && <p className="text-zinc-500 text-xs mt-0.5 truncate">{shoot.room}</p>}
-                      </Cell>
-                      <Cell>
-                        <p className="text-zinc-300 text-sm truncate">{order.durationMinutes != null ? formatDurationMinutes(order.durationMinutes) : '—'}</p>
-                        {makeupLabel && <p className="text-zinc-500 text-xs mt-0.5 truncate" title={makeupLabel}>{makeupLabel}</p>}
-                      </Cell>
-                      <Cell>
-                        <p className="text-zinc-200 text-sm truncate">{payment.displayPrimary}</p>
-                        <p className={`text-xs mt-0.5 truncate ${ORDER_PAYMENT_STATUS_COLORS[payment.paymentStatus]}`}>{payment.displaySecondary}</p>
-                      </Cell>
-                      <Cell><StatusBadge status={order.status} /></Cell>
-                      <Cell onClick={e => e.stopPropagation()}><MaterialsCell order={order} /></Cell>
-                      {tier === 'full' && <Cell><CommentCell order={order} /></Cell>}
-                    </div>
-                  )
-                })}
-              </div>
+              {visibleMonthGroups.map(group => (
+                <div key={group.key}>
+                  <div className="px-3 py-2 bg-zinc-800/60 border-b border-t border-zinc-800/80 first:border-t-0">
+                    <span className="text-zinc-300 text-xs font-semibold uppercase tracking-wide">{group.label}</span>
+                    <span className="text-zinc-500 text-xs ml-2">{pluralizeOrdersCount(group.orders.length)}</span>
+                  </div>
+                  <div role="rowgroup">
+                    {group.orders.map(order => {
+                      const dateIso = orderTableDate(order)
+                      const timeRange = formatTimeRange(order.plannedStartTime, order.plannedEndTime)
+                      const shoot = orderShootDisplay(order)
+                      const makeupLabel = orderDurationSecondaryLabel(order)
+                      const payment = getOrderPaymentSummary(order)
+                      const rowLabel = `Открыть заказ: ${order.clientName || order.title || 'клиент не привязан'}, ${formatDate(dateIso)}`
+                      return (
+                        <div
+                          key={order.id}
+                          role="row"
+                          tabIndex={0}
+                          aria-label={rowLabel}
+                          onClick={() => openOrder(order)}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openOrder(order) }
+                          }}
+                          className={`grid ${tier === 'compact' ? COMPACT_GRID_COLS : FULL_GRID_COLS} gap-x-3 items-center border-b border-zinc-800/60 last:border-b-0 cursor-pointer transition-colors hover:bg-white/[0.04] focus:outline-none focus-visible:bg-white/[0.05] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[#00c26b] focus-visible:-outline-offset-1`}
+                        >
+                          <Cell>
+                            <p className="text-zinc-200 text-sm truncate">{formatDate(dateIso)}</p>
+                            {timeRange && <p className="text-zinc-500 text-xs mt-0.5 truncate">{timeRange}</p>}
+                          </Cell>
+                          <Cell>
+                            <p className="text-zinc-100 text-sm truncate">{order.clientName || order.title || 'Клиент не привязан'}</p>
+                            {order.companyName && <p className="text-zinc-500 text-xs mt-0.5 truncate">{order.companyName}</p>}
+                          </Cell>
+                          <Cell>
+                            <p className="text-zinc-200 text-sm truncate" title={shoot.format}>{shoot.format}</p>
+                            {shoot.room && <p className="text-zinc-500 text-xs mt-0.5 truncate">{shoot.room}</p>}
+                          </Cell>
+                          <Cell>
+                            <p className="text-zinc-300 text-sm truncate">{order.durationMinutes != null ? formatDurationMinutes(order.durationMinutes) : '—'}</p>
+                            {makeupLabel && <p className="text-zinc-500 text-xs mt-0.5 truncate" title={makeupLabel}>{makeupLabel}</p>}
+                          </Cell>
+                          <Cell>
+                            <p className="text-zinc-200 text-sm truncate">{payment.displayPrimary}</p>
+                            <p className={`text-xs mt-0.5 truncate ${ORDER_PAYMENT_STATUS_COLORS[payment.paymentStatus]}`}>{payment.displaySecondary}</p>
+                          </Cell>
+                          <Cell><StatusBadge status={order.status} /></Cell>
+                          <Cell onClick={e => e.stopPropagation()}><MaterialsCell order={order} /></Cell>
+                          {tier === 'full' && <Cell><CommentCell order={order} /></Cell>}
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
-          {hiddenCount > 0 && (
+          {hiddenMonthsCount > 0 && (
             <div className="px-4 py-3 border-t border-zinc-800 text-center">
-              <button type="button" onClick={() => setExpanded(true)} className="text-sm text-zinc-400 hover:text-white underline">
-                Показать ещё {hiddenCount}
+              <button type="button" onClick={() => setVisibleMonthsCount(c => c + ORDERS_MONTHS_REVEAL_STEP)} className="text-sm text-zinc-400 hover:text-white underline">
+                Показать более ранние месяцы ({hiddenMonthsCount})
               </button>
             </div>
           )}

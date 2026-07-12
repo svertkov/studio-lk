@@ -455,3 +455,74 @@ export function getOrdersTableTier(containerWidth: number): OrdersTableTier {
   if (containerWidth <= ORDERS_TABLE_COMPACT_MAX_WIDTH) return 'compact'
   return 'full'
 }
+
+// ============================================================
+// СПИСОК ЗАКАЗОВ — ГРУППИРОВКА ПО МЕСЯЦАМ (доработка 2026-07-12: раздел
+// "Заказы" стал полным историческим архивом студии, а не списком последних
+// нескольких заказов — см. src/lib/visit-promotion-model.ts и
+// scripts/promote-visits-to-orders). Рисовать сотни строк одним плоским
+// списком не нужно — интерфейс группирует их по календарному месяцу и
+// показывает только несколько последних месяцев сразу, остальные — по кнопке
+// "Показать более ранние месяцы" (см. OrdersListView.tsx).
+// ============================================================
+
+export interface OrderMonthGroup<T> {
+  // "2026-07" — сортируемый ключ месяца, не для отображения.
+  key: string
+  // "Июль 2026" — готовая подпись для заголовка блока.
+  label: string
+  orders: T[]
+}
+
+const MONTH_LABEL_FORMAT = new Intl.DateTimeFormat('ru-RU', { month: 'long', year: 'numeric' })
+
+function monthKey(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+}
+
+function monthLabel(d: Date): string {
+  // Intl добавляет суффикс "г." ("года") в русской локали — здесь он лишний,
+  // заголовку блока достаточно "Июль 2026".
+  const s = MONTH_LABEL_FORMAT.format(d).replace(/\s*г\.$/, '')
+  return s.charAt(0).toUpperCase() + s.slice(1)
+}
+
+// Группирует уже отфильтрованный (и, в идеале, отсортированный по убыванию
+// даты) список заказов по календарному месяцу той же даты, что и вся
+// остальная сортировка/поиск таблицы (orderTableDate — plannedStartTime,
+// иначе createdAt). Порядок ключей месяцев — от новых к старым — не зависит
+// от порядка входного массива: сортируется явно, а не полагается на порядок
+// вставки в Map.
+export function groupOrdersByMonth<T extends Pick<OrderTableRow, 'plannedStartTime' | 'createdAt'>>(
+  orders: T[],
+): OrderMonthGroup<T>[] {
+  const map = new Map<string, OrderMonthGroup<T>>()
+  for (const o of orders) {
+    const d = new Date(orderTableDate(o))
+    const key = monthKey(d)
+    const existing = map.get(key)
+    if (existing) existing.orders.push(o)
+    else map.set(key, { key, label: monthLabel(d), orders: [o] })
+  }
+  return Array.from(map.values()).sort((a, b) => (a.key < b.key ? 1 : a.key > b.key ? -1 : 0))
+}
+
+// Сколько месячных блоков показывать сразу / сколько подгружать за один клик
+// "Показать более ранние месяцы" — намеренно НЕ ограничивает сами заказы
+// (поиск/фильтры уже отработали по полному набору до группировки), только
+// то, сколько ГОТОВЫХ месячных блоков рендерится в DOM разом.
+export const ORDERS_MONTHS_INITIAL_VISIBLE = 3
+export const ORDERS_MONTHS_REVEAL_STEP = 3
+
+export function getHiddenMonthsCount(totalGroups: number, visibleCount: number): number {
+  return Math.max(0, totalGroups - visibleCount)
+}
+
+// "1 заказ" / "2 заказа" / "5 заказов" — для подписи месячного блока.
+export function pluralizeOrdersCount(n: number): string {
+  const mod10 = n % 10
+  const mod100 = n % 100
+  if (mod10 === 1 && mod100 !== 11) return `${n} заказ`
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return `${n} заказа`
+  return `${n} заказов`
+}

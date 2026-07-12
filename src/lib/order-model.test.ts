@@ -3,6 +3,7 @@ import {
   orderTableDate, compareOrdersForTable, orderTableSearchHaystack, type OrderTableRow,
   orderShootDisplay, orderDurationSecondaryLabel,
   getOrdersTableTier, ORDERS_TABLE_MOBILE_MAX_WIDTH, ORDERS_TABLE_COMPACT_MAX_WIDTH,
+  groupOrdersByMonth, getHiddenMonthsCount, pluralizeOrdersCount,
 } from './order-model'
 
 function makeRow(overrides: Partial<OrderTableRow> = {}): OrderTableRow {
@@ -173,5 +174,73 @@ describe('getOrdersTableTier — адаптивные уровни таблиц�
     expect(getOrdersTableTier(ORDERS_TABLE_COMPACT_MAX_WIDTH + 1)).toBe('full')
     // 1280px viewport minus the 240px sidebar and 64px page padding.
     expect(getOrdersTableTier(1280 - 240 - 64)).toBe('full')
+  })
+})
+
+describe('groupOrdersByMonth — группировка списка заказов по календарному месяцу', () => {
+  it('groups orders into their calendar month using the same date orderTableDate uses', () => {
+    const groups = groupOrdersByMonth([
+      makeRow({ id: 'a', plannedStartTime: '2026-07-10T10:00:00.000Z' }),
+      makeRow({ id: 'b', plannedStartTime: '2026-07-01T10:00:00.000Z' }),
+      makeRow({ id: 'c', plannedStartTime: '2026-06-15T10:00:00.000Z' }),
+    ])
+    expect(groups.map(g => g.key)).toEqual(['2026-07', '2026-06'])
+    expect(groups[0].orders.map(o => o.id)).toEqual(['a', 'b'])
+    expect(groups[1].orders.map(o => o.id)).toEqual(['c'])
+  })
+
+  it('produces a capitalized Russian month + year label', () => {
+    const groups = groupOrdersByMonth([makeRow({ plannedStartTime: '2026-07-10T10:00:00.000Z' })])
+    expect(groups[0].label).toBe('Июль 2026')
+  })
+
+  it('sorts months from newest to oldest regardless of input order', () => {
+    const groups = groupOrdersByMonth([
+      makeRow({ id: 'old', plannedStartTime: '2025-03-05T10:00:00.000Z' }),
+      makeRow({ id: 'new', plannedStartTime: '2026-07-10T10:00:00.000Z' }),
+      makeRow({ id: 'mid', plannedStartTime: '2025-12-01T10:00:00.000Z' }),
+    ])
+    expect(groups.map(g => g.key)).toEqual(['2026-07', '2025-12', '2025-03'])
+  })
+
+  it('falls back to createdAt month for leads without a scheduled booking', () => {
+    const groups = groupOrdersByMonth([
+      makeRow({ plannedStartTime: null, createdAt: '2026-05-20T09:00:00.000Z' }),
+    ])
+    expect(groups[0].key).toBe('2026-05')
+  })
+
+  it('does not produce empty month groups for an empty order list', () => {
+    expect(groupOrdersByMonth([])).toEqual([])
+  })
+})
+
+describe('getHiddenMonthsCount — сколько месячных блоков скрыто под кнопкой "Показать более ранние"', () => {
+  it('returns the difference when there are more groups than visible', () => {
+    expect(getHiddenMonthsCount(10, 3)).toBe(7)
+  })
+
+  it('never returns a negative number when everything is already visible', () => {
+    expect(getHiddenMonthsCount(2, 3)).toBe(0)
+  })
+})
+
+describe('pluralizeOrdersCount — русское склонение числа заказов', () => {
+  it('handles 1/21/31 as "заказ"', () => {
+    expect(pluralizeOrdersCount(1)).toBe('1 заказ')
+    expect(pluralizeOrdersCount(21)).toBe('21 заказ')
+  })
+
+  it('handles 2-4/22-24 as "заказа"', () => {
+    expect(pluralizeOrdersCount(2)).toBe('2 заказа')
+    expect(pluralizeOrdersCount(3)).toBe('3 заказа')
+    expect(pluralizeOrdersCount(22)).toBe('22 заказа')
+  })
+
+  it('handles 5-20 and 11-14 as "заказов"', () => {
+    expect(pluralizeOrdersCount(5)).toBe('5 заказов')
+    expect(pluralizeOrdersCount(11)).toBe('11 заказов')
+    expect(pluralizeOrdersCount(12)).toBe('12 заказов')
+    expect(pluralizeOrdersCount(0)).toBe('0 заказов')
   })
 })
