@@ -39,16 +39,24 @@ type TriFilter = 'ANY' | 'YES' | 'NO'
 // fr, поэтому сумма минимумов — единственное, что может вызвать overflow, и
 // она подобрана и проверена вживую с запасом под 1280px (см. комментарий у
 // getOrdersTableTier).
-// Колонка "Комментарий" больше не показывает длинный текст (теперь это
-// компактная плашка акции + кнопка "Комментарий", открывающая popover, см.
-// OrderCommentBadges) — ей больше не нужен большой минимум/вес, освободившееся
-// место отдано клиенту/оплате/материалам (ТЗ доработки комментариев, п.17).
-// Сумма минимумов сохранена равной прежней (836px), чтобы не потерять уже
-// проверенный запас на 1280px viewport — просто перераспределена.
+// Колонка "Комментарий" больше не показывает длинный текст (компактная
+// плашка акции + кнопка "Комментарий", открывающая popover, см.
+// OrderCommentBadges) — минимумы пересчитаны эмпирически (измерено вживую
+// через Playwright на 1280px, самом узком поддерживаемом разрешении, а не
+// только рассчитано на бумаге — см. доработку уплотнения таблицы):
+// - "Материалы" — раньше не хватало 7px на две плашки (Яндекс.Диск + NAS)
+//   рядом при size="sm", отсюда и был horizontal overflow контейнера
+//   таблицы на 1280px несмотря на то, что ни одна ОТДЕЛЬНАЯ ячейка не
+//   переполнялась — минимум поднят до фактически измеренной ширины;
+// - "Статус" — после уменьшения шрифта бейджа до 11px и padding самый
+//   длинный лейбл ("Завершено") занимает ~82px, прежний минимум 126px был
+//   рассчитан под старый (более крупный) размер и теперь избыточен.
+// Горизонтальный gap между колонками также уменьшен (gap-x-3 → gap-x-2) —
+// после этого на 1280px остаётся комфортный запас, а не подгонка впритык.
 const FULL_GRID_COLS =
-  'grid-cols-[minmax(100px,0.8fr)_minmax(110px,1.1fr)_minmax(110px,1fr)_minmax(80px,0.6fr)_minmax(105px,0.95fr)_minmax(126px,0.75fr)_minmax(115px,1fr)_minmax(90px,0.7fr)]'
+  'grid-cols-[minmax(100px,0.8fr)_minmax(110px,1.05fr)_minmax(110px,1fr)_minmax(80px,0.55fr)_minmax(105px,0.9fr)_minmax(100px,0.6fr)_minmax(126px,1.05fr)_minmax(90px,0.75fr)]'
 const COMPACT_GRID_COLS =
-  'grid-cols-[minmax(100px,0.95fr)_minmax(100px,1.1fr)_minmax(110px,1.15fr)_minmax(80px,0.7fr)_minmax(100px,0.95fr)_minmax(126px,0.85fr)_minmax(110px,1.05fr)]'
+  'grid-cols-[minmax(100px,0.95fr)_minmax(100px,1.1fr)_minmax(110px,1.15fr)_minmax(80px,0.7fr)_minmax(100px,0.95fr)_minmax(100px,0.75fr)_minmax(126px,1.1fr)]'
 
 function formatDate(iso: string) {
   try { return format(parseISO(iso), 'd MMM yyyy', { locale: ru }) } catch { return '—' }
@@ -103,7 +111,7 @@ function StatusBadge({ status }: { status: OrderStatus }) {
   return (
     <span
       style={getOrderStatusVars(status) as CSSProperties}
-      className="inline-flex max-w-full items-center gap-1.5 text-zinc-300 text-xs font-medium px-2 py-0.5 rounded-full border border-[color:var(--status-border)] bg-zinc-900/60"
+      className="inline-flex max-w-full items-center gap-1 text-zinc-300 text-[11px] font-medium px-1.5 py-0.5 rounded-full border border-[color:var(--status-border)] bg-zinc-900/60"
     >
       <span className="w-1.5 h-1.5 rounded-full bg-[color:var(--status-color)] flex-shrink-0" />
       <span className="truncate">{config.label}</span>
@@ -125,24 +133,25 @@ function MaterialsCell({ order }: { order: OrderDTO }) {
   }
 
   // flex-wrap — плашки идут в ряд, если хватает ширины колонки, и переносятся
-  // друг под друга, если нет (см. ТЗ п.6) — сама колонка при этом не
-  // расширяется, потому что у ячейки задан min-w-0 (см. Cell ниже).
+  // друг под друга (вертикально), если нет (см. ТЗ уплотнения таблицы, п.9) —
+  // сама колонка при этом не расширяется, потому что у ячейки задан min-w-0
+  // (см. Cell ниже). size="sm" — компактный вариант GlowPill.
   return (
-    <div className="flex flex-wrap items-center gap-1 min-w-0">
+    <div className="flex flex-wrap items-center gap-1 min-w-0 max-w-full overflow-hidden">
       {state.yandex === 'active' && (
-        <GlowPill as="a" href={yandexUrl!} color="green" icon={Cloud} onClick={e => e.stopPropagation()}
+        <GlowPill as="a" href={yandexUrl!} color="green" size="sm" icon={Cloud} onClick={e => e.stopPropagation()}
           title="Открыть материалы на Яндекс.Диске" ariaLabel="Открыть материалы на Яндекс.Диске">
           Яндекс.Диск
         </GlowPill>
       )}
       {state.yandex === 'expired' && (
-        <GlowPill as="button" disabled color="zinc" icon={CloudOff}
+        <GlowPill as="button" disabled color="zinc" size="sm" icon={CloudOff}
           title="Срок хранения истёк" ariaLabel="Материалы на Яндекс.Диске недоступны — срок хранения истёк">
           Яндекс.Диск
         </GlowPill>
       )}
       {state.nas === 'active' && (
-        <GlowPill as="a" href={nasUrl!} color="violet" icon={Server} onClick={e => e.stopPropagation()}
+        <GlowPill as="a" href={nasUrl!} color="violet" size="sm" icon={Server} onClick={e => e.stopPropagation()}
           title="Открыть резервную копию на NAS" ariaLabel="Открыть резервную копию на NAS">
           NAS
         </GlowPill>
@@ -159,7 +168,7 @@ function MaterialsCell({ order }: { order: OrderDTO }) {
 function Cell({ children, className = '', onClick }: {
   children: React.ReactNode; className?: string; onClick?: (e: React.MouseEvent) => void
 }) {
-  return <div role="cell" onClick={onClick} className={`min-w-0 px-2.5 py-2.5 ${className}`}>{children}</div>
+  return <div role="cell" onClick={onClick} className={`min-w-0 max-w-full overflow-hidden px-2.5 py-2 ${className}`}>{children}</div>
 }
 
 // Каждый календарный месяц — самостоятельный контейнер (свой фон/граница/
@@ -190,15 +199,15 @@ function OrdersMonthSection({ group, tier, sortKey, sortDir, onToggleSort, onOrd
         type="button"
         onClick={() => setOpen(o => !o)}
         aria-expanded={open}
-        className="w-full flex items-center justify-between gap-3 px-4 py-3 bg-zinc-800/50 hover:bg-zinc-800/70 transition-colors text-left"
+        className="w-full flex items-center justify-between gap-3 px-3.5 py-2.5 bg-zinc-800/50 hover:bg-zinc-800/70 transition-colors text-left"
       >
         <div className="flex items-baseline gap-2 min-w-0">
           <span className="text-zinc-100 text-sm font-semibold uppercase tracking-wide truncate">{group.label}</span>
-          <span className="text-zinc-500 text-xs flex-shrink-0">
+          <span className="text-zinc-500 text-[11px] flex-shrink-0">
             {pluralizeOrdersCount(group.orders.length)}{durationLabel ? ` · ${durationLabel}` : ''}
           </span>
         </div>
-        <ChevronDown className={`w-4 h-4 text-zinc-500 flex-shrink-0 transition-transform duration-150 ${open ? 'rotate-180' : ''}`} />
+        <ChevronDown className={`w-3.5 h-3.5 text-zinc-500 flex-shrink-0 transition-transform duration-150 ${open ? 'rotate-180' : ''}`} />
       </button>
 
       {open && (
@@ -211,26 +220,26 @@ function OrdersMonthSection({ group, tier, sortKey, sortDir, onToggleSort, onOrd
         ) : (
           <div className="w-full min-w-0 overflow-x-auto border-t border-zinc-800">
             <div role="table" aria-label={group.label} className="w-full min-w-0">
-              <div role="row" className={`grid ${tier === 'compact' ? COMPACT_GRID_COLS : FULL_GRID_COLS} gap-x-3 border-b border-zinc-800 bg-zinc-800/30`}>
-                <div role="columnheader" className="min-w-0 px-2.5 py-2.5 text-zinc-400 text-xs uppercase tracking-wider">
+              <div role="row" className={`grid ${tier === 'compact' ? COMPACT_GRID_COLS : FULL_GRID_COLS} gap-x-2 border-b border-zinc-800 bg-zinc-800/30`}>
+                <div role="columnheader" className="min-w-0 px-2.5 py-2 text-zinc-400 text-[11px] uppercase tracking-wider">
                   <SortBtn k="date" label="Дата" sortKey={sortKey} sortDir={sortDir} onToggle={onToggleSort} />
                 </div>
-                <div role="columnheader" className="min-w-0 px-2.5 py-2.5 text-zinc-400 text-xs uppercase tracking-wider">
+                <div role="columnheader" className="min-w-0 px-2.5 py-2 text-zinc-400 text-[11px] uppercase tracking-wider">
                   <SortBtn k="client" label="Клиент" sortKey={sortKey} sortDir={sortDir} onToggle={onToggleSort} />
                 </div>
-                <div role="columnheader" className="min-w-0 px-2.5 py-2.5 text-zinc-400 text-xs uppercase tracking-wider">Съёмка</div>
-                <div role="columnheader" className="min-w-0 px-2.5 py-2.5 text-zinc-400 text-xs uppercase tracking-wider">
+                <div role="columnheader" className="min-w-0 px-2.5 py-2 text-zinc-400 text-[11px] uppercase tracking-wider">Съёмка</div>
+                <div role="columnheader" className="min-w-0 px-2.5 py-2 text-zinc-400 text-[11px] uppercase tracking-wider">
                   <SortBtn k="duration" label="Длит-ть" sortKey={sortKey} sortDir={sortDir} onToggle={onToggleSort} />
                 </div>
-                <div role="columnheader" className="min-w-0 px-2.5 py-2.5 text-zinc-400 text-xs uppercase tracking-wider">
+                <div role="columnheader" className="min-w-0 px-2.5 py-2 text-zinc-400 text-[11px] uppercase tracking-wider">
                   <SortBtn k="amount" label="Оплата" sortKey={sortKey} sortDir={sortDir} onToggle={onToggleSort} />
                 </div>
-                <div role="columnheader" className="min-w-0 px-2.5 py-2.5 text-zinc-400 text-xs uppercase tracking-wider">
+                <div role="columnheader" className="min-w-0 px-2.5 py-2 text-zinc-400 text-[11px] uppercase tracking-wider">
                   <SortBtn k="status" label="Статус" sortKey={sortKey} sortDir={sortDir} onToggle={onToggleSort} />
                 </div>
-                <div role="columnheader" className="min-w-0 px-2.5 py-2.5 text-zinc-400 text-xs uppercase tracking-wider">Материалы</div>
+                <div role="columnheader" className="min-w-0 px-2.5 py-2 text-zinc-400 text-[11px] uppercase tracking-wider">Материалы</div>
                 {tier === 'full' && (
-                  <div role="columnheader" className="min-w-0 px-2.5 py-2.5 text-zinc-400 text-xs uppercase tracking-wider">Комментарий</div>
+                  <div role="columnheader" className="min-w-0 px-2.5 py-2 text-zinc-400 text-[11px] uppercase tracking-wider">Комментарий</div>
                 )}
               </div>
 
@@ -252,27 +261,27 @@ function OrdersMonthSection({ group, tier, sortKey, sortDir, onToggleSort, onOrd
                       onKeyDown={e => {
                         if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOrderClick(order) }
                       }}
-                      className={`grid ${tier === 'compact' ? COMPACT_GRID_COLS : FULL_GRID_COLS} gap-x-3 items-center border-b border-zinc-800/60 last:border-b-0 cursor-pointer transition-colors hover:bg-white/[0.04] focus:outline-none focus-visible:bg-white/[0.05] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[#00c26b] focus-visible:-outline-offset-1`}
+                      className={`grid ${tier === 'compact' ? COMPACT_GRID_COLS : FULL_GRID_COLS} gap-x-2 items-center border-b border-zinc-800/60 last:border-b-0 cursor-pointer transition-colors hover:bg-white/[0.04] focus:outline-none focus-visible:bg-white/[0.05] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[#00c26b] focus-visible:-outline-offset-1`}
                     >
                       <Cell>
-                        <p className="text-zinc-200 text-sm truncate">{formatDate(dateIso)}</p>
-                        {timeRange && <p className="text-zinc-500 text-xs mt-0.5 truncate">{timeRange}</p>}
+                        <p className="text-zinc-200 text-[13px] leading-[17px] truncate">{formatDate(dateIso)}</p>
+                        {timeRange && <p className="text-zinc-500 text-[11px] leading-[15px] mt-0.5 truncate">{timeRange}</p>}
                       </Cell>
                       <Cell>
-                        <p className="text-zinc-100 text-sm truncate">{order.clientName || order.title || 'Клиент не привязан'}</p>
-                        {order.companyName && <p className="text-zinc-500 text-xs mt-0.5 truncate">{order.companyName}</p>}
+                        <p className="text-zinc-100 text-[13px] leading-[17px] truncate">{order.clientName || order.title || 'Клиент не привязан'}</p>
+                        {order.companyName && <p className="text-zinc-500 text-[11px] leading-[15px] mt-0.5 truncate">{order.companyName}</p>}
                       </Cell>
                       <Cell>
-                        <p className="text-zinc-200 text-sm truncate" title={shoot.format}>{shoot.format}</p>
-                        {shoot.room && <p className="text-zinc-500 text-xs mt-0.5 truncate">{shoot.room}</p>}
+                        <p className="text-zinc-200 text-[13px] leading-[17px] truncate" title={shoot.format}>{shoot.format}</p>
+                        {shoot.room && <p className="text-zinc-500 text-[11px] leading-[15px] mt-0.5 truncate">{shoot.room}</p>}
                       </Cell>
                       <Cell>
-                        <p className="text-zinc-300 text-sm truncate">{order.durationMinutes != null ? formatDurationMinutes(order.durationMinutes) : '—'}</p>
-                        {makeupLabel && <p className="text-zinc-500 text-xs mt-0.5 truncate" title={makeupLabel}>{makeupLabel}</p>}
+                        <p className="text-zinc-300 text-[13px] leading-[17px] truncate">{order.durationMinutes != null ? formatDurationMinutes(order.durationMinutes) : '—'}</p>
+                        {makeupLabel && <p className="text-zinc-500 text-[11px] leading-[15px] mt-0.5 truncate" title={makeupLabel}>{makeupLabel}</p>}
                       </Cell>
                       <Cell>
-                        <p className="text-zinc-200 text-sm truncate">{payment.displayPrimary}</p>
-                        <p className={`text-xs mt-0.5 truncate ${ORDER_PAYMENT_STATUS_COLORS[payment.paymentStatus]}`}>{payment.displaySecondary}</p>
+                        <p className="text-zinc-200 text-[13px] leading-[17px] truncate">{payment.displayPrimary}</p>
+                        <p className={`text-[11px] leading-[15px] mt-0.5 truncate ${ORDER_PAYMENT_STATUS_COLORS[payment.paymentStatus]}`}>{payment.displaySecondary}</p>
                       </Cell>
                       <Cell><StatusBadge status={order.status} /></Cell>
                       <Cell onClick={e => e.stopPropagation()}><MaterialsCell order={order} /></Cell>

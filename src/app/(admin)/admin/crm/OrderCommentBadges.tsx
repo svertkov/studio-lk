@@ -30,9 +30,9 @@ export function OrderCommentButton({ order, compact }: ButtonProps) {
         title="Открыть комментарий"
         aria-label="Открыть комментарий к заказу"
         onClick={e => e.stopPropagation()}
-        className="inline-flex flex-shrink-0 items-center gap-1 rounded-full border border-zinc-700 bg-zinc-800/60 px-2 py-0.5 text-xs font-medium text-zinc-300 transition-colors hover:bg-zinc-700/70 hover:text-white hover:border-zinc-600 focus-visible:outline focus-visible:outline-1 focus-visible:outline-[#00c26b] focus-visible:-outline-offset-1"
+        className="inline-flex flex-shrink-0 items-center gap-0.5 rounded-full border border-zinc-700 bg-zinc-800/60 px-1.5 py-0.5 text-[11px] font-medium text-zinc-300 whitespace-nowrap transition-colors hover:bg-zinc-700/70 hover:text-white hover:border-zinc-600 focus-visible:outline focus-visible:outline-1 focus-visible:outline-[#00c26b] focus-visible:-outline-offset-1"
       >
-        <MessageCircle className="w-3 h-3 flex-shrink-0" />
+        <MessageCircle className="w-2.5 h-2.5 flex-shrink-0" />
         {!compact && 'Комментарий'}
       </PopoverTrigger>
       <PopoverContent className="max-w-[min(380px,calc(100vw-2rem))]" onClick={e => e.stopPropagation()}>
@@ -65,10 +65,14 @@ export default function OrderCommentBadges({ order, compact }: Props) {
   return (
     // stopPropagation на контейнере — строка таблицы кликабельна целиком и
     // открывает карточку заказа; ни плашка акции, ни кнопка комментария не
-    // должны провоцировать это открытие (ТЗ п.16).
-    <div className="flex items-center gap-1.5 min-w-0" onClick={e => e.stopPropagation()}>
+    // должны провоцировать это открытие (ТЗ п.16). flex-wrap — если плашка и
+    // кнопка вместе не помещаются в ширину узкой колонки, кнопка переносится
+    // ЦЕЛИКОМ на вторую строку (ни один из элементов сам при этом не
+    // переносится и не обрезается) — раньше без wrap оба элемента
+    // выталкивали колонку за её minmax и создавали overflow таблицы.
+    <div className="flex flex-wrap items-center gap-1 min-w-0 max-w-full overflow-hidden" onClick={e => e.stopPropagation()}>
       {promotion && (
-        <GlowPill color="green" className="flex-shrink-0" title="Акция «−20% первый визит»">
+        <GlowPill color="green" size="sm" className="flex-shrink-0" title="Акция «−20% первый визит»">
           {PROMOTION_PILL_LABEL[promotion]}
         </GlowPill>
       )}

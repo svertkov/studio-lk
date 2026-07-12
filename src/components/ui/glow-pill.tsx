@@ -20,10 +20,26 @@ const COLOR_CLASSES: Record<GlowPillColor, string> = {
   zinc:   'border-zinc-700 bg-zinc-800/50 text-zinc-500',
 }
 
+// sm — компактный вариант для плотных мест (ячейки таблицы "Заказы" и
+// подобных): меньше padding/шрифт/иконка, но тот же glow/читаемость, а не
+// отдельный локальный CSS под конкретную плашку (см. доработку уплотнения
+// таблицы "Заказы"). md — прежний вариант, поведение по умолчанию не меняется.
+export type GlowPillSize = 'md' | 'sm'
+
+const SIZE_CLASSES: Record<GlowPillSize, string> = {
+  md: 'gap-1.5 px-2.5 py-1.5 text-xs',
+  sm: 'gap-1 px-1.5 py-0.5 text-[11px]',
+}
+const ICON_SIZE_CLASSES: Record<GlowPillSize, string> = {
+  md: 'w-3.5 h-3.5',
+  sm: 'w-3 h-3',
+}
+
 interface Props {
   icon?: ElementType
   children: ReactNode
   color: GlowPillColor
+  size?: GlowPillSize
   className?: string
   title?: string
 }
@@ -46,14 +62,14 @@ interface ButtonProps extends Props {
   ariaLabel: string
 }
 
-const BASE = 'inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium whitespace-nowrap transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-current'
+const BASE = 'inline-flex items-center rounded-lg border font-medium whitespace-nowrap transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-current'
 
 export default function GlowPill(props: StaticProps | LinkProps | ButtonProps) {
-  const { icon: Icon, children, color, className, title } = props
-  const classes = `${BASE} ${COLOR_CLASSES[color]} ${className ?? ''}`
+  const { icon: Icon, children, color, size = 'md', className, title } = props
+  const classes = `${BASE} ${SIZE_CLASSES[size]} ${COLOR_CLASSES[color]} ${className ?? ''}`
   const content = (
     <>
-      {Icon && <Icon className="w-3.5 h-3.5 flex-shrink-0" />}
+      {Icon && <Icon className={`${ICON_SIZE_CLASSES[size]} flex-shrink-0`} />}
       <span className="truncate">{children}</span>
     </>
   )
