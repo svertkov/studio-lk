@@ -8,9 +8,10 @@ import type { DraggableAttributes, DraggableSyntheticListeners } from '@dnd-kit/
 import type { OrderDTO } from '@/lib/actions/orders'
 import { ORDER_PAYMENT_STATUS_COLORS, ORDER_SOURCE_LABELS, getOrderStatusVars } from '@/lib/order-model'
 import { formatMakeupBadgeLabel } from '@/lib/schedule-model'
-import { getOrderPromotion, getVisibleOrderComment, PROMOTION_PILL_LABEL } from '@/lib/promotion-model'
+import { getOrderPromotion, PROMOTION_PILL_LABEL } from '@/lib/promotion-model'
 import { getOrderPaymentSummary } from '@/lib/payment-model'
 import GlowPill from '@/components/ui/glow-pill'
+import { OrderCommentButton } from './OrderCommentBadges'
 
 interface Props {
   order: OrderDTO
@@ -42,16 +43,25 @@ export default function OrderCard({ order, onClick, dragAttributes, dragListener
   const payment = getOrderPaymentSummary(order)
   const hasMakeup = order.makeupDurationMinutes != null && order.makeupDurationMinutes > 0
   const promotion = getOrderPromotion(order)
-  const visibleComment = getVisibleOrderComment(order)
 
   return (
-    <button
-      type="button"
+    // div, а не button: карточка теперь может содержать настоящий вложенный
+    // <button> (кнопка "Комментарий" с popover, см. OrderCommentButton) —
+    // вложенные интерактивные элементы внутри <button> невалидны в HTML и
+    // ломают клик/доступность. role="button" + tabIndex + onKeyDown — тот же
+    // приём, что уже используется для кликабельных строк таблицы "Заказы"
+    // (см. OrdersListView.tsx: role="row" с тем же набором атрибутов).
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onClick}
+      onKeyDown={e => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick() }
+      }}
       {...dragAttributes}
       {...dragListeners}
       style={getOrderStatusVars(order.status) as CSSProperties}
-      className={`w-full text-left bg-zinc-900 border border-l-[3px] border-l-[color:var(--status-color)] rounded-lg p-3.5 space-y-1.5 transition-all duration-150 ease-out touch-none ${elevated ? CARD_ELEVATED : CARD_REST}`}
+      className={`w-full text-left bg-zinc-900 border border-l-[3px] border-l-[color:var(--status-color)] rounded-lg p-3.5 space-y-1.5 transition-all duration-150 ease-out touch-none cursor-pointer focus:outline-none focus-visible:outline focus-visible:outline-1 focus-visible:outline-[#00c26b] focus-visible:-outline-offset-1 ${elevated ? CARD_ELEVATED : CARD_REST}`}
     >
       <p className="text-zinc-100 text-sm font-medium truncate">{name}</p>
       {subLine && <p className="text-zinc-400 text-xs truncate">{subLine}</p>}
@@ -61,11 +71,7 @@ export default function OrderCard({ order, onClick, dragAttributes, dragListener
           {when}
         </p>
       )}
-      {visibleComment && (
-        <p className="text-zinc-500 text-xs line-clamp-2" title={visibleComment}>
-          {visibleComment}
-        </p>
-      )}
+      <OrderCommentButton order={order} />
       <div className="flex items-center justify-between gap-2 pt-0.5">
         <span className={`text-xs font-medium ${ORDER_PAYMENT_STATUS_COLORS[payment.paymentStatus]}`}>
           {payment.paymentType !== 'UNKNOWN' ? `${payment.displayPrimary} · ` : ''}{payment.displaySecondary}
@@ -113,6 +119,6 @@ export default function OrderCard({ order, onClick, dragAttributes, dragListener
           )}
         </div>
       )}
-    </button>
+    </div>
   )
 }

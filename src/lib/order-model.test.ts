@@ -3,7 +3,7 @@ import {
   orderTableDate, compareOrdersForTable, orderTableSearchHaystack, type OrderTableRow,
   orderShootDisplay, orderDurationSecondaryLabel,
   getOrdersTableTier, ORDERS_TABLE_MOBILE_MAX_WIDTH, ORDERS_TABLE_COMPACT_MAX_WIDTH,
-  groupOrdersByMonth, getHiddenMonthsCount, pluralizeOrdersCount,
+  groupOrdersByMonth, getHiddenMonthsCount, pluralizeOrdersCount, monthGroupDurationLabel,
 } from './order-model'
 
 function makeRow(overrides: Partial<OrderTableRow> = {}): OrderTableRow {
@@ -242,5 +242,25 @@ describe('pluralizeOrdersCount — русское склонение числа 
     expect(pluralizeOrdersCount(11)).toBe('11 заказов')
     expect(pluralizeOrdersCount(12)).toBe('12 заказов')
     expect(pluralizeOrdersCount(0)).toBe('0 заказов')
+  })
+})
+
+describe('monthGroupDurationLabel — суммарная длительность месячного блока', () => {
+  it('sums known durations and formats them like a single duration', () => {
+    const orders = [makeRow({ durationMinutes: 90 }), makeRow({ durationMinutes: 30 })]
+    expect(monthGroupDurationLabel(orders)).toBe('2 ч')
+  })
+
+  it('ignores orders with unknown duration rather than treating them as zero', () => {
+    const orders = [makeRow({ durationMinutes: 60 }), makeRow({ durationMinutes: null })]
+    expect(monthGroupDurationLabel(orders)).toBe('1 ч')
+  })
+
+  it('returns null (not "0 ч") when no order in the group has a known duration', () => {
+    expect(monthGroupDurationLabel([makeRow({ durationMinutes: null })])).toBeNull()
+  })
+
+  it('returns null for an empty group', () => {
+    expect(monthGroupDurationLabel([])).toBeNull()
   })
 })

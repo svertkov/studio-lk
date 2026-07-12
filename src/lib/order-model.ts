@@ -1,5 +1,5 @@
 import type { OrderStatus, OrderSource, OrderPaymentStatus, PaymentMethod, ArchiveReason } from '@prisma/client'
-import { formatMakeupBadgeLabel } from '@/lib/schedule-model'
+import { formatMakeupBadgeLabel, formatDurationMinutes } from '@/lib/schedule-model'
 
 export type { OrderStatus, OrderSource, OrderPaymentStatus, ArchiveReason }
 
@@ -516,6 +516,21 @@ export const ORDERS_MONTHS_REVEAL_STEP = 3
 
 export function getHiddenMonthsCount(totalGroups: number, visibleCount: number): number {
   return Math.max(0, totalGroups - visibleCount)
+}
+
+// Суммарная длительность заказов месяца для подписи месячного блока — null,
+// если ни у одного заказа месяца длительность не известна (нечего суммировать,
+// не показываем вводящий в заблуждение "0 ч"). Выручку сюда намеренно не
+// добавляем: исторические заказы часто имеют неполные данные по оплате (см.
+// scripts/promote-visits-to-orders), а платёжный источник истины —
+// getOrderPaymentSummary (payment-model.ts) — уже используется для колонки
+// "Оплата", но с потенциально неполными суммами эту функцию как сводную
+// метрику месяца лучше не дублировать здесь.
+export function monthGroupDurationLabel<T extends { durationMinutes: number | null }>(orders: T[]): string | null {
+  const known = orders.filter(o => o.durationMinutes != null)
+  if (known.length === 0) return null
+  const totalMinutes = known.reduce((sum, o) => sum + o.durationMinutes!, 0)
+  return formatDurationMinutes(totalMinutes)
 }
 
 // "1 заказ" / "2 заказа" / "5 заказов" — для подписи месячного блока.

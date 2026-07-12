@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useRouter } from 'next/navigation'
 import { format, parseISO, startOfDay, endOfDay, startOfWeek, endOfWeek, startOfMonth, endOfMonth, subMonths, isWithinInterval } from 'date-fns'
 import { ru } from 'date-fns/locale'
-import { Search, Plus, Table2, ArrowUp, ArrowDown, ArrowUpDown, Cloud, CloudOff, Server } from 'lucide-react'
+import { Search, Plus, Table2, ArrowUp, ArrowDown, ArrowUpDown, Cloud, CloudOff, Server, ChevronDown } from 'lucide-react'
 import GlowPill from '@/components/ui/glow-pill'
 import type { OrderDTO } from '@/lib/actions/orders'
 import {
@@ -13,19 +13,19 @@ import {
   orderTableDate, compareOrdersForTable, orderTableSearchHaystack,
   orderShootDisplay, orderDurationSecondaryLabel,
   getOrdersTableTier, type OrdersTableTier,
-  groupOrdersByMonth, getHiddenMonthsCount, pluralizeOrdersCount,
+  groupOrdersByMonth, getHiddenMonthsCount, pluralizeOrdersCount, monthGroupDurationLabel,
   ORDERS_MONTHS_INITIAL_VISIBLE, ORDERS_MONTHS_REVEAL_STEP,
-  type OrderTableSortKey, type SortDirection,
+  type OrderTableSortKey, type SortDirection, type OrderMonthGroup,
 } from '@/lib/order-model'
 import { getOrderPaymentSummary } from '@/lib/payment-model'
 import { formatDurationMinutes } from '@/lib/schedule-model'
 import { computeMaterialsCapsules } from '@/lib/client-shoots-model'
 import { isValidHttpUrl } from '@/lib/url'
 import { ROOM_DICTIONARY, FORMAT_DICTIONARY } from '@/lib/import/normalize'
-import { getOrderPromotion, getVisibleOrderComment, PROMOTION_PILL_LABEL } from '@/lib/promotion-model'
 import type { OrderStatus, OrderPaymentStatus } from '@prisma/client'
 import OrderFormModal from '../crm/OrderFormModal'
 import OrderCard from '../crm/OrderCard'
+import OrderCommentBadges from '../crm/OrderCommentBadges'
 
 type Period = 'ALL' | 'TODAY' | 'WEEK' | 'MONTH' | 'PREV_MONTH' | 'CUSTOM'
 type TriFilter = 'ANY' | 'YES' | 'NO'
@@ -39,8 +39,14 @@ type TriFilter = 'ANY' | 'YES' | 'NO'
 // fr, поэтому сумма минимумов — единственное, что может вызвать overflow, и
 // она подобрана и проверена вживую с запасом под 1280px (см. комментарий у
 // getOrdersTableTier).
+// Колонка "Комментарий" больше не показывает длинный текст (теперь это
+// компактная плашка акции + кнопка "Комментарий", открывающая popover, см.
+// OrderCommentBadges) — ей больше не нужен большой минимум/вес, освободившееся
+// место отдано клиенту/оплате/материалам (ТЗ доработки комментариев, п.17).
+// Сумма минимумов сохранена равной прежней (836px), чтобы не потерять уже
+// проверенный запас на 1280px viewport — просто перераспределена.
 const FULL_GRID_COLS =
-  'grid-cols-[minmax(100px,0.85fr)_minmax(100px,1fr)_minmax(110px,1.05fr)_minmax(80px,0.65fr)_minmax(100px,0.85fr)_minmax(126px,0.75fr)_minmax(110px,0.95fr)_minmax(110px,1.3fr)]'
+  'grid-cols-[minmax(100px,0.8fr)_minmax(110px,1.1fr)_minmax(110px,1fr)_minmax(80px,0.6fr)_minmax(105px,0.95fr)_minmax(126px,0.75fr)_minmax(115px,1fr)_minmax(90px,0.7fr)]'
 const COMPACT_GRID_COLS =
   'grid-cols-[minmax(100px,0.95fr)_minmax(100px,1.1fr)_minmax(110px,1.15fr)_minmax(80px,0.7fr)_minmax(100px,0.95fr)_minmax(126px,0.85fr)_minmax(110px,1.05fr)]'
 
@@ -145,33 +151,6 @@ function MaterialsCell({ order }: { order: OrderDTO }) {
   )
 }
 
-// Комментарий — максимум одна строка на десктопе (ТЗ п.7): промо-плашка
-// (если есть) и текст комментария в одной flex-строке, у текста truncate —
-// ни плашка, ни длинный текст не могут расширить саму колонку, потому что
-// родительская ячейка имеет min-w-0. Полный текст — через нативный title
-// (тот же приём tooltip, что и в остальной таблице/carточке клиента) и целиком
-// в карточке заказа.
-function CommentCell({ order }: { order: OrderDTO }) {
-  // Акция и обычный комментарий больше не дублируются: капсула читает
-  // структурированную/распознанную акцию (getOrderPromotion), а текст рядом —
-  // уже ОЧИЩЕННЫЙ от акционной фразы комментарий (getVisibleOrderComment).
-  // Раньше здесь рендерился один и тот же order.comment целиком рядом с
-  // капсулой — если акция определялась текстом внутри него, полная фраза
-  // "Акция! 20% скидка..." показывалась second раз рядом с капсулой И
-  // выталкивала её за пределы ячейки (см. src/lib/promotion-model.ts).
-  const promotion = getOrderPromotion(order)
-  const visibleComment = getVisibleOrderComment(order)
-  if (!visibleComment && !promotion) return <span className="text-zinc-600 text-xs">—</span>
-  return (
-    <div className="flex items-center gap-1.5 min-w-0" title={visibleComment ?? undefined}>
-      {promotion && (
-        <GlowPill color="green" className="flex-shrink-0" title="Акция «−20% первый визит»">{PROMOTION_PILL_LABEL[promotion]}</GlowPill>
-      )}
-      {visibleComment && <span className="text-zinc-400 text-xs truncate min-w-0">{visibleComment}</span>}
-    </div>
-  )
-}
-
 // Общий контракт ячейки: min-w-0 обязателен на КАЖДОЙ — без него браузер
 // считает intrinsic-ширину содержимого (длинный текст, несколько плашек) как
 // нижнюю границу трека CSS Grid и раздвигает колонки вместо того, чтобы дать
@@ -181,6 +160,133 @@ function Cell({ children, className = '', onClick }: {
   children: React.ReactNode; className?: string; onClick?: (e: React.MouseEvent) => void
 }) {
   return <div role="cell" onClick={onClick} className={`min-w-0 px-2.5 py-2.5 ${className}`}>{children}</div>
+}
+
+// Каждый календарный месяц — самостоятельный контейнер (свой фон/граница/
+// радиус), а не строка внутри одной сквозной таблицы: так граница между
+// месяцами видна сразу, а не только по цвету разделительной строки. Один
+// общий компонент для ВСЕХ месяцев и обоих tier (десктопная таблица и
+// мобильный список карточек внутри) — разница между tier решается один раз
+// внутри, JSX/сетка колонок не дублируются по местам вызова.
+function OrdersMonthSection({ group, tier, sortKey, sortDir, onToggleSort, onOrderClick, defaultOpen }: {
+  group: OrderMonthGroup<OrderDTO>
+  tier: OrdersTableTier
+  sortKey: OrderTableSortKey
+  sortDir: SortDirection
+  onToggleSort: (key: OrderTableSortKey) => void
+  onOrderClick: (order: OrderDTO) => void
+  defaultOpen: boolean
+}) {
+  // defaultOpen читается один раз при монтировании этой секции — сворачивание
+  ///разворачивание после этого только вручную кликом (ТЗ: "не сворачивать
+  // текущий месяц автоматически во время работы пользователя"), поэтому
+  // именно useState(defaultOpen), а не производное от какого-то пропа значение.
+  const [open, setOpen] = useState(defaultOpen)
+  const durationLabel = monthGroupDurationLabel(group.orders)
+
+  return (
+    <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        aria-expanded={open}
+        className="w-full flex items-center justify-between gap-3 px-4 py-3 bg-zinc-800/50 hover:bg-zinc-800/70 transition-colors text-left"
+      >
+        <div className="flex items-baseline gap-2 min-w-0">
+          <span className="text-zinc-100 text-sm font-semibold uppercase tracking-wide truncate">{group.label}</span>
+          <span className="text-zinc-500 text-xs flex-shrink-0">
+            {pluralizeOrdersCount(group.orders.length)}{durationLabel ? ` · ${durationLabel}` : ''}
+          </span>
+        </div>
+        <ChevronDown className={`w-4 h-4 text-zinc-500 flex-shrink-0 transition-transform duration-150 ${open ? 'rotate-180' : ''}`} />
+      </button>
+
+      {open && (
+        tier === 'mobile' ? (
+          <div className="p-3 space-y-2.5 border-t border-zinc-800">
+            {group.orders.map(order => (
+              <OrderCard key={order.id} order={order} onClick={() => onOrderClick(order)} />
+            ))}
+          </div>
+        ) : (
+          <div className="w-full min-w-0 overflow-x-auto border-t border-zinc-800">
+            <div role="table" aria-label={group.label} className="w-full min-w-0">
+              <div role="row" className={`grid ${tier === 'compact' ? COMPACT_GRID_COLS : FULL_GRID_COLS} gap-x-3 border-b border-zinc-800 bg-zinc-800/30`}>
+                <div role="columnheader" className="min-w-0 px-2.5 py-2.5 text-zinc-400 text-xs uppercase tracking-wider">
+                  <SortBtn k="date" label="Дата" sortKey={sortKey} sortDir={sortDir} onToggle={onToggleSort} />
+                </div>
+                <div role="columnheader" className="min-w-0 px-2.5 py-2.5 text-zinc-400 text-xs uppercase tracking-wider">
+                  <SortBtn k="client" label="Клиент" sortKey={sortKey} sortDir={sortDir} onToggle={onToggleSort} />
+                </div>
+                <div role="columnheader" className="min-w-0 px-2.5 py-2.5 text-zinc-400 text-xs uppercase tracking-wider">Съёмка</div>
+                <div role="columnheader" className="min-w-0 px-2.5 py-2.5 text-zinc-400 text-xs uppercase tracking-wider">
+                  <SortBtn k="duration" label="Длит-ть" sortKey={sortKey} sortDir={sortDir} onToggle={onToggleSort} />
+                </div>
+                <div role="columnheader" className="min-w-0 px-2.5 py-2.5 text-zinc-400 text-xs uppercase tracking-wider">
+                  <SortBtn k="amount" label="Оплата" sortKey={sortKey} sortDir={sortDir} onToggle={onToggleSort} />
+                </div>
+                <div role="columnheader" className="min-w-0 px-2.5 py-2.5 text-zinc-400 text-xs uppercase tracking-wider">
+                  <SortBtn k="status" label="Статус" sortKey={sortKey} sortDir={sortDir} onToggle={onToggleSort} />
+                </div>
+                <div role="columnheader" className="min-w-0 px-2.5 py-2.5 text-zinc-400 text-xs uppercase tracking-wider">Материалы</div>
+                {tier === 'full' && (
+                  <div role="columnheader" className="min-w-0 px-2.5 py-2.5 text-zinc-400 text-xs uppercase tracking-wider">Комментарий</div>
+                )}
+              </div>
+
+              <div role="rowgroup">
+                {group.orders.map(order => {
+                  const dateIso = orderTableDate(order)
+                  const timeRange = formatTimeRange(order.plannedStartTime, order.plannedEndTime)
+                  const shoot = orderShootDisplay(order)
+                  const makeupLabel = orderDurationSecondaryLabel(order)
+                  const payment = getOrderPaymentSummary(order)
+                  const rowLabel = `Открыть заказ: ${order.clientName || order.title || 'клиент не привязан'}, ${formatDate(dateIso)}`
+                  return (
+                    <div
+                      key={order.id}
+                      role="row"
+                      tabIndex={0}
+                      aria-label={rowLabel}
+                      onClick={() => onOrderClick(order)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOrderClick(order) }
+                      }}
+                      className={`grid ${tier === 'compact' ? COMPACT_GRID_COLS : FULL_GRID_COLS} gap-x-3 items-center border-b border-zinc-800/60 last:border-b-0 cursor-pointer transition-colors hover:bg-white/[0.04] focus:outline-none focus-visible:bg-white/[0.05] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[#00c26b] focus-visible:-outline-offset-1`}
+                    >
+                      <Cell>
+                        <p className="text-zinc-200 text-sm truncate">{formatDate(dateIso)}</p>
+                        {timeRange && <p className="text-zinc-500 text-xs mt-0.5 truncate">{timeRange}</p>}
+                      </Cell>
+                      <Cell>
+                        <p className="text-zinc-100 text-sm truncate">{order.clientName || order.title || 'Клиент не привязан'}</p>
+                        {order.companyName && <p className="text-zinc-500 text-xs mt-0.5 truncate">{order.companyName}</p>}
+                      </Cell>
+                      <Cell>
+                        <p className="text-zinc-200 text-sm truncate" title={shoot.format}>{shoot.format}</p>
+                        {shoot.room && <p className="text-zinc-500 text-xs mt-0.5 truncate">{shoot.room}</p>}
+                      </Cell>
+                      <Cell>
+                        <p className="text-zinc-300 text-sm truncate">{order.durationMinutes != null ? formatDurationMinutes(order.durationMinutes) : '—'}</p>
+                        {makeupLabel && <p className="text-zinc-500 text-xs mt-0.5 truncate" title={makeupLabel}>{makeupLabel}</p>}
+                      </Cell>
+                      <Cell>
+                        <p className="text-zinc-200 text-sm truncate">{payment.displayPrimary}</p>
+                        <p className={`text-xs mt-0.5 truncate ${ORDER_PAYMENT_STATUS_COLORS[payment.paymentStatus]}`}>{payment.displaySecondary}</p>
+                      </Cell>
+                      <Cell><StatusBadge status={order.status} /></Cell>
+                      <Cell onClick={e => e.stopPropagation()}><MaterialsCell order={order} /></Cell>
+                      {tier === 'full' && <Cell><OrderCommentBadges order={order} /></Cell>}
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          </div>
+        )
+      )}
+    </div>
+  )
 }
 
 interface Props {
@@ -407,124 +513,31 @@ export default function OrdersListView({ initialOrders }: Props) {
             Создать заказ
           </button>
         </div>
-      ) : tier === 'mobile' ? (
-        // Мобильный/узкий вид — переиспользует ту же карточку заказа, что и
-        // канбан CRM (OrderCard), а не отдельную мобильную вёрстку с нуля
-        // (ТЗ п.18: "используй существующий мобильный паттерн проекта").
-        // Группировка по месяцам сохраняется и здесь — просто без табличной сетки.
+      ) : (
+        // Каждый месяц — отдельная самостоятельная секция (OrdersMonthSection),
+        // не строка внутри одной сквозной таблицы; компонент один и тот же для
+        // десктопной таблицы и мобильного списка карточек (см. его комментарий
+        // выше). Текущий + предыдущие ORDERS_MONTHS_INITIAL_VISIBLE-1 месяца
+        // раскрыты по умолчанию, более старые (в том числе довыгруженные по
+        // кнопке ниже) — свёрнуты.
         <div className="space-y-4">
-          {visibleMonthGroups.map(group => (
-            <div key={group.key} className="space-y-2.5">
-              <p className="text-zinc-400 text-xs font-semibold uppercase tracking-wide px-0.5">
-                {group.label} · {pluralizeOrdersCount(group.orders.length)}
-              </p>
-              {group.orders.map(order => (
-                <OrderCard key={order.id} order={order} onClick={() => openOrder(order)} />
-              ))}
-            </div>
+          {visibleMonthGroups.map((group, idx) => (
+            <OrdersMonthSection
+              key={group.key}
+              group={group}
+              tier={tier}
+              sortKey={sortKey}
+              sortDir={sortDir}
+              onToggleSort={toggleSort}
+              onOrderClick={openOrder}
+              defaultOpen={idx < ORDERS_MONTHS_INITIAL_VISIBLE}
+            />
           ))}
           {hiddenMonthsCount > 0 && (
             <button type="button" onClick={() => setVisibleMonthsCount(c => c + ORDERS_MONTHS_REVEAL_STEP)}
               className="w-full text-center text-sm text-zinc-400 hover:text-white underline py-2">
               Показать более ранние месяцы ({hiddenMonthsCount})
             </button>
-          )}
-        </div>
-      ) : (
-        <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
-          {/* width:100% + min-w-0 — сетка никогда не задаёт контейнеру
-              собственную минимальную ширину больше, чем у него есть (ТЗ п.12).
-              overflow-x-auto оставлен подстраховкой на случай непредвиденно
-              длинного контента, но при верных minmax-порогах не должен
-              когда-либо реально включаться на проверяемых разрешениях. */}
-          <div className="w-full min-w-0 overflow-x-auto">
-            <div role="table" aria-label="Заказы" className="w-full min-w-0">
-              <div role="row" className={`grid ${tier === 'compact' ? COMPACT_GRID_COLS : FULL_GRID_COLS} gap-x-3 border-b border-zinc-800 bg-zinc-800/40`}>
-                <div role="columnheader" className="min-w-0 px-2.5 py-2.5 text-zinc-400 text-xs uppercase tracking-wider">
-                  <SortBtn k="date" label="Дата" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
-                </div>
-                <div role="columnheader" className="min-w-0 px-2.5 py-2.5 text-zinc-400 text-xs uppercase tracking-wider">
-                  <SortBtn k="client" label="Клиент" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
-                </div>
-                <div role="columnheader" className="min-w-0 px-2.5 py-2.5 text-zinc-400 text-xs uppercase tracking-wider">Съёмка</div>
-                <div role="columnheader" className="min-w-0 px-2.5 py-2.5 text-zinc-400 text-xs uppercase tracking-wider">
-                  <SortBtn k="duration" label="Длит-ть" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
-                </div>
-                <div role="columnheader" className="min-w-0 px-2.5 py-2.5 text-zinc-400 text-xs uppercase tracking-wider">
-                  <SortBtn k="amount" label="Оплата" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
-                </div>
-                <div role="columnheader" className="min-w-0 px-2.5 py-2.5 text-zinc-400 text-xs uppercase tracking-wider">
-                  <SortBtn k="status" label="Статус" sortKey={sortKey} sortDir={sortDir} onToggle={toggleSort} />
-                </div>
-                <div role="columnheader" className="min-w-0 px-2.5 py-2.5 text-zinc-400 text-xs uppercase tracking-wider">Материалы</div>
-                {tier === 'full' && (
-                  <div role="columnheader" className="min-w-0 px-2.5 py-2.5 text-zinc-400 text-xs uppercase tracking-wider">Комментарий</div>
-                )}
-              </div>
-
-              {visibleMonthGroups.map(group => (
-                <div key={group.key}>
-                  <div className="px-3 py-2 bg-zinc-800/60 border-b border-t border-zinc-800/80 first:border-t-0">
-                    <span className="text-zinc-300 text-xs font-semibold uppercase tracking-wide">{group.label}</span>
-                    <span className="text-zinc-500 text-xs ml-2">{pluralizeOrdersCount(group.orders.length)}</span>
-                  </div>
-                  <div role="rowgroup">
-                    {group.orders.map(order => {
-                      const dateIso = orderTableDate(order)
-                      const timeRange = formatTimeRange(order.plannedStartTime, order.plannedEndTime)
-                      const shoot = orderShootDisplay(order)
-                      const makeupLabel = orderDurationSecondaryLabel(order)
-                      const payment = getOrderPaymentSummary(order)
-                      const rowLabel = `Открыть заказ: ${order.clientName || order.title || 'клиент не привязан'}, ${formatDate(dateIso)}`
-                      return (
-                        <div
-                          key={order.id}
-                          role="row"
-                          tabIndex={0}
-                          aria-label={rowLabel}
-                          onClick={() => openOrder(order)}
-                          onKeyDown={e => {
-                            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openOrder(order) }
-                          }}
-                          className={`grid ${tier === 'compact' ? COMPACT_GRID_COLS : FULL_GRID_COLS} gap-x-3 items-center border-b border-zinc-800/60 last:border-b-0 cursor-pointer transition-colors hover:bg-white/[0.04] focus:outline-none focus-visible:bg-white/[0.05] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[#00c26b] focus-visible:-outline-offset-1`}
-                        >
-                          <Cell>
-                            <p className="text-zinc-200 text-sm truncate">{formatDate(dateIso)}</p>
-                            {timeRange && <p className="text-zinc-500 text-xs mt-0.5 truncate">{timeRange}</p>}
-                          </Cell>
-                          <Cell>
-                            <p className="text-zinc-100 text-sm truncate">{order.clientName || order.title || 'Клиент не привязан'}</p>
-                            {order.companyName && <p className="text-zinc-500 text-xs mt-0.5 truncate">{order.companyName}</p>}
-                          </Cell>
-                          <Cell>
-                            <p className="text-zinc-200 text-sm truncate" title={shoot.format}>{shoot.format}</p>
-                            {shoot.room && <p className="text-zinc-500 text-xs mt-0.5 truncate">{shoot.room}</p>}
-                          </Cell>
-                          <Cell>
-                            <p className="text-zinc-300 text-sm truncate">{order.durationMinutes != null ? formatDurationMinutes(order.durationMinutes) : '—'}</p>
-                            {makeupLabel && <p className="text-zinc-500 text-xs mt-0.5 truncate" title={makeupLabel}>{makeupLabel}</p>}
-                          </Cell>
-                          <Cell>
-                            <p className="text-zinc-200 text-sm truncate">{payment.displayPrimary}</p>
-                            <p className={`text-xs mt-0.5 truncate ${ORDER_PAYMENT_STATUS_COLORS[payment.paymentStatus]}`}>{payment.displaySecondary}</p>
-                          </Cell>
-                          <Cell><StatusBadge status={order.status} /></Cell>
-                          <Cell onClick={e => e.stopPropagation()}><MaterialsCell order={order} /></Cell>
-                          {tier === 'full' && <Cell><CommentCell order={order} /></Cell>}
-                        </div>
-                      )
-                    })}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-          {hiddenMonthsCount > 0 && (
-            <div className="px-4 py-3 border-t border-zinc-800 text-center">
-              <button type="button" onClick={() => setVisibleMonthsCount(c => c + ORDERS_MONTHS_REVEAL_STEP)} className="text-sm text-zinc-400 hover:text-white underline">
-                Показать более ранние месяцы ({hiddenMonthsCount})
-              </button>
-            </div>
           )}
         </div>
       )}
