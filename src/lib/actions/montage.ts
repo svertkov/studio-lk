@@ -325,6 +325,11 @@ export interface MontageProjectInput {
   requirements?: string
   internalComment?: string
   clientComment?: string
+  // Явное подтверждение "да, создать ещё один проект для заказа, у которого
+  // уже есть проект(ы)" (ТЗ п.18: "предупредить и не создавать дубль без
+  // явного подтверждения") — UI сам показывает предупреждение и список уже
+  // существующих проектов ДО отправки, здесь только финальная защита.
+  confirmDuplicateForOrder?: boolean
 }
 
 // assignedAt проставляется автоматически, когда editorId впервые задаётся —
@@ -354,8 +359,8 @@ export async function createMontageProject(
     // была предупредить об этом ДО вызова (ТЗ п.18), здесь — финальная защита.
     if (input.orderId) {
       const existingCount = await prisma.montageProject.count({ where: { orderId: input.orderId } })
-      if (existingCount > 0 && !input.title) {
-        return { ok: false, error: 'У этого заказа уже есть проект монтажа' }
+      if (existingCount > 0 && !input.confirmDuplicateForOrder) {
+        return { ok: false, error: 'У этого заказа уже есть проект монтажа. Подтвердите создание ещё одного.' }
       }
     }
 

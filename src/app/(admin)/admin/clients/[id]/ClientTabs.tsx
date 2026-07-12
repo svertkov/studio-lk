@@ -1,6 +1,7 @@
 'use client'
 
 import { useMemo, useState } from 'react'
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import {
   Film, DollarSign, FileText, Upload, Send, Calendar, Clock, Receipt,
@@ -35,6 +36,9 @@ import MetricCard, { METRIC_GRID_CLASSNAME } from '@/components/ui/metric-card'
 import EventCardModal from '../../schedule/EventCardModal'
 import SubscriptionActionsMenu from '@/components/subscriptions/SubscriptionActionsMenu'
 import SubscriptionDetailModal from '../../finance/subscriptions/SubscriptionDetailModal'
+import type { MontageProjectDTO } from '@/lib/actions/montage'
+import { computeMontageDashboardStats, montageDeadlineLabel, computeMontageProfit } from '@/lib/montage-model'
+import MontageStatusBadge from '../../editing/MontageStatusBadge'
 
 const CHART_COLORS = ['#00c26b', '#3b82f6', '#f59e0b', '#a855f7', '#ef4444', '#14b8a6']
 const LONG_COMMENT_THRESHOLD = 140
@@ -149,6 +153,7 @@ interface Props {
   shoots: ShootRowDTO[]
   shootsSummary: ShootsSummaryOutDTO
   financeOverview: FinanceOverviewOutDTO
+  montageProjects: MontageProjectDTO[]
 }
 
 const TABS = [
@@ -371,7 +376,7 @@ function groupHoursBy(rows: ShootRowDTO[], key: 'room' | 'format') {
     .sort((a, b) => b.value - a.value)
 }
 
-export default function ClientTabs({ client, subscriptions, shoots, shootsSummary, financeOverview }: Props) {
+export default function ClientTabs({ client, subscriptions, shoots, shootsSummary, financeOverview, montageProjects }: Props) {
   const router = useRouter()
   const [activeTab, setActiveTab] = useState('overview')
   const [noteText, setNoteText] = useState('')
@@ -397,6 +402,9 @@ export default function ClientTabs({ client, subscriptions, shoots, shootsSummar
 
   const byRoom = useMemo(() => groupHoursBy(shoots, 'room'), [shoots])
   const byFormat = useMemo(() => groupHoursBy(shoots, 'format'), [shoots])
+  // Те же предикаты, что и на дашборде раздела "Монтаж" (computeMontageDashboardStats,
+  // montage-model.ts) — цифры здесь и там не могут разойтись.
+  const montageStats = useMemo(() => computeMontageDashboardStats(montageProjects), [montageProjects])
   const visibleShoots = useMemo(() => getVisibleShoots(shoots, shootsExpanded), [shoots, shootsExpanded])
   const hiddenShootsCount = getHiddenShootsCount(shoots.length)
   // Те же правила, что и в финансовом расчёте на сервере (computeFinanceOverview):
@@ -651,13 +659,53 @@ export default function ClientTabs({ client, subscriptions, shoots, shootsSummar
           )
         )}
 
-        {/* Монтаж */}
+        {/* Монтаж — читает те же проекты, что таблица раздела "Монтаж"
+            (getMontageProjectsForClient объединяет самостоятельные и
+            привязанные к заказам проекты клиента одним запросом, см.
+            src/lib/actions/montage.ts) — без отдельной копии данных. */}
         {activeTab === 'editing' && (
-          <PlaceholderTab
-            icon={Film}
-            title="Задачи монтажа"
-            description="Здесь будут задачи по монтажу: монтажёр, статус, исходники, результат"
-          />
+          montageProjects.length === 0 ? (
+            <PlaceholderTab
+              icon={Film}
+              title="Проектов монтажа пока нет"
+              description="Проект появится здесь автоматически, когда в заказе клиента отметят «Монтаж требуется», либо его можно создать вручную в разделе «Монтаж»"
+            />
+          ) : (
+            <div className="space-y-4">
+              <div className={METRIC_GRID_CLASSNAME}>
+                <MetricCard icon={Film} label="Проектов монтажа" value={String(montageProjects.length)} subtitle={`${montageStats.activeCount} в работе`} />
+                <MetricCard icon={DollarSign} label="Выручка по монтажу" value={formatMoneyCompact(montageStats.revenueTotal)} subtitle={`Оплачено: ${formatMoneyCompact(montageStats.revenuePaid)}`} />
+                <MetricCard icon={Wallet} label="Сдано проектов" value={String(montageStats.deliveredCount)} />
+              </div>
+              <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
+                <div className="px-4 py-3 border-b border-zinc-800">
+                  <h3 className="text-white font-semibold text-sm">Проекты монтажа</h3>
+                  <p className="text-zinc-500 text-xs mt-0.5">Полный список и редактирование — в разделе «Монтаж»</p>
+                </div>
+                <div className="divide-y divide-zinc-800/60">
+                  {montageProjects.map(p => {
+                    const profit = computeMontageProfit(p.clientAmount, p.editorAmount)
+                    const deadlineLabel = montageDeadlineLabel({ deadlineDate: p.deadlineDate, status: p.status, deliveredAt: p.deliveredAt })
+                    return (
+                      <Link key={p.id} href="/admin/editing" className="flex items-center justify-between gap-4 px-4 py-3 hover:bg-white/[0.03] transition-colors">
+                        <div className="min-w-0">
+                          <p className="text-zinc-200 text-sm truncate">{p.title ?? 'Без названия'}</p>
+                          <p className="text-zinc-500 text-xs mt-0.5 truncate">
+                            {p.editorName ? `Монтажёр: ${p.editorName}` : 'Монтажёр не назначен'}
+                            {deadlineLabel && ` · ${deadlineLabel}`}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-3 flex-shrink-0">
+                          <p className="text-zinc-400 text-xs">{formatMoney(profit)}</p>
+                          <MontageStatusBadge status={p.status} />
+                        </div>
+                      </Link>
+                    )
+                  })}
+                </div>
+              </div>
+            </div>
+          )
         )}
 
         {/* Финансы */}

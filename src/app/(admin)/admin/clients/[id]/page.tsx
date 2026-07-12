@@ -11,6 +11,7 @@ import { getClientById } from '@/lib/actions/clients'
 import { getClientSubscriptions } from '@/lib/actions/subscriptions'
 import { getClientShootsData, getClientFinanceOverview } from '@/lib/actions/client-shoots'
 import { getConversationForClient } from '@/lib/actions/telegram'
+import { getMontageProjectsForClient } from '@/lib/actions/montage'
 import ClientTabs from './ClientTabs'
 import EditClientModal from './EditClientModal'
 import MergeClientModal from './MergeClientModal'
@@ -28,12 +29,13 @@ function formatHours(v: number) {
 export default async function ClientDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
 
-  const [result, subscriptionsResult, shootsResult, financeResult, telegramResult] = await Promise.all([
+  const [result, subscriptionsResult, shootsResult, financeResult, telegramResult, montageResult] = await Promise.all([
     getClientById(id),
     getClientSubscriptions(id),
     getClientShootsData(id),
     getClientFinanceOverview(id),
     getConversationForClient(id),
+    getMontageProjectsForClient(id),
   ])
   if (!result.ok || !result.data) redirect('/admin/clients')
 
@@ -212,6 +214,7 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
             shoots={shootsResult.data.shoots}
             shootsSummary={shootsResult.data.summary}
             financeOverview={finance}
+            montageProjects={montageResult.data}
           />
       </ClientTelegramLayout>
     </div>
