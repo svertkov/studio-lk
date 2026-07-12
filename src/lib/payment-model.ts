@@ -60,7 +60,11 @@ function formatMoney(amount: number): string {
   return new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB', maximumFractionDigits: 0 }).format(amount)
 }
 
-function formatHoursShort(v: number): string {
+// Экспортирован — переиспользуется в плотном ("dense") режиме таблицы
+// "Заказы" для укороченного варианта строки абонемента ("Списано 2 ч" без
+// "· осталось Xч", когда объединённая строка не помещается), чтобы не
+// заводить вторую копию форматирования часов рядом с этой.
+export function formatHoursShort(v: number): string {
   return `${v % 1 === 0 ? v.toFixed(0) : v.toFixed(1)} ч`
 }
 

@@ -3,6 +3,7 @@ import {
   orderTableDate, compareOrdersForTable, orderTableSearchHaystack, type OrderTableRow,
   orderShootDisplay, orderDurationSecondaryLabel,
   getOrdersTableTier, ORDERS_TABLE_MOBILE_MAX_WIDTH, ORDERS_TABLE_COMPACT_MAX_WIDTH,
+  isOrdersTableDense, ORDERS_TABLE_DENSE_MAX_WIDTH,
   groupOrdersByMonth, getHiddenMonthsCount, pluralizeOrdersCount, monthGroupDurationLabel,
 } from './order-model'
 
@@ -262,5 +263,18 @@ describe('monthGroupDurationLabel — суммарная длительност�
 
   it('returns null for an empty group', () => {
     expect(monthGroupDurationLabel([])).toBeNull()
+  })
+})
+
+describe('isOrdersTableDense — плотный режим для узких десктопных ширин (1366/1280px)', () => {
+  it('is dense at and below the threshold (matches measured 1366px container width)', () => {
+    expect(isOrdersTableDense(ORDERS_TABLE_DENSE_MAX_WIDTH)).toBe(true)
+    expect(isOrdersTableDense(1060)).toBe(true) // измеренная ширина контейнера на 1366px viewport
+    expect(isOrdersTableDense(974)).toBe(true)  // измеренная ширина контейнера на 1280px viewport
+  })
+
+  it('is not dense above the threshold (matches measured 1440px+ container width)', () => {
+    expect(isOrdersTableDense(ORDERS_TABLE_DENSE_MAX_WIDTH + 1)).toBe(false)
+    expect(isOrdersTableDense(1134)).toBe(false) // измеренная ширина контейнера на 1440px viewport
   })
 })

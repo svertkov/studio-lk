@@ -3,13 +3,13 @@
 import { MessageCircle } from 'lucide-react'
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover'
 import GlowPill from '@/components/ui/glow-pill'
-import { getOrderPromotion, getVisibleOrderComment, PROMOTION_PILL_LABEL } from '@/lib/promotion-model'
+import { getOrderPromotion, getVisibleOrderComment, PROMOTION_PILL_LABEL, PROMOTION_PILL_LABEL_SHORT } from '@/lib/promotion-model'
 import type { OrderDTO } from '@/lib/actions/orders'
 
 interface ButtonProps {
   order: OrderDTO
-  // compact — иконка без подписи "Комментарий" (узкие колонки), см.
-  // OrdersListView.tsx 'compact' tier.
+  // compact — иконка без подписи "Комментарий" (плотный режим таблицы
+  // "Заказы" на 1366/1280px, см. isOrdersTableDense в order-model.ts).
   compact?: boolean
 }
 
@@ -46,15 +46,20 @@ export function OrderCommentButton({ order, compact }: ButtonProps) {
 
 interface Props {
   order: OrderDTO
-  compact?: boolean
+  // dense — плотный режим таблицы "Заказы" (1366/1280px измеренная ширина
+  // контейнера): короткий текст акции (PROMOTION_PILL_LABEL_SHORT — тот же
+  // canonical источник, не придуман на месте) и кнопка комментария без
+  // подписи. НЕ влияет на то, показывать ли акцию/комментарий — только на
+  // то, каким текстом.
+  dense?: boolean
 }
 
-// Плашка акции + кнопка комментария рядом — для табличной ячейки "Комментарий"
+// Плашка акции + кнопка комментария — для табличной ячейки "Комментарий"
 // (OrdersListView.tsx), где раньше выводился длинный обрезанный текст.
 // Полный текст акции больше нигде не дублируется рядом с плашкой (см.
 // getOrderPromotion/getVisibleOrderComment) — плашка использует общий
 // GlowPill, кнопка — общий Popover.
-export default function OrderCommentBadges({ order, compact }: Props) {
+export default function OrderCommentBadges({ order, dense }: Props) {
   const promotion = getOrderPromotion(order)
   const visibleComment = getVisibleOrderComment(order)
 
@@ -65,18 +70,18 @@ export default function OrderCommentBadges({ order, compact }: Props) {
   return (
     // stopPropagation на контейнере — строка таблицы кликабельна целиком и
     // открывает карточку заказа; ни плашка акции, ни кнопка комментария не
-    // должны провоцировать это открытие (ТЗ п.16). flex-wrap — если плашка и
-    // кнопка вместе не помещаются в ширину узкой колонки, кнопка переносится
-    // ЦЕЛИКОМ на вторую строку (ни один из элементов сам при этом не
-    // переносится и не обрезается) — раньше без wrap оба элемента
-    // выталкивали колонку за её minmax и создавали overflow таблицы.
-    <div className="flex flex-wrap items-center gap-1 min-w-0 max-w-full overflow-hidden" onClick={e => e.stopPropagation()}>
+    // должны провоцировать это открытие (ТЗ п.16). flex-col, а не flex-wrap:
+    // при акции И комментарии вместе они ВСЕГДА друг под другом (акция сверху,
+    // кнопка снизу), а не иногда рядом/иногда друг под другом в зависимости
+    // от случайно доступной ширины — раньше именно такое width-зависимое
+    // поведение (flex-wrap) и было источником непредсказуемого overflow.
+    <div className="flex flex-col items-start gap-1 min-w-0 max-w-full overflow-hidden" onClick={e => e.stopPropagation()}>
       {promotion && (
         <GlowPill color="green" size="sm" className="flex-shrink-0" title="Акция «−20% первый визит»">
-          {PROMOTION_PILL_LABEL[promotion]}
+          {dense ? PROMOTION_PILL_LABEL_SHORT[promotion] : PROMOTION_PILL_LABEL[promotion]}
         </GlowPill>
       )}
-      <OrderCommentButton order={order} compact={compact} />
+      <OrderCommentButton order={order} compact={dense} />
     </div>
   )
 }

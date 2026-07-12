@@ -12,12 +12,12 @@ import {
   ORDER_PAYMENT_STATUS_LABELS, ORDER_PAYMENT_STATUS_COLORS,
   orderTableDate, compareOrdersForTable, orderTableSearchHaystack,
   orderShootDisplay, orderDurationSecondaryLabel,
-  getOrdersTableTier, type OrdersTableTier,
+  getOrdersTableTier, type OrdersTableTier, isOrdersTableDense,
   groupOrdersByMonth, getHiddenMonthsCount, pluralizeOrdersCount, monthGroupDurationLabel,
   ORDERS_MONTHS_INITIAL_VISIBLE, ORDERS_MONTHS_REVEAL_STEP,
   type OrderTableSortKey, type SortDirection, type OrderMonthGroup,
 } from '@/lib/order-model'
-import { getOrderPaymentSummary } from '@/lib/payment-model'
+import { getOrderPaymentSummary, formatHoursShort } from '@/lib/payment-model'
 import { formatDurationMinutes } from '@/lib/schedule-model'
 import { computeMaterialsCapsules } from '@/lib/client-shoots-model'
 import { isValidHttpUrl } from '@/lib/url'
@@ -30,33 +30,35 @@ import OrderCommentBadges from '../crm/OrderCommentBadges'
 type Period = 'ALL' | 'TODAY' | 'WEEK' | 'MONTH' | 'PREV_MONTH' | 'CUSTOM'
 type TriFilter = 'ANY' | 'YES' | 'NO'
 
-// Единая сетка колонок для заголовка и строк — CSS Grid, не HTML-таблица (та
-// же техника, что и в "Истории съёмок" на карточке клиента, см.
-// ClientTabs.tsx: SHOOTS_GRID_COLS). 8 колонок в 'full' (обычный десктоп,
-// включая 1280px — см. getOrdersTableTier в order-model.ts), 7 в 'compact'
-// (без "Комментарий" — узкое окно ноутбука/планшет). minmax(px, fr) не даёт
-// колонке сжаться меньше указанного и одновременно съедает лишнее место через
-// fr, поэтому сумма минимумов — единственное, что может вызвать overflow, и
-// она подобрана и проверена вживую с запасом под 1280px (см. комментарий у
-// getOrdersTableTier).
-// Колонка "Комментарий" больше не показывает длинный текст (компактная
-// плашка акции + кнопка "Комментарий", открывающая popover, см.
-// OrderCommentBadges) — минимумы пересчитаны эмпирически (измерено вживую
-// через Playwright на 1280px, самом узком поддерживаемом разрешении, а не
-// только рассчитано на бумаге — см. доработку уплотнения таблицы):
-// - "Материалы" — раньше не хватало 7px на две плашки (Яндекс.Диск + NAS)
-//   рядом при size="sm", отсюда и был horizontal overflow контейнера
-//   таблицы на 1280px несмотря на то, что ни одна ОТДЕЛЬНАЯ ячейка не
-//   переполнялась — минимум поднят до фактически измеренной ширины;
-// - "Статус" — после уменьшения шрифта бейджа до 11px и padding самый
-//   длинный лейбл ("Завершено") занимает ~82px, прежний минимум 126px был
-//   рассчитан под старый (более крупный) размер и теперь избыточен.
-// Горизонтальный gap между колонками также уменьшен (gap-x-3 → gap-x-2) —
-// после этого на 1280px остаётся комфортный запас, а не подгонка впритык.
+// Единая сетка колонок для заголовка и строк — ОДНА константа, используется
+// буквально в обоих местах (см. role="row" у заголовка и у строк заказа
+// ниже), не две похожие копии. CSS Grid, не HTML-таблица (та же техника, что
+// и в "Истории съёмок" на карточке клиента, см. ClientTabs.tsx: SHOOTS_GRID_COLS).
+//
+// minmax(0, Nfr) — СОЗНАТЕЛЬНО без фиксированного px-минимума (в отличие от
+// прежней версии этой сетки). Фиксированные минимумы (100–126px на колонку)
+// были и остаются главным источником horizontal overflow: с ними сумма
+// минимумов может быть больше доступной ширины контейнера на любом
+// разрешении, а с minmax(0, fr) колонки ВСЕГДА в сумме дают ровно 100%
+// доступной ширины — переполнение сетки в принципе невозможно на уровне
+// самой сетки (переполнение внутри отдельной ячейки теперь может возникнуть
+// только от контента, который сам не умеет сжиматься/переноситься — на такие
+// случаи есть truncate/ellipsis у обычного текста и заранее заданные короткие
+// варианты подписи там, где обрезание многоточием запрещено, см.
+// OrderCommentBadges/StatusBadge ниже).
+//
+// Пропорции подобраны и ПРОВЕРЕНЫ ВЖИВУЮ на реальных заказах (не только на
+// бумаге) через Playwright на 1920/1680/1440/1366/1280px, включая
+// синтетическую (временная DOM-мутация, без записи в базу) строку с
+// максимальной нагрузкой сразу — длинные клиент/формат, акция, абонемент с
+// остатком часов, Яндекс.Диск+NAS: "Статус" изначально был у́же, чем нужно
+// самому длинному стандартному лейблу ("Завершено") на 1280px — вес забран у
+// "Длительности" (там всегда короткий текст вида "2 ч") и "Комментариев"
+// (стал легче: акция и кнопка теперь строго друг под другом, а не в ряд).
 const FULL_GRID_COLS =
-  'grid-cols-[minmax(100px,0.8fr)_minmax(110px,1.05fr)_minmax(110px,1fr)_minmax(80px,0.55fr)_minmax(105px,0.9fr)_minmax(100px,0.6fr)_minmax(126px,1.05fr)_minmax(90px,0.75fr)]'
+  'grid-cols-[minmax(0,1.05fr)_minmax(0,1.3fr)_minmax(0,1.35fr)_minmax(0,0.5fr)_minmax(0,1.1fr)_minmax(0,1.3fr)_minmax(0,1.2fr)_minmax(0,1.05fr)]'
 const COMPACT_GRID_COLS =
-  'grid-cols-[minmax(100px,0.95fr)_minmax(100px,1.1fr)_minmax(110px,1.15fr)_minmax(80px,0.7fr)_minmax(100px,0.95fr)_minmax(100px,0.75fr)_minmax(126px,1.1fr)]'
+  'grid-cols-[minmax(0,1.2fr)_minmax(0,1.4fr)_minmax(0,1.45fr)_minmax(0,0.75fr)_minmax(0,1.15fr)_minmax(0,1fr)_minmax(0,1.35fr)]'
 
 function formatDate(iso: string) {
   try { return format(parseISO(iso), 'd MMM yyyy', { locale: ru }) } catch { return '—' }
@@ -106,15 +108,22 @@ function SortBtn({ k, label, sortKey, sortDir, onToggle }: {
   )
 }
 
+// Без truncate/ellipsis по требованию ТЗ ("статус не должен обрезаться
+// многоточием") — колонка "Статус" в FULL_GRID_COLS сознательно получает fr-
+// вес, достаточный для полного самого длинного стандартного лейбла
+// ("Завершено") с запасом, проверено вживую на 1280px (см. комментарий у
+// сетки выше). white-space: nowrap — на случай если текст всё же не
+// поместится, он должен остаться читаемым (выйти за плашку), а не молча
+// исчезнуть под ellipsis.
 function StatusBadge({ status }: { status: OrderStatus }) {
   const config = getOrderStatusConfig(status)
   return (
     <span
       style={getOrderStatusVars(status) as CSSProperties}
-      className="inline-flex max-w-full items-center gap-1 text-zinc-300 text-[11px] font-medium px-1.5 py-0.5 rounded-full border border-[color:var(--status-border)] bg-zinc-900/60"
+      className="inline-flex items-center gap-1 text-zinc-300 text-[11px] font-medium px-1.5 py-0.5 rounded-full border border-[color:var(--status-border)] bg-zinc-900/60 whitespace-nowrap"
     >
       <span className="w-1.5 h-1.5 rounded-full bg-[color:var(--status-color)] flex-shrink-0" />
-      <span className="truncate">{config.label}</span>
+      <span>{config.label}</span>
     </span>
   )
 }
@@ -132,12 +141,15 @@ function MaterialsCell({ order }: { order: OrderDTO }) {
     return <span className="text-zinc-600 text-xs">Нет материалов</span>
   }
 
-  // flex-wrap — плашки идут в ряд, если хватает ширины колонки, и переносятся
-  // друг под друга (вертикально), если нет (см. ТЗ уплотнения таблицы, п.9) —
-  // сама колонка при этом не расширяется, потому что у ячейки задан min-w-0
-  // (см. Cell ниже). size="sm" — компактный вариант GlowPill.
+  // flex-col — ВСЕГДА вертикально, порядок фиксирован (Яндекс.Диск, затем
+  // NAS), а не flex-wrap, который раньше решал "в ряд или друг под другом" в
+  // зависимости от того, сколько случайно осталось места на конкретном
+  // разрешении — из-за этого на широких экранах (где места хватало) NAS
+  // оказывался СПРАВА от Яндекс.Диска, а не под ним, то есть расположение
+  // было непредсказуемым и зависело от ширины экрана (см. ТЗ финальной
+  // системной пересборки: "NAS должен находиться строго под Яндекс.Диском").
   return (
-    <div className="flex flex-wrap items-center gap-1 min-w-0 max-w-full overflow-hidden">
+    <div className="flex flex-col items-start gap-1 min-w-0 max-w-full overflow-hidden">
       {state.yandex === 'active' && (
         <GlowPill as="a" href={yandexUrl!} color="green" size="sm" icon={Cloud} onClick={e => e.stopPropagation()}
           title="Открыть материалы на Яндекс.Диске" ariaLabel="Открыть материалы на Яндекс.Диске">
@@ -177,9 +189,14 @@ function Cell({ children, className = '', onClick }: {
 // общий компонент для ВСЕХ месяцев и обоих tier (десктопная таблица и
 // мобильный список карточек внутри) — разница между tier решается один раз
 // внутри, JSX/сетка колонок не дублируются по местам вызова.
-function OrdersMonthSection({ group, tier, sortKey, sortDir, onToggleSort, onOrderClick, defaultOpen }: {
+function OrdersMonthSection({ group, tier, dense, sortKey, sortDir, onToggleSort, onOrderClick, defaultOpen }: {
   group: OrderMonthGroup<OrderDTO>
   tier: OrdersTableTier
+  // dense — измеренная ширина контейнера в "узкой" зоне (1366/1280px, см.
+  // isOrdersTableDense/ORDERS_TABLE_DENSE_MAX_WIDTH в order-model.ts):
+  // короткие варианты подписи акции, кнопка комментария только с иконкой,
+  // укороченная вторая строка абонемента — вместо обрезания многоточием.
+  dense: boolean
   sortKey: OrderTableSortKey
   sortDir: SortDirection
   onToggleSort: (key: OrderTableSortKey) => void
@@ -250,6 +267,15 @@ function OrdersMonthSection({ group, tier, sortKey, sortDir, onToggleSort, onOrd
                   const shoot = orderShootDisplay(order)
                   const makeupLabel = orderDurationSecondaryLabel(order)
                   const payment = getOrderPaymentSummary(order)
+                  // В плотном режиме объединённая строка абонемента ("Списано
+                  // 2 ч · осталось 8 ч") может не поместиться — вместо
+                  // обрезания многоточием показываем короче ("Списано 2 ч"),
+                  // используя те же структурированные часы, что уже посчитаны
+                  // в payment (getOrderPaymentSummary, payment-model.ts), а не
+                  // отдельную копию форматирования.
+                  const paymentSecondary = dense && payment.paymentType === 'SUBSCRIPTION' && payment.subscriptionUsedHours != null
+                    ? `Списано ${formatHoursShort(payment.subscriptionUsedHours)}`
+                    : payment.displaySecondary
                   const rowLabel = `Открыть заказ: ${order.clientName || order.title || 'клиент не привязан'}, ${formatDate(dateIso)}`
                   return (
                     <div
@@ -281,11 +307,11 @@ function OrdersMonthSection({ group, tier, sortKey, sortDir, onToggleSort, onOrd
                       </Cell>
                       <Cell>
                         <p className="text-zinc-200 text-[13px] leading-[17px] truncate">{payment.displayPrimary}</p>
-                        <p className={`text-[11px] leading-[15px] mt-0.5 truncate ${ORDER_PAYMENT_STATUS_COLORS[payment.paymentStatus]}`}>{payment.displaySecondary}</p>
+                        <p className={`text-[11px] leading-[15px] mt-0.5 truncate ${ORDER_PAYMENT_STATUS_COLORS[payment.paymentStatus]}`}>{paymentSecondary}</p>
                       </Cell>
                       <Cell><StatusBadge status={order.status} /></Cell>
                       <Cell onClick={e => e.stopPropagation()}><MaterialsCell order={order} /></Cell>
-                      {tier === 'full' && <Cell><OrderCommentBadges order={order} /></Cell>}
+                      {tier === 'full' && <Cell><OrderCommentBadges order={order} dense={dense} /></Cell>}
                     </div>
                   )
                 })}
@@ -347,6 +373,7 @@ export default function OrdersListView({ initialOrders }: Props) {
     return () => observer.disconnect()
   }, [])
   const tier: OrdersTableTier = getOrdersTableTier(containerWidth)
+  const dense = isOrdersTableDense(containerWidth)
 
   function toggleSort(key: OrderTableSortKey) {
     if (key === sortKey) setSortDir(d => (d === 'asc' ? 'desc' : 'asc'))
@@ -535,6 +562,7 @@ export default function OrdersListView({ initialOrders }: Props) {
               key={group.key}
               group={group}
               tier={tier}
+              dense={dense}
               sortKey={sortKey}
               sortDir={sortDir}
               onToggleSort={toggleSort}
