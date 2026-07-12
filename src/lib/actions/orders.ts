@@ -10,6 +10,7 @@ import type {
 import { computeDurationMinutes, isOrderReadyForArchive, archiveReasonForStatus } from '@/lib/order-model'
 import { computeMaterialsStatus, computeYandexLinkExpiry } from '@/lib/schedule-model'
 import { parseEventTitle } from '@/lib/event-category'
+import { ensureMontageProjectForOrder } from '@/lib/actions/montage'
 import type { ArchiveReason } from '@prisma/client'
 
 // ============================================================
@@ -502,6 +503,9 @@ export async function updateOrder(
     // решает, нужен ли автоперевод (autoTransitionStatus), а сам вызов — уже
     // после await prisma.$transaction(...).
     let autoTransitionStatus: 'EDITING' | 'COMPLETED' | null = null
+    // Проект монтажа — тоже пишется отдельным клиентом (см. actions/montage.ts),
+    // та же причина отложить вызов до после коммита, что и у autoTransitionStatus.
+    let shouldEnsureMontageProject = false
 
     const order = await prisma.$transaction(async tx => {
       const updated = await tx.order.update({
@@ -596,6 +600,14 @@ export async function updateOrder(
           if (input.editingRequired !== undefined && input.editingRequired !== null && existing.status === 'BOOKED') {
             autoTransitionStatus = input.editingRequired ? 'EDITING' : 'COMPLETED'
           }
+
+          // Проект монтажа — та же логика "создать один раз при первом true",
+          // что и в upsertScheduleEvent (см. src/lib/actions/schedule.ts),
+          // независимо от того, сработал ли автопереход статуса выше (заказ
+          // мог быть продвинут дальше "Записан в студию" ещё раньше).
+          if (input.editingRequired === true && se.editingRequired !== true) {
+            shouldEnsureMontageProject = true
+          }
         } else {
           await tx.scheduleEvent.create({
             data: {
@@ -629,6 +641,9 @@ export async function updateOrder(
     if (autoTransitionStatus) {
       const statusResult = await updateOrderStatus(id, autoTransitionStatus)
       if (statusResult.ok) return statusResult
+    }
+    if (shouldEnsureMontageProject) {
+      await ensureMontageProjectForOrder(id)
     }
 
     revalidateOrderPaths(order.clientId)

@@ -15,6 +15,7 @@ import {
 import { classifyEventType } from '@/lib/event-type'
 import { normalizePhone, normalizeEmail, normalizeTelegram } from '@/lib/import/normalize'
 import { ensureOrderForNewBooking, updateOrderStatus } from '@/lib/actions/orders'
+import { ensureMontageProjectForOrder } from '@/lib/actions/montage'
 import { ORDERS_AUTO_IMPORT_LAUNCH_DATE } from '@/lib/order-model'
 
 // ============================================================
@@ -310,6 +311,18 @@ export async function upsertScheduleEvent(
       if (linkedOrder?.status === 'BOOKED') {
         await updateOrderStatus(row.orderId, input.editingRequired ? 'EDITING' : 'COMPLETED')
       }
+    }
+
+    // Проект монтажа (раздел "Монтаж") создаётся один раз, в момент когда
+    // "Монтаж требуется" ВПЕРВЫЕ сохраняется как true — не при каждом
+    // пересохранении карточки записи и не когда монтаж уже был true раньше
+    // (ensureMontageProjectForOrder сама идемпотентна, но лишний запрос на
+    // каждое сохранение комментария/материалов не нужен). Срабатывает
+    // независимо от текущего статуса заказа (в отличие от автоперехода
+    // статуса выше) — решение можно поменять и после того, как заказ уже
+    // продвинут дальше "Записан в студию".
+    if (row.orderId && input.editingRequired === true && existing?.editingRequired !== true) {
+      await ensureMontageProjectForOrder(row.orderId)
     }
 
     revalidatePath('/admin/schedule')

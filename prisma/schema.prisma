@@ -213,6 +213,62 @@ enum TelegramMessageStatus {
 }
 
 // ============================================================
+// МОНТАЖ — производственный workflow проекта монтажа, см. MontageProject.
+// ============================================================
+
+// Порядок соответствует реальному жизненному циклу (см. MONTAGE_STATUS_CONFIG,
+// src/lib/montage-model.ts, единственный источник лейблов/цвета/сортировки —
+// по аналогии с ORDER_STATUS_CONFIG для Order.status).
+enum MontageStatus {
+  NEW
+  NEEDS_INFO
+  AWAITING_SOURCE
+  READY_FOR_ASSIGNMENT
+  ASSIGNED
+  IN_PROGRESS
+  IN_REVIEW
+  AWAITING_REVISIONS
+  REVISIONS
+  READY
+  DELIVERED
+  ON_HOLD
+  CANCELLED
+  ARCHIVED
+}
+
+// Оплата КЛИЕНТОМ студии за монтаж — независима от EditorPaymentStatus (см.
+// ниже) и от MontageStatus: проект может быть "Сдан", но ещё не оплачен.
+enum MontageClientPaymentStatus {
+  NOT_SPECIFIED
+  PENDING
+  PARTIALLY_PAID
+  PAID
+  CANCELLED
+  NOT_REQUIRED
+}
+
+// Выплата СТУДИЕЙ монтажёру/подрядчику — отдельный статус от оплаты клиента
+// (см. комментарий выше и ТЗ п.3: "не считать проект оплаченным только
+// потому, что он сдан").
+enum MontageEditorPaymentStatus {
+  NOT_CALCULATED
+  PENDING
+  PARTIALLY_PAID
+  PAID
+  NOT_REQUIRED
+}
+
+// Способ задания дедлайна — конкретная дата ИЛИ количество дней от даты
+// поступления (turnaroundDays на MontageProject). deadlineDate всегда хранит
+// итоговую рассчитанную дату независимо от способа — turnaroundDays хранится
+// только чтобы не терять исходное "количество дней", если оно было выбрано
+// (см. computeMontageDeadline, src/lib/montage-model.ts).
+enum MontageDeadlineType {
+  FIXED_DATE
+  DURATION_DAYS
+}
+
+// ============================================================
 // ПОЛЬЗОВАТЕЛИ (CMS)
 // ============================================================
 
@@ -223,14 +279,19 @@ model User {
   password  String?
   role      Role     @default(OPERATOR)
   createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt      @map("updated_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
-  clients   Client[]     @relation("ResponsibleUser")
-  notes     ClientNote[]
-  auditLogs AuditLog[]
+  clients                       Client[]               @relation("ResponsibleUser")
+  notes                         ClientNote[]
+  auditLogs                     AuditLog[]
   assignedTelegramConversations TelegramConversation[] @relation("AssignedAdmin")
   sentTelegramMessages          TelegramMessage[]
   telegramInternalNotes         TelegramInternalNote[]
+  // Профессиональный профиль монтажёра — задел под будущий личный кабинет
+  // (см. EditorProfile). Nullable/1:1: не у каждого User с role=EDITOR профиль
+  // обязательно уже создан, и не у каждого EditorProfile обязательно есть
+  // учётная запись (подрядчики без доступа к платформе).
+  editorProfile                 EditorProfile?
 
   @@map("cms_user")
 }
@@ -240,41 +301,47 @@ model User {
 // ============================================================
 
 model Client {
-  id               String        @id @default(cuid())
-  name             String
-  firstName        String?       @map("first_name")
-  lastName         String?       @map("last_name")
-  patronymic       String?
-  workplace        String?
-  type             ClientType    @default(INDIVIDUAL)
-  status           ClientStatus  @default(NEW)
-  source           ClientSource?
-  customSource     String?       @map("custom_source")
-  contactPerson    String?       @map("contact_person")
-  phone            String?
-  telegram         String?
-  email            String?
-  companyName      String?       @map("company_name")
-  inn              String?
-  kpp              String?
-  ogrn             String?
-  legalAddress     String?       @map("legal_address")
-  documentComment  String?       @map("document_comment")
-  notes            String?
-  responsibleUserId String?      @map("responsible_user_id")
-  createdAt        DateTime      @default(now()) @map("created_at")
-  updatedAt        DateTime      @updatedAt      @map("updated_at")
-  deletedAt        DateTime?     @map("deleted_at")
+  id                String        @id @default(cuid())
+  name              String
+  firstName         String?       @map("first_name")
+  lastName          String?       @map("last_name")
+  patronymic        String?
+  workplace         String?
+  type              ClientType    @default(INDIVIDUAL)
+  status            ClientStatus  @default(NEW)
+  source            ClientSource?
+  customSource      String?       @map("custom_source")
+  contactPerson     String?       @map("contact_person")
+  phone             String?
+  telegram          String?
+  email             String?
+  companyName       String?       @map("company_name")
+  inn               String?
+  kpp               String?
+  ogrn              String?
+  legalAddress      String?       @map("legal_address")
+  documentComment   String?       @map("document_comment")
+  notes             String?
+  responsibleUserId String?       @map("responsible_user_id")
+  createdAt         DateTime      @default(now()) @map("created_at")
+  updatedAt         DateTime      @updatedAt @map("updated_at")
+  deletedAt         DateTime?     @map("deleted_at")
 
-  responsibleUser  User?          @relation("ResponsibleUser", fields: [responsibleUserId], references: [id])
-  contacts         ClientContact[]
-  clientNotes      ClientNote[]
-  documents        Document[]
-  visits           ClientVisit[]
-  scheduleEvents   ScheduleEvent[]
-  subscriptions    ClientSubscription[]
-  orders           Order[]
+  responsibleUser       User?                  @relation("ResponsibleUser", fields: [responsibleUserId], references: [id])
+  contacts              ClientContact[]
+  clientNotes           ClientNote[]
+  documents             Document[]
+  visits                ClientVisit[]
+  scheduleEvents        ScheduleEvent[]
+  subscriptions         ClientSubscription[]
+  orders                Order[]
   telegramConversations TelegramConversation[]
+  // Только САМОСТОЯТЕЛЬНЫЕ проекты монтажа без исходного заказа (см.
+  // MontageProject.clientId) — проекты монтажа, привязанные к заказу, здесь
+  // не отображаются напрямую, их клиент читается через order.clientId
+  // (getMontageProjectsForClient в src/lib/actions/montage.ts объединяет оба
+  // случая одним запросом, не дублируя связь).
+  montageProjects       MontageProject[]
 
   @@map("cms_client")
 }
@@ -316,8 +383,8 @@ model ClientVisit {
   // не может задвоить заказ, даже если его прервали и перезапустили посередине.
   orderId       String?   @unique @map("order_id")
 
-  client        Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  order         Order?    @relation(fields: [orderId], references: [id])
+  client Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  order  Order? @relation(fields: [orderId], references: [id])
 
   @@index([clientId])
   @@map("cms_client_visit")
@@ -337,9 +404,9 @@ model ClientContact {
   email     String?
   comment   String?
   createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt      @map("updated_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
-  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  client Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
 
   @@map("cms_client_contact")
 }
@@ -354,10 +421,10 @@ model ClientNote {
   authorId  String?  @map("author_id")
   text      String
   createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt      @map("updated_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
-  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  author    User?    @relation(fields: [authorId], references: [id])
+  client Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  author User?  @relation(fields: [authorId], references: [id])
 
   @@map("cms_client_note")
 }
@@ -375,7 +442,7 @@ model AuditLog {
   metadata   Json?
   createdAt  DateTime @default(now()) @map("created_at")
 
-  user       User?    @relation(fields: [userId], references: [id])
+  user User? @relation(fields: [userId], references: [id])
 
   @@index([entityType, entityId])
   @@index([userId])
@@ -395,7 +462,7 @@ model Document {
   uploadedById String?  @map("uploaded_by_id")
   createdAt    DateTime @default(now()) @map("created_at")
 
-  client       Client?  @relation(fields: [clientId], references: [id])
+  client Client? @relation(fields: [clientId], references: [id])
 
   @@map("cms_document")
 }
@@ -409,65 +476,65 @@ model Document {
 // ============================================================
 
 model ScheduleEvent {
-  id                       String                    @id @default(cuid())
-  calendarEventId          String?                   @unique @map("calendar_event_id")
+  id                       String                   @id @default(cuid())
+  calendarEventId          String?                  @unique @map("calendar_event_id")
   // Снэпшот для страницы Клиентов (блок неподтверждённых) — НЕ источник правды.
   // На странице Расписания эти поля всегда берутся из живого Google Calendar.
   title                    String?
   description              String?
-  startAt                  DateTime?                 @map("start_at")
-  endAt                    DateTime?                 @map("end_at")
+  startAt                  DateTime?                @map("start_at")
+  endAt                    DateTime?                @map("end_at")
   // Тип события: студийная запись / встреча / отсутствие сотрудника / служебная
   // пометка / прочее. Проверки материалов и оплаты применяются только к
   // STUDIO_BOOKING. Пока аннотации нет — тип определяется на лету по названию
   // события (classifyEventType), сюда он попадает только после первого
   // сохранения карточки (авто или вручную выбранный).
-  eventType                EventType                 @default(STUDIO_BOOKING) @map("event_type")
-  clientId                 String?                   @map("client_id")
-  clientNameRaw            String?                   @map("client_name_raw")
-  contactRaw               String?                   @map("contact_raw")
-  companyRaw               String?                   @map("company_raw")
+  eventType                EventType                @default(STUDIO_BOOKING) @map("event_type")
+  clientId                 String?                  @map("client_id")
+  clientNameRaw            String?                  @map("client_name_raw")
+  contactRaw               String?                  @map("contact_raw")
+  companyRaw               String?                  @map("company_raw")
   room                     String?
   format                   String?
-  camerasCount             Int?                      @map("cameras_count")
-  estimatedPrice           Float?                    @map("estimated_price")
-  paymentMethod            PaymentMethod?            @map("payment_method")
+  camerasCount             Int?                     @map("cameras_count")
+  estimatedPrice           Float?                   @map("estimated_price")
+  paymentMethod            PaymentMethod?           @map("payment_method")
   notes                    String?
   // Структурированная пометка акции (см. OrderPromotionType выше и
   // src/lib/promotion-model.ts) — источник правды по акции для записей с
   // уже существующей студийной записью, тот же принцип двойного источника,
   // что и у notes/Order.comment (см. toDTO в actions/orders.ts).
-  promotionType            OrderPromotionType?       @map("promotion_type")
+  promotionType            OrderPromotionType?      @map("promotion_type")
   // Предварительное бронирование студии для гримёра ПЕРЕД основной съёмкой —
   // отдельный интервал, не часть длительности/стоимости самой съёмки.
   // Источник правды — длительность в минутах; время начала гримёра всегда
   // пересчитывается от startAt (см. computeMakeupInterval, schedule-model.ts),
   // а не хранится отдельно, чтобы перенос съёмки не рассинхронизировал его.
   // null/0 — гримёр не предусмотрен.
-  makeupDurationMinutes    Int?                      @map("makeup_duration_minutes")
-  yandexDiskUrl            String?                   @map("yandex_disk_url")
-  yandexDiskUrlAddedAt     DateTime?                  @map("yandex_disk_url_added_at")
-  yandexDiskUrlExpiresAt   DateTime?                  @map("yandex_disk_url_expires_at")
-  nasBackupUrl             String?                   @map("nas_backup_url")
-  materialsComment         String?                   @map("materials_comment")
-  materialsStatus          MaterialsStatus           @default(NO_LINKS) @map("materials_status")
+  makeupDurationMinutes    Int?                     @map("makeup_duration_minutes")
+  yandexDiskUrl            String?                  @map("yandex_disk_url")
+  yandexDiskUrlAddedAt     DateTime?                @map("yandex_disk_url_added_at")
+  yandexDiskUrlExpiresAt   DateTime?                @map("yandex_disk_url_expires_at")
+  nasBackupUrl             String?                  @map("nas_backup_url")
+  materialsComment         String?                  @map("materials_comment")
+  materialsStatus          MaterialsStatus          @default(NO_LINKS) @map("materials_status")
   // Нужен ли монтаж после съёмки — null, пока администратор не решил (карточка
   // ещё не сохранялась с выбором); true/false после решения. Управляет
   // автопереводом связанного заказа в «Монтаж»/«Завершено», см. upsertScheduleEvent.
-  editingRequired          Boolean?                  @map("editing_required")
-  clientConfirmationStatus ClientConfirmationStatus  @default(NOT_REQUIRED) @map("client_confirmation_status")
-  createdAt                DateTime                  @default(now()) @map("created_at")
-  updatedAt                DateTime                  @updatedAt      @map("updated_at")
+  editingRequired          Boolean?                 @map("editing_required")
+  clientConfirmationStatus ClientConfirmationStatus @default(NOT_REQUIRED) @map("client_confirmation_status")
+  createdAt                DateTime                 @default(now()) @map("created_at")
+  updatedAt                DateTime                 @updatedAt @map("updated_at")
 
   // Заказ (Order), из которого эта запись создана — только для записей,
   // созданных вручную через раздел "Заказы" без события Google Calendar
   // (calendarEventId в этом случае null). Записи, импортированные из живого
   // календаря, тоже могут иметь orderId — см. Order.googleEventId.
-  orderId                  String?                   @unique @map("order_id")
+  orderId String? @unique @map("order_id")
 
-  client                   Client?                   @relation(fields: [clientId], references: [id])
-  order                    Order?                    @relation(fields: [orderId], references: [id])
-  subscriptionUsage        SubscriptionUsage?
+  client            Client?            @relation(fields: [clientId], references: [id])
+  order             Order?             @relation(fields: [orderId], references: [id])
+  subscriptionUsage SubscriptionUsage?
 
   @@index([clientId])
   @@index([clientConfirmationStatus])
@@ -486,75 +553,81 @@ model ScheduleEvent {
 // ============================================================
 
 model Order {
-  id                String             @id @default(cuid())
-  status            OrderStatus        @default(LEAD)
-  source            OrderSource        @default(MANUAL)
-  title             String?
-  clientId          String?            @map("client_id")
+  id                     String              @id @default(cuid())
+  status                 OrderStatus         @default(LEAD)
+  source                 OrderSource         @default(MANUAL)
+  title                  String?
+  clientId               String?             @map("client_id")
   // Снэпшот контактных данных на момент создания заказа — не источник правды,
   // если клиент привязан (clientId): тогда актуальные данные берутся из Client.
   // Хранится и для непривязанных заявок, и как история для привязанных.
-  clientName        String?            @map("client_name")
-  clientPhone       String?            @map("client_phone")
-  clientTelegram    String?            @map("client_telegram")
-  clientEmail       String?            @map("client_email")
-  clientType        ClientType?        @map("client_type")
-  companyName       String?            @map("company_name")
-  serviceType       String?            @map("service_type")
-  room              String?
-  plannedStartTime  DateTime?          @map("planned_start_time")
-  plannedEndTime    DateTime?          @map("planned_end_time")
-  durationMinutes   Int?               @map("duration_minutes")
-  preliminaryAmount Float?             @map("preliminary_amount")
-  paymentStatus     OrderPaymentStatus @default(NOT_SPECIFIED) @map("payment_status")
-  paymentMethod     PaymentMethod?     @map("payment_method")
-  comment           String?
+  clientName             String?             @map("client_name")
+  clientPhone            String?             @map("client_phone")
+  clientTelegram         String?             @map("client_telegram")
+  clientEmail            String?             @map("client_email")
+  clientType             ClientType?         @map("client_type")
+  companyName            String?             @map("company_name")
+  serviceType            String?             @map("service_type")
+  room                   String?
+  plannedStartTime       DateTime?           @map("planned_start_time")
+  plannedEndTime         DateTime?           @map("planned_end_time")
+  durationMinutes        Int?                @map("duration_minutes")
+  preliminaryAmount      Float?              @map("preliminary_amount")
+  paymentStatus          OrderPaymentStatus  @default(NOT_SPECIFIED) @map("payment_status")
+  paymentMethod          PaymentMethod?      @map("payment_method")
+  comment                String?
   // Структурированная пометка акции (см. OrderPromotionType и
   // src/lib/promotion-model.ts) — заявок без своей записи в расписании
   // (LEAD без даты) касается напрямую; для заказов с записью источник
   // правды — ScheduleEvent.promotionType, тот же принцип, что и у comment/notes.
-  promotionType     OrderPromotionType? @map("promotion_type")
+  promotionType          OrderPromotionType? @map("promotion_type")
   // Событие Google Calendar, из которого создан заказ (только source=GOOGLE_CALENDAR).
   // Используется для защиты от дублей при повторном импорте/сохранении события.
-  googleEventId     String?            @unique @map("google_event_id")
-  createdAt         DateTime           @default(now()) @map("created_at")
-  updatedAt         DateTime           @updatedAt      @map("updated_at")
-  completedAt       DateTime?          @map("completed_at")
+  googleEventId          String?             @unique @map("google_event_id")
+  createdAt              DateTime            @default(now()) @map("created_at")
+  updatedAt              DateTime            @updatedAt @map("updated_at")
+  completedAt            DateTime?           @map("completed_at")
   // Момент перевода в CANCELLED ("Отказ") — тот же принцип, что у completedAt
   // выше: выставляется один раз в updateOrderStatus и больше не трогается,
   // даже если заказ потом вернули из "Отказа" в другой статус.
-  rejectedAt        DateTime?          @map("rejected_at")
+  rejectedAt             DateTime?           @map("rejected_at")
   // Момент последней смены status (не путать с updatedAt — тот меняется при
   // любом редактировании заказа). Используется для сортировки карточек внутри
   // колонок канбана "по недавности изменения статуса". Обновляется явно в
   // updateOrderStatus/updateOrder — см. src/lib/actions/orders.ts.
-  statusUpdatedAt   DateTime           @default(now()) @map("status_updated_at")
+  statusUpdatedAt        DateTime            @default(now()) @map("status_updated_at")
   // ---- Архив (см. src/lib/order-model.ts: isOrderReadyForArchive,
   // ORDER_ARCHIVE_AFTER_DAYS) — статус COMPLETED/CANCELLED остаётся финальным
   // навсегда, isArchived лишь скрывает старую (>7 дней) карточку из основной
   // CRM-воронки в отдельный экран. Не путать со старым OrderStatus.ARCHIVED,
   // которому никогда ничего не присваивается.
-  isArchived        Boolean            @default(false) @map("is_archived")
-  archivedAt        DateTime?          @map("archived_at")
-  archiveReason     ArchiveReason?     @map("archive_reason")
+  isArchived             Boolean             @default(false) @map("is_archived")
+  archivedAt             DateTime?           @map("archived_at")
+  archiveReason          ArchiveReason?      @map("archive_reason")
   // Момент ручного "Вернуть из архива" — пока он позже statusUpdatedAt,
   // автосвип (archiveEligibleOrders) не трогает заказ повторно, даже если
   // completedAt/rejectedAt всё ещё старше 7 дней. Как только статус реально
   // меняется ещё раз, statusUpdatedAt обгоняет эту метку и заказ снова
   // становится кандидатом на архивацию по обычному правилу.
-  manuallyUnarchivedAt DateTime?       @map("manually_unarchived_at")
+  manuallyUnarchivedAt   DateTime?           @map("manually_unarchived_at")
   // Telegram-диалог, из переписки которого создан заказ (кнопка "Создать
   // заказ из переписки") — тот же принцип, что и googleEventId выше: поле,
   // отслеживающее источник, живёт на Order, а не на самом источнике.
-  telegramConversationId String?       @unique @map("telegram_conversation_id")
+  telegramConversationId String?             @unique @map("telegram_conversation_id")
 
-  client            Client?            @relation(fields: [clientId], references: [id])
-  scheduleEvent      ScheduleEvent?
+  client               Client?               @relation(fields: [clientId], references: [id])
+  scheduleEvent        ScheduleEvent?
   telegramConversation TelegramConversation? @relation(fields: [telegramConversationId], references: [id])
   // Исторический визит (ClientVisit), из которого этот заказ был создан
   // "повышением" при восстановлении истории студии — null для всех обычных
   // заказов (ручных, из календаря, из Telegram). См. ClientVisit.orderId.
-  visit             ClientVisit?
+  visit                ClientVisit?
+  // Проект(ы) монтажа, созданные по этому заказу — массив (не 1:1), чтобы не
+  // блокировать будущую возможность нескольких продуктов монтажа из одной
+  // съёмки (см. MontageProject.orderId и комментарий в ГЛАВНОЙ КОНЦЕПЦИИ ТЗ).
+  // В v1 автосоздание (ensureMontageProjectForOrder, src/lib/actions/montage.ts)
+  // гарантирует не больше одной АВТОМАТИЧЕСКИ созданной записи на заказ.
+  montageProjects      MontageProject[]
 
   @@index([clientId])
   @@index([status])
@@ -570,42 +643,42 @@ model Order {
 // ============================================================
 
 model TelegramConversation {
-  id               String                     @id @default(cuid())
+  id                String                     @id @default(cuid())
   // Строка, а не Int: chat_id супергрупп у Telegram выходит за пределы
   // диапазона обычного 32-битного целого.
-  telegramChatId   String                     @unique @map("telegram_chat_id")
-  chatType         TelegramChatType           @map("chat_type")
-  telegramUserId   String?                    @map("telegram_user_id")   // только для private
-  telegramUsername String?                    @map("telegram_username") // только для private
-  groupTitle       String?                    @map("group_title")       // только для group/supergroup, не используется в MVP
+  telegramChatId    String                     @unique @map("telegram_chat_id")
+  chatType          TelegramChatType           @map("chat_type")
+  telegramUserId    String?                    @map("telegram_user_id") // только для private
+  telegramUsername  String?                    @map("telegram_username") // только для private
+  groupTitle        String?                    @map("group_title") // только для group/supergroup, не используется в MVP
   // Имя/фамилия из профиля Telegram — подсказка для сопоставления с Client,
   // не источник правды (в отличие от Client.name после ручной привязки).
-  clientNameGuess  String?                    @map("client_name_guess")
+  clientNameGuess   String?                    @map("client_name_guess")
   // Раздельные first_name/last_name из Telegram (в отличие от clientNameGuess,
   // который их сразу склеивает) — нужны, чтобы форма создания клиента могла
   // предзаполнить поля "Имя"/"Фамилия" по отдельности, а не одной строкой.
   // Заполняются только при первом сообщении (как и clientNameGuess), не
   // обновляются на каждое новое сообщение.
-  telegramFirstName String?                   @map("telegram_first_name")
-  telegramLastName  String?                   @map("telegram_last_name")
-  phone            String?                                              // если клиент сам написал номер в чат
-  linkedClientId   String?                    @map("linked_client_id")
-  status           TelegramConversationStatus @default(NEW)
-  lastMessageAt    DateTime?                  @map("last_message_at")
-  createdAt        DateTime @default(now())   @map("created_at")
-  updatedAt        DateTime @updatedAt        @map("updated_at")
+  telegramFirstName String?                    @map("telegram_first_name")
+  telegramLastName  String?                    @map("telegram_last_name")
+  phone             String? // если клиент сам написал номер в чат
+  linkedClientId    String?                    @map("linked_client_id")
+  status            TelegramConversationStatus @default(NEW)
+  lastMessageAt     DateTime?                  @map("last_message_at")
+  createdAt         DateTime                   @default(now()) @map("created_at")
+  updatedAt         DateTime                   @updatedAt @map("updated_at")
 
   // ---- Consent-first (обязательно до подключения администратора) ----
-  consentStatus         TelegramConsentStatus @default(NONE) @map("consent_status")
+  consentStatus           TelegramConsentStatus @default(NONE) @map("consent_status")
   // Момент отправки запроса согласия для consentRequestVersion — чтобы не
   // слать его повторно на каждое новое сообщение клиента.
-  consentRequestSentAt   DateTime?            @map("consent_request_sent_at")
-  consentRequestVersion  String?              @map("consent_request_version")
+  consentRequestSentAt    DateTime?             @map("consent_request_sent_at")
+  consentRequestVersion   String?               @map("consent_request_version")
   // Telegram message_id сообщения с кнопкой «Согласиться» — нужен, чтобы
   // после нажатия убрать inline-кнопку из ЭТОГО конкретного сообщения через
   // editMessageReplyMarkup (иначе кнопка в Telegram-клиенте у клиента
   // остаётся кликабельной и после согласия).
-  consentRequestMessageId String?             @map("consent_request_message_id")
+  consentRequestMessageId String?               @map("consent_request_message_id")
 
   // ---- Рабочие поля инбокса ----
   assignedAdminId  String?   @map("assigned_admin_id") // информационная метка "кто ведёт", не ограничение видимости
@@ -629,36 +702,36 @@ model TelegramConversation {
 }
 
 model TelegramMessage {
-  id                String   @id @default(cuid())
-  conversationId    String   @map("conversation_id")
+  id                String                   @id @default(cuid())
+  conversationId    String                   @map("conversation_id")
   // update_id — для идемпотентности на уровне всего update (в т.ч.
   // callback_query, у которого нет message_id в привычном смысле).
-  telegramUpdateId  String?  @map("telegram_update_id")
+  telegramUpdateId  String?                  @map("telegram_update_id")
   // message_id у Telegram уникален только В РАМКАХ чата, не глобально —
   // поэтому дедуп ниже строится по паре (conversationId, telegramMessageId).
-  telegramMessageId String   @map("telegram_message_id")
+  telegramMessageId String                   @map("telegram_message_id")
   direction         TelegramMessageDirection
   // Кто фактически автор — клиент / администратор / бот (авто-сообщения
   // согласия) / системное событие. senderTelegramId/Username/Name заполнены
   // только когда senderType = CLIENT.
   // Дефолт CLIENT безопасен для миграции: все существующие строки на момент
   // добавления этого поля — реальные входящие сообщения от клиента.
-  senderType        TelegramSenderType @default(CLIENT) @map("sender_type")
-  senderAdminId     String?  @map("sender_admin_id") // если senderType = ADMIN
-  senderTelegramId  String?  @map("sender_telegram_id")
-  senderUsername    String?  @map("sender_username")
-  senderName        String?  @map("sender_name")
+  senderType        TelegramSenderType       @default(CLIENT) @map("sender_type")
+  senderAdminId     String?                  @map("sender_admin_id") // если senderType = ADMIN
+  senderTelegramId  String?                  @map("sender_telegram_id")
+  senderUsername    String?                  @map("sender_username")
+  senderName        String?                  @map("sender_name")
   text              String?
-  messageType       TelegramMessageType   @default(TEXT) @map("message_type")
-  status            TelegramMessageStatus @default(RECEIVED)
-  errorMessage      String?  @map("error_message")
-  sentAt            DateTime? @map("sent_at")
-  rawPayload        Json     @map("raw_payload")
-  createdAt         DateTime @default(now()) @map("created_at")
+  messageType       TelegramMessageType      @default(TEXT) @map("message_type")
+  status            TelegramMessageStatus    @default(RECEIVED)
+  errorMessage      String?                  @map("error_message")
+  sentAt            DateTime?                @map("sent_at")
+  rawPayload        Json                     @map("raw_payload")
+  createdAt         DateTime                 @default(now()) @map("created_at")
 
-  conversation      TelegramConversation @relation(fields: [conversationId], references: [id])
-  senderAdmin       User?                @relation(fields: [senderAdminId], references: [id])
-  attachment        TelegramMessageAttachment?
+  conversation TelegramConversation       @relation(fields: [conversationId], references: [id])
+  senderAdmin  User?                      @relation(fields: [senderAdminId], references: [id])
+  attachment   TelegramMessageAttachment?
 
   // Защита от дублей при повторной доставке update от Telegram.
   @@unique([conversationId, telegramMessageId])
@@ -680,7 +753,7 @@ model TelegramMessageAttachment {
   fileName             String?  @map("file_name")
   mimeType             String?  @map("mime_type")
   fileSize             Int?     @map("file_size")
-  duration             Int?     // voice/video, секунды
+  duration             Int? // voice/video, секунды
   width                Int?
   height               Int?
   // Статичный стикер (обычный webp) рендерится картинкой; анимированный
@@ -715,7 +788,7 @@ model TelegramConsent {
   source            String    @default("telegram_bot")
   telegramMessageId String?   @map("telegram_message_id")
   createdAt         DateTime  @default(now()) @map("created_at")
-  updatedAt         DateTime  @updatedAt      @map("updated_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
 
   conversation TelegramConversation @relation(fields: [conversationId], references: [id])
 
@@ -731,7 +804,7 @@ model TelegramInternalNote {
   authorUserId   String   @map("author_user_id")
   text           String
   createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @updatedAt      @map("updated_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
 
   conversation TelegramConversation @relation(fields: [conversationId], references: [id])
   author       User                 @relation(fields: [authorUserId], references: [id])
@@ -772,47 +845,47 @@ model TelegramSettings {
 // ============================================================
 
 model ClientSubscription {
-  id           String             @id @default(cuid())
-  clientId     String             @map("client_id")
-  packageHours Float              @map("package_hours")
+  id                 String             @id @default(cuid())
+  clientId           String             @map("client_id")
+  packageHours       Float              @map("package_hours")
   // Часы, использованные ДО того, как эту запись начали привязывать к событиям
   // расписания (например, реконструированные из старых заметок в Google-таблице,
   // где известен только текущий остаток, а не список сессий). Реальный расход
   // считается как openingUsedHours + сумма SubscriptionUsage.usedHours — так
   // packageHours всегда остаётся исходным размером пакета, а не "тем, что осталось".
-  openingUsedHours Float          @default(0) @map("opening_used_hours")
-  paidAmount   Float?             @map("paid_amount")
-  purchasedAt  DateTime           @default(now()) @map("purchased_at")
-  status       SubscriptionStatus @default(ACTIVE)
+  openingUsedHours   Float              @default(0) @map("opening_used_hours")
+  paidAmount         Float?             @map("paid_amount")
+  purchasedAt        DateTime           @default(now()) @map("purchased_at")
+  status             SubscriptionStatus @default(ACTIVE)
   // Момент последней смены status — параллель Order.statusUpdatedAt. Меняется
   // и автопереходами ACTIVE⇄USED_UP (списание/возврат часов), и ручными
   // действиями ниже — единственный источник правды здесь и там, и там —
   // updateSubscriptionStatus/chargeEventToSubscription (src/lib/actions/subscriptions.ts).
-  statusUpdatedAt DateTime         @default(now()) @map("status_updated_at")
+  statusUpdatedAt    DateTime           @default(now()) @map("status_updated_at")
   // ---- Даты переходов в каждый терминальный статус — по одному разу
   // (сохраняются при первом переходе, дальше не трогаются даже если статус
   // потом меняют ещё раз вручную) ----
-  usedAt       DateTime?          @map("used_at")
-  cancelledAt  DateTime?          @map("cancelled_at")
-  refundedAt   DateTime?          @map("refunded_at")
-  cancellationReason String?      @map("cancellation_reason")
-  refundAmount Float?             @map("refund_amount")
-  refundReason String?            @map("refund_reason")
+  usedAt             DateTime?          @map("used_at")
+  cancelledAt        DateTime?          @map("cancelled_at")
+  refundedAt         DateTime?          @map("refunded_at")
+  cancellationReason String?            @map("cancellation_reason")
+  refundAmount       Float?             @map("refund_amount")
+  refundReason       String?            @map("refund_reason")
   // Комментарий администратора — не привязан к конкретному статусу, можно
   // оставить/обновить при любом ручном действии (см. updateSubscriptionStatus).
-  adminComment String?            @map("admin_comment")
+  adminComment       String?            @map("admin_comment")
   // ---- Архив — оверлей ПОВЕРХ status, не замена ему (тот же принцип, что у
   // Order.isArchived): архивный абонемент сохраняет свой реальный статус
   // (used/cancelled/refunded/даже active), просто скрыт из активных списков и
   // недоступен для выбора в заказе. ----
-  isArchived   Boolean            @default(false) @map("is_archived")
-  archivedAt   DateTime?          @map("archived_at")
-  notes        String?
-  createdAt    DateTime           @default(now()) @map("created_at")
-  updatedAt    DateTime           @updatedAt      @map("updated_at")
+  isArchived         Boolean            @default(false) @map("is_archived")
+  archivedAt         DateTime?          @map("archived_at")
+  notes              String?
+  createdAt          DateTime           @default(now()) @map("created_at")
+  updatedAt          DateTime           @updatedAt @map("updated_at")
 
-  client       Client              @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  usages       SubscriptionUsage[]
+  client Client              @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  usages SubscriptionUsage[]
 
   @@index([clientId])
   @@index([status])
@@ -833,10 +906,10 @@ model SubscriptionUsage {
   // оплаты между абонементами или ручной корректировке (см. Часть 4 ТЗ).
   comment         String?
   createdAt       DateTime @default(now()) @map("created_at")
-  updatedAt       DateTime @updatedAt      @map("updated_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
 
-  subscription    ClientSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
-  scheduleEvent   ScheduleEvent      @relation(fields: [scheduleEventId], references: [id], onDelete: Cascade)
+  subscription  ClientSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  scheduleEvent ScheduleEvent      @relation(fields: [scheduleEventId], references: [id], onDelete: Cascade)
 
   @@index([subscriptionId])
   @@map("cms_subscription_usage")
@@ -864,33 +937,179 @@ model ExpenseCategory {
 // хранятся здесь — так же, как остаток часов абонемента не хранится в БД,
 // чтобы не рассинхронизироваться при пересчёте.
 model Expense {
-  id             String           @id @default(cuid())
-  externalSource String           @default("google_sheets") @map("external_source")
+  id             String    @id @default(cuid())
+  externalSource String    @default("google_sheets") @map("external_source")
   // Стабильный идентификатор строки таблицы — хэш от даты+названия+категории+
   // плановой суммы (полей, которые НЕ меняются при частичной оплате). Позволяет
   // при повторной синхронизации ОБНОВИТЬ существующий расход (если увеличилась
   // фактическая оплата), а не создать дубликат. Ручные расходы (без импорта) —
   // без внешнего идентификатора.
-  externalId     String?          @unique @map("external_id")
+  externalId     String?   @unique @map("external_id")
   date           DateTime?
   title          String
-  categoryId     String?          @map("category_id")
-  plannedAmount  Float?           @map("planned_amount")
-  actualAmount   Float?           @map("actual_amount")
+  categoryId     String?   @map("category_id")
+  plannedAmount  Float?    @map("planned_amount")
+  actualAmount   Float?    @map("actual_amount")
   // Статус как он записан в таблице ("Получен"/"Заказан" и т.д.) — хранится как
   // свободный текст, без строгого enum, потому что реальные данные содержат
   // нестандартные значения (например, для позиций-пожеланий на оборудование).
-  rawStatus      String?          @map("raw_status")
-  orderedBy      String?          @map("ordered_by")
-  paidBy         String?          @map("paid_by")
-  receivedBy     String?          @map("received_by")
+  rawStatus      String?   @map("raw_status")
+  orderedBy      String?   @map("ordered_by")
+  paidBy         String?   @map("paid_by")
+  receivedBy     String?   @map("received_by")
   comment        String?
-  createdAt      DateTime         @default(now()) @map("created_at")
-  updatedAt      DateTime         @updatedAt      @map("updated_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
 
-  category       ExpenseCategory? @relation(fields: [categoryId], references: [id])
+  category ExpenseCategory? @relation(fields: [categoryId], references: [id])
 
   @@index([categoryId])
   @@index([date])
   @@map("cms_expense")
+}
+
+// ============================================================
+// МОНТАЖЁРЫ — профессиональный профиль, отдельный от User (см. Role.EDITOR):
+// не у каждого монтажёра/подрядчика есть учётная запись платформы, и не
+// каждый User с ролью EDITOR обязательно уже оформлен как монтажёр (задел
+// под будущий личный кабинет — см. userId ниже).
+// ============================================================
+
+model EditorProfile {
+  id             String   @id @default(cuid())
+  // Учётная запись платформы этого монтажёра, если уже создана — nullable,
+  // т.к. подрядчики без доступа к платформе тоже должны попадать в базу
+  // монтажёров (см. ТЗ п.8). @unique — один User не может быть двумя профилями.
+  userId         String?  @unique @map("user_id")
+  firstName      String?  @map("first_name")
+  lastName       String?  @map("last_name")
+  // Единственное обязательное имя-поле — то, что реально показывается везде
+  // (списки, карточки проектов, канбан). firstName/lastName — опциональная
+  // структура поверх него (для будущей карточки монтажёра/личного кабинета),
+  // не источник правды для отображения.
+  displayName    String   @map("display_name")
+  phone          String?
+  telegram       String?
+  email          String?
+  specialization String?
+  notes          String?
+  // Единственный флаг "виден ли монтажёр как активный" — отдельного enum
+  // "статус" не заводим (ТЗ предупреждал не плодить поля вслепую: status и
+  // active в черновом списке ТЗ дублировали бы друг друга без второго
+  // самостоятельного смысла).
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  user     User?            @relation(fields: [userId], references: [id])
+  projects MontageProject[]
+
+  @@map("cms_editor_profile")
+}
+
+// ============================================================
+// ПРОЕКТ МОНТАЖА — отдельная сущность от Order (см. ГЛАВНУЮ КОНЦЕПЦИЮ ТЗ):
+// связан с исходным заказом (orderId) для проектов, созданных из съёмки
+// студии, либо самостоятелен (orderId = null, clientId — собственный).
+// Клиент/компания/данные съёмки для orderId-проектов НЕ дублируются —
+// читаются через order.client/order.scheduleEvent на уровне DTO
+// (src/lib/actions/montage.ts), та же дисциплина, что и у OrderDTO.
+// ============================================================
+
+model MontageProject {
+  id          String        @id @default(cuid())
+  // Не @unique: намеренно допускает в будущем несколько проектов монтажа на
+  // один заказ (см. комментарий у Order.montageProjects). Идемпотентность
+  // АВТОМАТИЧЕСКОГО создания (одно из ТЗ п.6: "не создаётся повторно при
+  // каждом сохранении заказа") обеспечивается в коде (ensureMontageProjectForOrder),
+  // а не ограничением схемы, ручное добавление второго проекта остаётся возможным.
+  orderId     String?       @map("order_id")
+  // Только для САМОСТОЯТЕЛЬНЫХ проектов (orderId = null) — см. Client.montageProjects.
+  // Для проектов, привязанных к заказу, клиент читается через order.clientId,
+  // это поле у них остаётся null (не дублируем).
+  clientId    String?       @map("client_id")
+  title       String?
+  description String?
+  // "Тип контента" (ТЗ п.19) — подкаст/рилсы/моушен-дизайн и т.п., свободный
+  // текст: в реальных исторических данных (Google-таблица) формулировки не
+  // унифицированы, вводить закрытый enum на первом этапе преждевременно.
+  contentType String?       @map("content_type")
+  status      MontageStatus @default(NEW)
+
+  editorId            String?   @map("editor_id")
+  // Дополнительные исполнители — простой список id EditorProfile без ролей
+  // (озвучка/моушен и т.п. из ТЗ п.26 сознательно не заведены отдельно: "не
+  // усложнять интерфейс без необходимости", в карточке один основной
+  // ответственный + этот список).
+  additionalEditorIds String[]  @map("additional_editor_ids")
+  assignedAt          DateTime? @map("assigned_at")
+
+  sourceReceivedAt DateTime?            @map("source_received_at")
+  startedAt        DateTime?            @map("started_at")
+  // Способ задания срока и сам срок — см. MontageDeadlineType выше.
+  deadlineType     MontageDeadlineType? @map("deadline_type")
+  // Итоговая рассчитанная дата дедлайна независимо от deadlineType — единый
+  // helper computeMontageDeadline (src/lib/montage-model.ts) пересчитывает её
+  // при сохранении, здесь всегда хранится готовое значение для сортировки/
+  // фильтров/просрочки без пересчёта на каждом чтении.
+  deadlineDate     DateTime?            @map("deadline_date")
+  // Исходное "количество дней", если выбран этот способ — хранится отдельно от
+  // deadlineDate (см. ТЗ п.19: "не хранить только строку «10 дней»"), чтобы при
+  // повторном открытии карточки показать именно то число, которое ввели.
+  turnaroundDays   Int?                 @map("turnaround_days")
+  completedAt      DateTime?            @map("completed_at")
+  deliveredAt      DateTime?            @map("delivered_at")
+
+  // ---- Финансы: два независимых источника суммы, прибыль считается, а не
+  // хранится (см. computeMontageProfit, src/lib/montage-model.ts) ----
+  clientAmount        Float?                     @map("client_amount")
+  editorAmount        Float?                     @map("editor_amount")
+  clientPaymentStatus MontageClientPaymentStatus @default(NOT_SPECIFIED) @map("client_payment_status")
+  editorPaymentStatus MontageEditorPaymentStatus @default(NOT_CALCULATED) @map("editor_payment_status")
+  clientPaidAt        DateTime?                  @map("client_paid_at")
+  editorPaidAt        DateTime?                  @map("editor_paid_at")
+  paymentComment      String?                    @map("payment_comment")
+
+  // ---- Материалы: исходники и финальный результат — разные поля (ТЗ п.21:
+  // "не использовать ссылку исходников как ссылку на финальный монтаж").
+  // sourceMaterialsUrl — только ПЕРЕОПРЕДЕЛЕНИЕ для проектов, у которых нет
+  // связанного заказа/записи или нужна другая ссылка; для обычных
+  // orderId-проектов исходники по умолчанию читаются из
+  // order.scheduleEvent.yandexDiskUrl (см. getMontageSourceMaterialsUrl,
+  // src/lib/montage-model.ts) — не дублируем существующее поле. ----
+  sourceMaterialsUrl    String? @map("source_materials_url")
+  mountedMaterialNasUrl String? @map("mounted_material_nas_url")
+  deliveryUrl           String? @map("delivery_url")
+  materialsComment      String? @map("materials_comment")
+
+  // ---- Правки ----
+  revisionsIncluded Int?    @map("revisions_included")
+  revisionsUsed     Int     @default(0) @map("revisions_used")
+  revisionsComment  String? @map("revisions_comment")
+
+  requirements    String?
+  internalComment String? @map("internal_comment")
+  clientComment   String? @map("client_comment")
+
+  // ---- Импорт из исторической Google-таблицы (см. scripts/import-montage-projects) ----
+  importSource     String? @map("import_source")
+  // Fingerprint строки исходной таблицы — тот же принцип, что ClientVisit.sourceRowHash
+  // и Expense.externalId: гарантирует, что повторный запуск импорта обновит, а
+  // не задвоит проект.
+  importExternalId String? @unique @map("import_external_id")
+
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+  archivedAt DateTime? @map("archived_at")
+
+  order  Order?         @relation(fields: [orderId], references: [id])
+  client Client?        @relation(fields: [clientId], references: [id])
+  editor EditorProfile? @relation(fields: [editorId], references: [id])
+
+  @@index([orderId])
+  @@index([clientId])
+  @@index([editorId])
+  @@index([status])
+  @@index([deadlineDate])
+  @@map("cms_montage_project")
 }

@@ -491,7 +491,10 @@ export interface OrderMonthGroup<T> {
 
 const MONTH_LABEL_FORMAT = new Intl.DateTimeFormat('ru-RU', { month: 'long', year: 'numeric' })
 
-function monthKey(d: Date): string {
+// Экспортирован — переиспользуется в src/lib/montage-model.ts для помесячной
+// аналитики монтажёра (та же "YYYY-MM" группировка, что и здесь для заказов),
+// вместо второй копии того же форматирования даты.
+export function monthKey(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
 }
 
