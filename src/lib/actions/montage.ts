@@ -11,8 +11,8 @@ import type {
 import {
   computeMontageProfit, computeMontageDeadline, isMontageOverdue, montageDeadlineLabel,
   getMontageSourceMaterialsUrl, getMontageAttentionReasons, mapMontageStatusToOrderStatus,
-  computeMontageDashboardStats, classifyMontageContentType, MONTAGE_ARCHIVABLE_STATUSES,
-  type MontageAttentionReason, type MontageDashboardStats,
+  computeMontageDashboardStats, classifyMontageContentType, getMontageMaterialsState, MONTAGE_ARCHIVABLE_STATUSES,
+  type MontageAttentionReason, type MontageDashboardStats, type MontageMaterialsState,
 } from '@/lib/montage-model'
 import { updateOrderStatus } from '@/lib/actions/orders'
 
@@ -134,8 +134,14 @@ export interface MontageProjectDTO {
   sourceMaterialsUrl: string | null
   // Эффективная ссылка на исходники — см. getMontageSourceMaterialsUrl
   // (montage-model.ts): собственное поле, иначе материалы связанного заказа.
+  // Это "чем сейчас пользуется монтажёр" — НЕ то же самое, что контроль NAS
+  // ниже (см. комментарий у sourceMaterialsNasUrl в схеме).
   effectiveSourceMaterialsUrl: string | null
+  // Контроль материалов на NAS (ТЗ "точечно доработать контроль материалов") —
+  // два независимых NAS-поля, единое состояние — см. getMontageMaterialsState.
+  sourceMaterialsNasUrl: string | null
   mountedMaterialNasUrl: string | null
+  materialsState: MontageMaterialsState
   deliveryUrl: string | null
   materialsComment: string | null
   revisionsIncluded: number | null
@@ -182,6 +188,11 @@ function toDTO(row: MontageProjectWithRelations): MontageProjectDTO {
   const deadlineState = { deadlineDate: row.deadlineDate, status: row.status, deliveredAt: row.deliveredAt, isArchived: row.isArchived }
   const hasNoClientLink = !row.orderId && !row.clientId
   const isHistoricalImport = !!row.importSource
+  const materialsState = getMontageMaterialsState({
+    status: row.status, sourceReceivedAt: row.sourceReceivedAt,
+    sourceMaterialsNasUrl: row.sourceMaterialsNasUrl, mountedMaterialNasUrl: row.mountedMaterialNasUrl,
+    isArchived: row.isArchived,
+  })
 
   return {
     id: row.id,
@@ -223,7 +234,9 @@ function toDTO(row: MontageProjectWithRelations): MontageProjectDTO {
     paymentComment: row.paymentComment,
     sourceMaterialsUrl: row.sourceMaterialsUrl,
     effectiveSourceMaterialsUrl,
+    sourceMaterialsNasUrl: row.sourceMaterialsNasUrl,
     mountedMaterialNasUrl: row.mountedMaterialNasUrl,
+    materialsState,
     deliveryUrl: row.deliveryUrl,
     materialsComment: row.materialsComment,
     revisionsIncluded: row.revisionsIncluded,
@@ -241,7 +254,8 @@ function toDTO(row: MontageProjectWithRelations): MontageProjectDTO {
     deadlineLabel: montageDeadlineLabel(deadlineState),
     attentionReasons: getMontageAttentionReasons({
       status: row.status, editorId: row.editorId, deadlineDate: row.deadlineDate, deliveredAt: row.deliveredAt,
-      effectiveSourceMaterialsUrl, mountedMaterialNasUrl: row.mountedMaterialNasUrl,
+      effectiveSourceMaterialsUrl, sourceMaterialsNasUrl: row.sourceMaterialsNasUrl, mountedMaterialNasUrl: row.mountedMaterialNasUrl,
+      sourceReceivedAt: row.sourceReceivedAt,
       clientAmount: row.clientAmount, clientPaymentStatus: row.clientPaymentStatus,
       title: row.title, description: row.description, hasNoClientLink, isHistoricalImport,
       isArchived: row.isArchived,
@@ -376,6 +390,7 @@ export interface MontageProjectInput {
   editorPaidAt?: string | null
   paymentComment?: string
   sourceMaterialsUrl?: string | null
+  sourceMaterialsNasUrl?: string | null
   mountedMaterialNasUrl?: string | null
   deliveryUrl?: string | null
   materialsComment?: string
@@ -476,6 +491,7 @@ export async function createMontageProject(
         editorPaidAt: input.editorPaidAt ? new Date(input.editorPaidAt) : null,
         paymentComment: input.paymentComment?.trim() || null,
         sourceMaterialsUrl: input.sourceMaterialsUrl?.trim() || null,
+        sourceMaterialsNasUrl: input.sourceMaterialsNasUrl?.trim() || null,
         mountedMaterialNasUrl: input.mountedMaterialNasUrl?.trim() || null,
         deliveryUrl: input.deliveryUrl?.trim() || null,
         materialsComment: input.materialsComment?.trim() || null,
@@ -564,6 +580,7 @@ export async function updateMontageProject(
         editorPaidAt: input.editorPaidAt !== undefined ? (input.editorPaidAt ? new Date(input.editorPaidAt) : null) : undefined,
         paymentComment: input.paymentComment !== undefined ? (input.paymentComment.trim() || null) : undefined,
         sourceMaterialsUrl: input.sourceMaterialsUrl !== undefined ? (input.sourceMaterialsUrl?.trim() || null) : undefined,
+        sourceMaterialsNasUrl: input.sourceMaterialsNasUrl !== undefined ? (input.sourceMaterialsNasUrl?.trim() || null) : undefined,
         mountedMaterialNasUrl: input.mountedMaterialNasUrl !== undefined ? (input.mountedMaterialNasUrl?.trim() || null) : undefined,
         deliveryUrl: input.deliveryUrl !== undefined ? (input.deliveryUrl?.trim() || null) : undefined,
         materialsComment: input.materialsComment !== undefined ? (input.materialsComment.trim() || null) : undefined,

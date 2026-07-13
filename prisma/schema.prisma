@@ -1157,6 +1157,16 @@ model MontageProject {
   // order.scheduleEvent.yandexDiskUrl (см. getMontageSourceMaterialsUrl,
   // src/lib/montage-model.ts) — не дублируем существующее поле. ----
   sourceMaterialsUrl    String? @map("source_materials_url")
+  // Отдельное, специально NAS-поле — сознательно НЕ то же самое, что
+  // sourceMaterialsUrl выше. sourceMaterialsUrl/effectiveSourceMaterialsUrl —
+  // это "чем сейчас реально пользуется монтажёр" (обычно Яндекс.Диск, ссылка
+  // истекает через 14 дней, см. YANDEX_LINK_EXPIRY_DAYS в schedule-model.ts),
+  // а sourceMaterialsNasUrl — это отдельный, более строгий вопрос "исходники
+  // сохранены на постоянное хранение NAS" (ТЗ контроля материалов: "не считать
+  // ссылку на Яндекс.Диск заменой обязательному хранению на NAS"). Оба поля
+  // независимы и оба видны в карточке — не переиспользуем/не переименовываем
+  // существующее поле, чтобы не менять его текущее поведение и потребителей.
+  sourceMaterialsNasUrl String? @map("source_materials_nas_url")
   mountedMaterialNasUrl String? @map("mounted_material_nas_url")
   deliveryUrl           String? @map("delivery_url")
   materialsComment      String? @map("materials_comment")

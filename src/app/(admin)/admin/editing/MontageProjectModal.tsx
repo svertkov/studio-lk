@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { Search, X, AlertTriangle } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -17,6 +17,7 @@ import {
   MONTAGE_STATUS_ORDER, MONTAGE_STATUS_LABELS, MONTAGE_CLIENT_PAYMENT_STATUS_LABELS, MONTAGE_EDITOR_PAYMENT_STATUS_LABELS,
   MONTAGE_CONTENT_TYPE_ORDER, MONTAGE_CONTENT_TYPE_LABELS, MONTAGE_ATTENTION_LABELS, MONTAGE_ARCHIVABLE_STATUSES,
   computeMontageDeadline, computeMontageProfit, isMontageOverdue, montageDeadlineLabel,
+  getMontageMaterialsState, getMontageMaterialsMissingFields,
   type MontageStatus, type MontageClientPaymentStatus, type MontageEditorPaymentStatus, type MontageDeadlineType,
   type MontageContentType, type MontageTurnaroundDayType, type MontageAttentionReason,
 } from '@/lib/montage-model'
@@ -114,11 +115,15 @@ interface Props {
   // заказу, у которого уже есть проект(ы) — ТЗ п.18: "предупредить и не
   // создавать дубль без явного подтверждения".
   existingProjects: MontageProjectDTO[]
+  // Карточка открыта кликом по предупреждению материалов в таблице — при
+  // монтаже прокручиваем к разделу "Материалы" и ставим focus на первое
+  // отсутствующее поле (ТЗ п.7). Обычное открытие карточки этот проп не задаёт.
+  focusMaterialsOnOpen?: boolean
   onOpenChange: (open: boolean) => void
   onSaved: () => void
 }
 
-export default function MontageProjectModal({ project, orders, editors, existingProjects, onOpenChange, onSaved }: Props) {
+export default function MontageProjectModal({ project, orders, editors, existingProjects, focusMaterialsOnOpen, onOpenChange, onSaved }: Props) {
   const isEdit = !!project
 
   // ---- Шаг 1 (только при создании): привязать к заказу или самостоятельный (ТЗ п.18) ----
@@ -181,9 +186,41 @@ export default function MontageProjectModal({ project, orders, editors, existing
   const [paymentComment, setPaymentComment] = useState(project?.paymentComment ?? '')
 
   const [sourceMaterialsUrl, setSourceMaterialsUrl] = useState(project?.sourceMaterialsUrl ?? '')
+  // Контроль материалов на NAS (ТЗ "точечно доработать контроль материалов") —
+  // отдельное от sourceMaterialsUrl поле, см. комментарий у
+  // MontageProject.sourceMaterialsNasUrl в схеме: "чем сейчас пользуется
+  // монтажёр" (обычно Яндекс.Диск) — не то же самое, что "сохранено на NAS".
+  const [sourceMaterialsNasUrl, setSourceMaterialsNasUrl] = useState(project?.sourceMaterialsNasUrl ?? '')
   const [mountedMaterialNasUrl, setMountedMaterialNasUrl] = useState(project?.mountedMaterialNasUrl ?? '')
   const [deliveryUrl, setDeliveryUrl] = useState(project?.deliveryUrl ?? '')
   const [materialsComment, setMaterialsComment] = useState(project?.materialsComment ?? '')
+
+  const materialsSectionRef = useRef<HTMLParagraphElement>(null)
+  const sourceMaterialsNasInputRef = useRef<HTMLInputElement>(null)
+  const mountedMaterialNasInputRef = useRef<HTMLInputElement>(null)
+
+  // Прокрутка + focus при открытии карточки кликом по предупреждению
+  // материалов в таблице (ТЗ п.7) — один раз при монтаже, читает НАЧАЛЬНЫЕ
+  // значения из project (не текущее состояние формы), поэтому зависимости
+  // эффекта стабильны и не перезапускают его при каждом вводе в поле.
+  useEffect(() => {
+    if (!focusMaterialsOnOpen || !project) return
+    // Диалог (@base-ui/react/dialog) сам ставит начальный focus при открытии
+    // (плюс своя transition, см. data-open:animate-in в dialog.tsx) — если
+    // сфокусировать поле сразу, эта внутренняя логика диалога срабатывает
+    // ПОСЛЕ и перехватывает focus обратно на дефолтный элемент. Небольшая
+    // задержка (дольше duration-100 диалога) даёт её логике отработать первой.
+    const timer = setTimeout(() => {
+      materialsSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      const target = !project.sourceMaterialsNasUrl
+        ? sourceMaterialsNasInputRef.current
+        : !project.mountedMaterialNasUrl
+          ? mountedMaterialNasInputRef.current
+          : null
+      target?.focus({ preventScroll: true })
+    }, 150)
+    return () => clearTimeout(timer)
+  }, [focusMaterialsOnOpen, project])
 
   const [revisionsIncluded, setRevisionsIncluded] = useState(project?.revisionsIncluded != null ? String(project.revisionsIncluded) : '')
   const [revisionsUsed, setRevisionsUsed] = useState(String(project?.revisionsUsed ?? 0))
@@ -225,6 +262,19 @@ export default function MontageProjectModal({ project, orders, editors, existing
   const deadlineIsOverduePreview = isMontageOverdue(deadlineStateForLabel)
 
   const profitPreview = computeMontageProfit(clientAmount ? Number(clientAmount) : null, editorAmount ? Number(editorAmount) : null)
+
+  // Контроль материалов (ТЗ п.8) — та же функция, что таблица/"Требует
+  // внимания" (getMontageMaterialsState, montage-model.ts), с текущими (ещё
+  // не сохранёнными) значениями формы, чтобы предупреждение исчезало сразу,
+  // как только вставлена вторая ссылка, без ожидания сохранения.
+  const materialsStatePreview = useMemo(() => getMontageMaterialsState({
+    status, sourceReceivedAt: sourceReceivedAt || null,
+    sourceMaterialsNasUrl: sourceMaterialsNasUrl || null, mountedMaterialNasUrl: mountedMaterialNasUrl || null,
+    isArchived: isEdit ? project!.isArchived : false,
+  }), [status, sourceReceivedAt, sourceMaterialsNasUrl, mountedMaterialNasUrl, isEdit, project])
+  const materialsMissingPreview = useMemo(() => getMontageMaterialsMissingFields({
+    status, sourceMaterialsNasUrl: sourceMaterialsNasUrl || null, mountedMaterialNasUrl: mountedMaterialNasUrl || null,
+  }), [status, sourceMaterialsNasUrl, mountedMaterialNasUrl])
 
   const duplicateOrderProjects = !isEdit && selectedOrderId
     ? existingProjects.filter(p => p.orderId === selectedOrderId)
@@ -331,6 +381,7 @@ export default function MontageProjectModal({ project, orders, editors, existing
       editorPaidAt: editorPaidAt || null,
       paymentComment: paymentComment || undefined,
       sourceMaterialsUrl: sourceMaterialsUrl || null,
+      sourceMaterialsNasUrl: sourceMaterialsNasUrl || null,
       mountedMaterialNasUrl: mountedMaterialNasUrl || null,
       deliveryUrl: deliveryUrl || null,
       materialsComment: materialsComment || undefined,
@@ -768,15 +819,45 @@ export default function MontageProjectModal({ project, orders, editors, existing
                 </Field>
               </div>
 
-              <p className={SECTION}>Материалы</p>
+              <p ref={materialsSectionRef} className={SECTION}>Материалы</p>
               <div className="space-y-3">
+                {materialsStatePreview === 'MISSING' && (
+                  <div className="flex items-start gap-2 bg-red-950/20 border border-red-800/40 rounded-lg px-3 py-2.5">
+                    <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5 text-red-400" />
+                    <p className="text-red-300 text-xs">Материалы не прикреплены: отсутствуют исходники и готовая работа.</p>
+                  </div>
+                )}
+                {materialsStatePreview === 'PARTIAL' && (
+                  <div className="flex items-start gap-2 bg-amber-950/20 border border-amber-600/40 rounded-lg px-3 py-2.5">
+                    <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5 text-amber-400" />
+                    <p className="text-amber-300 text-xs">
+                      {materialsMissingPreview.missingSource ? 'Не прикреплена ссылка на исходники на NAS.' : 'Не прикреплена ссылка на готовый материал на NAS.'}
+                    </p>
+                  </div>
+                )}
                 <Field>
                   <FieldLabel>Ссылка на исходники {isEdit && project!.orderId && !sourceMaterialsUrl ? '(по умолчанию — со съёмки)' : ''}</FieldLabel>
                   <input value={sourceMaterialsUrl} onChange={e => setSourceMaterialsUrl(e.target.value)} placeholder="https://disk.yandex.ru/..." className={INPUT} />
                 </Field>
                 <Field>
+                  <FieldLabel>Ссылка на исходники на NAS</FieldLabel>
+                  <input
+                    ref={sourceMaterialsNasInputRef}
+                    value={sourceMaterialsNasUrl}
+                    onChange={e => setSourceMaterialsNasUrl(e.target.value)}
+                    placeholder="\\\\nas\\..."
+                    className={INPUT}
+                  />
+                </Field>
+                <Field>
                   <FieldLabel>Ссылка на NAS (финальный материал)</FieldLabel>
-                  <input value={mountedMaterialNasUrl} onChange={e => setMountedMaterialNasUrl(e.target.value)} placeholder="\\\\nas\\..." className={INPUT} />
+                  <input
+                    ref={mountedMaterialNasInputRef}
+                    value={mountedMaterialNasUrl}
+                    onChange={e => setMountedMaterialNasUrl(e.target.value)}
+                    placeholder="\\\\nas\\..."
+                    className={INPUT}
+                  />
                 </Field>
                 <Field>
                   <FieldLabel>Ссылка на превью / отдачу клиенту</FieldLabel>

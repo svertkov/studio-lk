@@ -3,7 +3,9 @@ import {
   computeMontageProfit, computeMontageMargin,
   classifyMontageContentType,
   computeMontageDeadline, isMontageOverdue, montageDeadlineLabel,
-  getMontageSourceMaterialsUrl, isMontageMissingNas,
+  getMontageSourceMaterialsUrl,
+  getMontageMaterialsState, getMontageMaterialsMissingFields, MONTAGE_MATERIALS_TRACKING_START_DATE,
+  type MontageMaterialsStateInput,
   getMontageAttentionReasons, type MontageAttentionInput,
   mapMontageStatusToOrderStatus, pluralizeProjectsCount,
   MONTAGE_STATUS_LABELS, MONTAGE_STATUS_ORDER,
@@ -229,17 +231,118 @@ describe('getMontageSourceMaterialsUrl — не дублирует ScheduleEvent
   })
 })
 
-describe('isMontageMissingNas', () => {
-  it('flags DELIVERED projects without a NAS link', () => {
-    expect(isMontageMissingNas({ status: 'DELIVERED', mountedMaterialNasUrl: null })).toBe(true)
+describe('getMontageMaterialsState — контроль материалов на NAS (точечная доработка)', () => {
+  function makeMaterials(overrides: Partial<MontageMaterialsStateInput> = {}): MontageMaterialsStateInput {
+    return {
+      status: 'IN_REVIEW',
+      sourceReceivedAt: '2026-07-08',
+      sourceMaterialsNasUrl: 'https://nas/source',
+      mountedMaterialNasUrl: 'https://nas/final',
+      isArchived: false,
+      ...overrides,
+    }
+  }
+
+  describe('дата начала контроля', () => {
+    it('does not track a project received before the cutoff date, even with both links missing', () => {
+      const state = getMontageMaterialsState(makeMaterials({
+        sourceReceivedAt: '2026-07-07', sourceMaterialsNasUrl: null, mountedMaterialNasUrl: null,
+      }))
+      expect(state).toBe('NOT_TRACKED')
+    })
+
+    it('tracks a project received exactly on the cutoff date', () => {
+      const state = getMontageMaterialsState(makeMaterials({
+        sourceReceivedAt: '2026-07-08', sourceMaterialsNasUrl: null, mountedMaterialNasUrl: null,
+      }))
+      expect(state).toBe('MISSING')
+    })
+
+    it('tracks a project received after the cutoff date', () => {
+      const state = getMontageMaterialsState(makeMaterials({
+        sourceReceivedAt: '2026-07-13', sourceMaterialsNasUrl: null, mountedMaterialNasUrl: null,
+      }))
+      expect(state).toBe('MISSING')
+    })
+
+    it('does not track a project with no sourceReceivedAt at all', () => {
+      expect(getMontageMaterialsState(makeMaterials({ sourceReceivedAt: null }))).toBe('NOT_TRACKED')
+    })
+
+    it('the cutoff constant matches the spec date (2026-07-08)', () => {
+      expect(MONTAGE_MATERIALS_TRACKING_START_DATE.toISOString().slice(0, 10)).toBe('2026-07-08')
+    })
   })
 
-  it('does not flag projects that already have a NAS link', () => {
-    expect(isMontageMissingNas({ status: 'DELIVERED', mountedMaterialNasUrl: 'https://nas' })).toBe(false)
+  describe('обе ссылки заполнены', () => {
+    it('is COMPLETE when both NAS links are present', () => {
+      expect(getMontageMaterialsState(makeMaterials())).toBe('COMPLETE')
+    })
   })
 
-  it('does not flag projects that are not yet complete', () => {
-    expect(isMontageMissingNas({ status: 'IN_PROGRESS', mountedMaterialNasUrl: null })).toBe(false)
+  describe('отсутствует ровно одна ссылка — PARTIAL', () => {
+    it('is PARTIAL when only the source link is missing', () => {
+      expect(getMontageMaterialsState(makeMaterials({ sourceMaterialsNasUrl: null }))).toBe('PARTIAL')
+    })
+
+    it('is PARTIAL when only the final link is missing', () => {
+      expect(getMontageMaterialsState(makeMaterials({ mountedMaterialNasUrl: null }))).toBe('PARTIAL')
+    })
+
+    it('never reports MISSING when only one link is absent', () => {
+      expect(getMontageMaterialsState(makeMaterials({ sourceMaterialsNasUrl: null }))).not.toBe('MISSING')
+      expect(getMontageMaterialsState(makeMaterials({ mountedMaterialNasUrl: null }))).not.toBe('MISSING')
+    })
+  })
+
+  describe('отсутствуют обе ссылки — MISSING', () => {
+    it('is MISSING when both are absent on a status that requires both', () => {
+      expect(getMontageMaterialsState(makeMaterials({ sourceMaterialsNasUrl: null, mountedMaterialNasUrl: null }))).toBe('MISSING')
+    })
+
+    it('never reports PARTIAL when both links are absent', () => {
+      expect(getMontageMaterialsState(makeMaterials({ sourceMaterialsNasUrl: null, mountedMaterialNasUrl: null }))).not.toBe('PARTIAL')
+    })
+  })
+
+  describe('учёт производственного статуса', () => {
+    it('NEW never warns about missing links, even with nothing attached', () => {
+      const state = getMontageMaterialsState(makeMaterials({ status: 'NEW', sourceMaterialsNasUrl: null, mountedMaterialNasUrl: null }))
+      expect(state).toBe('COMPLETE')
+    })
+
+    it('IN_PROGRESS requires the source link but not the final one', () => {
+      expect(getMontageMaterialsState(makeMaterials({ status: 'IN_PROGRESS', mountedMaterialNasUrl: null }))).toBe('COMPLETE')
+      expect(getMontageMaterialsState(makeMaterials({ status: 'IN_PROGRESS', sourceMaterialsNasUrl: null }))).toBe('MISSING')
+    })
+
+    it('IN_REVIEW/REVISIONS/DELIVERED all require both links', () => {
+      for (const status of ['IN_REVIEW', 'REVISIONS', 'DELIVERED'] as const) {
+        expect(getMontageMaterialsState(makeMaterials({ status, sourceMaterialsNasUrl: null }))).toBe('PARTIAL')
+        expect(getMontageMaterialsState(makeMaterials({ status, mountedMaterialNasUrl: null }))).toBe('PARTIAL')
+        expect(getMontageMaterialsState(makeMaterials({ status, sourceMaterialsNasUrl: null, mountedMaterialNasUrl: null }))).toBe('MISSING')
+      }
+    })
+
+    it('CANCELLED never shows an active problem, regardless of links', () => {
+      expect(getMontageMaterialsState(makeMaterials({ status: 'CANCELLED', sourceMaterialsNasUrl: null, mountedMaterialNasUrl: null }))).toBe('NOT_TRACKED')
+    })
+
+    it('an archived project never shows an active problem, regardless of links', () => {
+      expect(getMontageMaterialsState(makeMaterials({ isArchived: true, sourceMaterialsNasUrl: null, mountedMaterialNasUrl: null }))).toBe('NOT_TRACKED')
+    })
+  })
+})
+
+describe('getMontageMaterialsMissingFields', () => {
+  it('reports the source as missing only when required and absent', () => {
+    expect(getMontageMaterialsMissingFields({ status: 'IN_PROGRESS', sourceMaterialsNasUrl: null, mountedMaterialNasUrl: null }).missingSource).toBe(true)
+    expect(getMontageMaterialsMissingFields({ status: 'NEW', sourceMaterialsNasUrl: null, mountedMaterialNasUrl: null }).missingSource).toBe(false)
+  })
+
+  it('reports the final material as missing only when required and absent', () => {
+    expect(getMontageMaterialsMissingFields({ status: 'REVISIONS', sourceMaterialsNasUrl: 'x', mountedMaterialNasUrl: null }).missingFinal).toBe(true)
+    expect(getMontageMaterialsMissingFields({ status: 'IN_PROGRESS', sourceMaterialsNasUrl: 'x', mountedMaterialNasUrl: null }).missingFinal).toBe(false)
   })
 })
 
@@ -253,6 +356,13 @@ describe('getMontageAttentionReasons — единый источник для KP
       deadlineDate: '2026-07-20',
       deliveredAt: null,
       effectiveSourceMaterialsUrl: 'https://source',
+      // Отслеживаемый (после даты старта контроля), но с заполненным
+      // единственным обязательным на IN_PROGRESS полем (source) — материалы
+      // по умолчанию COMPLETE, чтобы не мешать остальным тестам этого блока,
+      // которые проверяют ДРУГИЕ причины (см. describe про NO_SOURCE_NAS/
+      // NO_FINAL_NAS/MATERIALS_MISSING ниже для самого контроля материалов).
+      sourceReceivedAt: '2026-07-10',
+      sourceMaterialsNasUrl: 'https://nas/source',
       mountedMaterialNasUrl: null,
       clientAmount: 20000,
       clientPaymentStatus: 'PAID',
@@ -293,27 +403,27 @@ describe('getMontageAttentionReasons — единый источник для KP
     expect(getMontageAttentionReasons(makeInput({ deadlineDate: '2026-07-01' }), now)).toContain('OVERDUE')
   })
 
-  it('flags a project delivered without a NAS link', () => {
+  it('flags a delivered project missing the final NAS material', () => {
     const reasons = getMontageAttentionReasons(makeInput({ status: 'DELIVERED', deliveredAt: '2026-07-12', mountedMaterialNasUrl: null }), now)
-    expect(reasons).toContain('NO_NAS_AFTER_DELIVERY')
+    expect(reasons).toContain('NO_FINAL_NAS')
   })
 
-  it('does NOT flag missing source/NAS for historical-import projects — old sheet never tracked them', () => {
+  it('the legacy NO_SOURCE exemption for historical imports does NOT extend to the NAS materials control — that one is gated by date only', () => {
     const reasons = getMontageAttentionReasons(makeInput({
       status: 'DELIVERED', deliveredAt: '2026-07-12', mountedMaterialNasUrl: null,
       effectiveSourceMaterialsUrl: null, isHistoricalImport: true,
     }), now)
-    expect(reasons).not.toContain('NO_NAS_AFTER_DELIVERY')
     expect(reasons).not.toContain('NO_SOURCE')
+    expect(reasons).toContain('NO_FINAL_NAS')
   })
 
-  it('still flags missing source/NAS for a NEW (non-imported) project going through the platform', () => {
+  it('a non-imported project still flags both the legacy NO_SOURCE and the new NAS-materials reason', () => {
     const reasons = getMontageAttentionReasons(makeInput({
       status: 'DELIVERED', deliveredAt: '2026-07-12', mountedMaterialNasUrl: null,
       effectiveSourceMaterialsUrl: null, isHistoricalImport: false,
     }), now)
-    expect(reasons).toContain('NO_NAS_AFTER_DELIVERY')
     expect(reasons).toContain('NO_SOURCE')
+    expect(reasons).toContain('NO_FINAL_NAS')
   })
 
   it('still flags other issues (no client, no editor) on historical-import projects', () => {
@@ -347,6 +457,65 @@ describe('getMontageAttentionReasons — единый источник для KP
 
   it('never flags archived projects, no matter what is missing (isArchived overlay, not a status)', () => {
     expect(getMontageAttentionReasons(makeInput({ status: 'IN_PROGRESS', editorId: null, deadlineDate: '2020-01-01', isArchived: true }), now)).toEqual([])
+  })
+
+  describe('контроль материалов на NAS', () => {
+    it('flags NO_SOURCE_NAS when only the source NAS link is missing (status where both are required)', () => {
+      // На IN_PROGRESS обязателен только source — если его одного не хватает,
+      // это MISSING (100% обязательных полей отсутствует), а не PARTIAL, см.
+      // describe('getMontageMaterialsState') выше. Чтобы проверить именно
+      // "не хватает ровно одного из двух", нужен статус, где оба поля
+      // обязательны — DELIVERED.
+      const reasons = getMontageAttentionReasons(makeInput({
+        status: 'DELIVERED', sourceMaterialsNasUrl: null, mountedMaterialNasUrl: 'https://nas/final',
+      }), now)
+      expect(reasons).toContain('NO_SOURCE_NAS')
+      expect(reasons).not.toContain('MATERIALS_MISSING')
+      expect(reasons).not.toContain('NO_FINAL_NAS')
+    })
+
+    it('missing the only field required at IN_PROGRESS (source) is a critical MISSING, not PARTIAL', () => {
+      const reasons = getMontageAttentionReasons(makeInput({ status: 'IN_PROGRESS', sourceMaterialsNasUrl: null }), now)
+      expect(reasons).toContain('MATERIALS_MISSING')
+      expect(reasons).not.toContain('NO_SOURCE_NAS')
+    })
+
+    it('flags NO_FINAL_NAS when only the final NAS link is missing on a status that requires it', () => {
+      const reasons = getMontageAttentionReasons(makeInput({ status: 'DELIVERED', mountedMaterialNasUrl: null }), now)
+      expect(reasons).toContain('NO_FINAL_NAS')
+      expect(reasons).not.toContain('MATERIALS_MISSING')
+      expect(reasons).not.toContain('NO_SOURCE_NAS')
+    })
+
+    it('flags a single MATERIALS_MISSING reason (not both individual ones) when both links are absent', () => {
+      const reasons = getMontageAttentionReasons(makeInput({ status: 'DELIVERED', sourceMaterialsNasUrl: null, mountedMaterialNasUrl: null }), now)
+      expect(reasons.filter(r => r === 'MATERIALS_MISSING' || r === 'NO_SOURCE_NAS' || r === 'NO_FINAL_NAS')).toEqual(['MATERIALS_MISSING'])
+    })
+
+    it('does not flag materials issues for a project received before the tracking start date', () => {
+      const reasons = getMontageAttentionReasons(makeInput({
+        status: 'DELIVERED', sourceReceivedAt: '2026-07-07', sourceMaterialsNasUrl: null, mountedMaterialNasUrl: null,
+      }), now)
+      expect(reasons).not.toContain('MATERIALS_MISSING')
+      expect(reasons).not.toContain('NO_SOURCE_NAS')
+      expect(reasons).not.toContain('NO_FINAL_NAS')
+    })
+
+    it('does not flag a NEW project for missing materials, even past the tracking start date', () => {
+      const reasons = getMontageAttentionReasons(makeInput({
+        status: 'NEW', sourceMaterialsNasUrl: null, mountedMaterialNasUrl: null,
+      }), now)
+      expect(reasons).not.toContain('MATERIALS_MISSING')
+      expect(reasons).not.toContain('NO_SOURCE_NAS')
+      expect(reasons).not.toContain('NO_FINAL_NAS')
+    })
+
+    it('materials NAS control is independent of isHistoricalImport (gated by date, not that flag)', () => {
+      const reasons = getMontageAttentionReasons(makeInput({
+        status: 'DELIVERED', isHistoricalImport: true, sourceMaterialsNasUrl: null, mountedMaterialNasUrl: null,
+      }), now)
+      expect(reasons).toContain('MATERIALS_MISSING')
+    })
   })
 })
 
@@ -400,6 +569,7 @@ describe('computeMontageDashboardStats — единый источник KPI д�
       deadlineDate: '2025-10-17',
       deliveredAt: '2025-10-16',
       effectiveSourceMaterialsUrl: 'https://source',
+      sourceMaterialsNasUrl: 'https://nas/source',
       mountedMaterialNasUrl: 'https://nas',
       title: 'Монтаж подкаста',
       description: null,
@@ -462,7 +632,10 @@ describe('computeMontageDashboardStats — единый источник KPI д�
       // deadlineDate задан (в отличие от прочих overrides) — иначе строка сама
       // словила бы ещё и NO_DEADLINE, а тест проверяет именно NAS-кейс изолированно.
       makeStatsInput({ status: 'IN_PROGRESS', clientAmount: null, editorAmount: null, deadlineDate: '2026-08-01' }),
-      makeStatsInput({ status: 'DELIVERED', mountedMaterialNasUrl: null, clientAmount: null, editorAmount: null }),
+      // sourceReceivedAt сдвинут на дату ПОСЛЕ старта контроля материалов —
+      // иначе строка попала бы под NOT_TRACKED и не дала бы ни одной причины
+      // (см. дефолт '2025-10-07' в makeStatsInput выше, до даты контроля).
+      makeStatsInput({ status: 'DELIVERED', sourceReceivedAt: '2026-07-10', mountedMaterialNasUrl: null, clientAmount: null, editorAmount: null }),
       makeStatsInput({ status: 'CANCELLED', editorId: null, clientAmount: null, editorAmount: null }),
     ], now)
     expect(stats.activeCount).toBe(1)
@@ -483,6 +656,20 @@ describe('computeMontageDashboardStats — единый источник KPI д�
       expensesTotal: 0, expensesPaid: 0, profit: 0, margin: null, activeCount: 0,
       attentionCount: 0, clientDebt: 0, studioDebt: 0,
     })
+  })
+
+  it('a project missing NAS materials (received on/after the tracking date) counts toward attentionCount', () => {
+    const stats = computeMontageDashboardStats([
+      makeStatsInput({ sourceReceivedAt: '2026-07-08', sourceMaterialsNasUrl: null, mountedMaterialNasUrl: null }),
+    ], now)
+    expect(stats.attentionCount).toBe(1)
+  })
+
+  it('the same missing materials do NOT count toward attentionCount for a project received before the tracking date', () => {
+    const stats = computeMontageDashboardStats([
+      makeStatsInput({ sourceReceivedAt: '2026-07-07', sourceMaterialsNasUrl: null, mountedMaterialNasUrl: null }),
+    ], now)
+    expect(stats.attentionCount).toBe(0)
   })
 })
 

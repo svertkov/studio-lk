@@ -44,6 +44,10 @@ export default function EditingView({ initialProjects, initialStats, initialEdit
   const [projectsTableInstance, setProjectsTableInstance] = useState(0)
 
   const [openProject, setOpenProject] = useState<MontageProjectDTO | null>(null)
+  // true, когда карточка открыта кликом по предупреждению материалов в
+  // таблице (ТЗ п.7: "прокрутить карточку до раздела «Материалы»") — обычный
+  // клик по строке эту опцию не задаёт, карточка открывается как раньше.
+  const [openProjectFocusMaterials, setOpenProjectFocusMaterials] = useState(false)
   const [creatingProject, setCreatingProject] = useState(false)
   const [selectedEditorId, setSelectedEditorId] = useState<string | null>(null)
   const [creatingEditor, setCreatingEditor] = useState(false)
@@ -63,6 +67,11 @@ export default function EditingView({ initialProjects, initialStats, initialEdit
     setProjectsFilterPreset(preset)
     setProjectsTableInstance(n => n + 1)
     setTab('projects')
+  }
+
+  function openProjectFromTable(project: MontageProjectDTO, options?: { focusMaterials?: boolean }) {
+    setOpenProject(project)
+    setOpenProjectFocusMaterials(!!options?.focusMaterials)
   }
 
   return (
@@ -107,7 +116,7 @@ export default function EditingView({ initialProjects, initialStats, initialEdit
           projects={projects}
           editors={editors}
           initialFilterPreset={projectsFilterPreset}
-          onOpenProject={setOpenProject}
+          onOpenProject={openProjectFromTable}
         />
       )}
 
@@ -121,8 +130,9 @@ export default function EditingView({ initialProjects, initialStats, initialEdit
           orders={orders}
           editors={editors}
           existingProjects={projects}
-          onOpenChange={open => { if (!open) { setOpenProject(null); setCreatingProject(false) } }}
-          onSaved={() => { setOpenProject(null); setCreatingProject(false); refresh() }}
+          focusMaterialsOnOpen={openProjectFocusMaterials}
+          onOpenChange={open => { if (!open) { setOpenProject(null); setCreatingProject(false); setOpenProjectFocusMaterials(false) } }}
+          onSaved={() => { setOpenProject(null); setCreatingProject(false); setOpenProjectFocusMaterials(false); refresh() }}
         />
       )}
 
@@ -131,7 +141,7 @@ export default function EditingView({ initialProjects, initialStats, initialEdit
           editorId={selectedEditorId}
           onOpenChange={open => { if (!open) { setSelectedEditorId(null); setCreatingEditor(false) } }}
           onSaved={() => { setCreatingEditor(false); refresh() }}
-          onOpenProject={p => { setSelectedEditorId(null); setOpenProject(p) }}
+          onOpenProject={p => { setSelectedEditorId(null); setOpenProject(p); setOpenProjectFocusMaterials(false) }}
         />
       )}
     </div>

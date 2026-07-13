@@ -299,8 +299,6 @@ export function getMontageSourceMaterialsUrl(
   return project.sourceMaterialsUrl ?? orderYandexDiskUrl ?? null
 }
 
-const MONTAGE_COMPLETE_STATUSES: MontageStatus[] = ['DELIVERED']
-
 // Архивировать можно только проект, уже покинувший производственный цикл —
 // та же граница, что actions/montage.ts проверяет на сервере перед
 // archiveMontageProject; экспортирована отсюда (а не задана заново в
@@ -311,8 +309,93 @@ const MONTAGE_COMPLETE_STATUSES: MontageStatus[] = ['DELIVERED']
 // поэтому общий источник живёт здесь, а не в actions/montage.ts.
 export const MONTAGE_ARCHIVABLE_STATUSES: MontageStatus[] = ['DELIVERED', 'CANCELLED']
 
-export function isMontageMissingNas(project: { status: MontageStatus; mountedMaterialNasUrl: string | null }): boolean {
-  return MONTAGE_COMPLETE_STATUSES.includes(project.status) && !project.mountedMaterialNasUrl
+// ============================================================
+// КОНТРОЛЬ МАТЕРИАЛОВ НА NAS (ТЗ "точечно доработать контроль материалов в
+// таблице проектов") — два НЕЗАВИСИМЫХ NAS-поля на MontageProject:
+// sourceMaterialsNasUrl (исходники) и mountedMaterialNasUrl (готовый монтаж,
+// уже существовал). Это НЕ то же самое, что sourceMaterialsUrl/
+// getMontageSourceMaterialsUrl выше — та пара отвечает на вопрос "чем сейчас
+// пользуется монтажёр" (обычно временная ссылка на Яндекс.Диск), а эта — на
+// более строгий вопрос "сохранено ли на постоянное хранение NAS" (ТЗ: "не
+// считать ссылку на Яндекс.Диск заменой обязательному хранению на NAS").
+//
+// Контроль действует только для проектов, поступивших в монтаж НЕ РАНЕЕ
+// MONTAGE_MATERIALS_TRACKING_START_DATE — единственная константа даты во всём
+// приложении, компоненты её не дублируют.
+// ============================================================
+
+export const MONTAGE_MATERIALS_TRACKING_START_DATE = new Date('2026-07-08T00:00:00.000Z')
+
+// На каких статусах какая ссылка обязательна (ТЗ п.5) — намеренно РАЗНЫЕ
+// списки: на "В работе" исходники уже обязаны быть, а готовый материал ещё
+// нет (монтаж только начался); "Новый" не входит ни в один список — контроль
+// для него ещё не наступил вовсе, это не то же самое, что "материалы есть".
+export const MONTAGE_SOURCE_NAS_REQUIRED_STATUSES: MontageStatus[] = ['IN_PROGRESS', 'IN_REVIEW', 'REVISIONS', 'DELIVERED']
+export const MONTAGE_FINAL_NAS_REQUIRED_STATUSES: MontageStatus[] = ['IN_REVIEW', 'REVISIONS', 'DELIVERED']
+
+export type MontageMaterialsState = 'COMPLETE' | 'PARTIAL' | 'MISSING' | 'NOT_TRACKED'
+
+// Порядок для фильтра в таблице проектов (ТЗ п.10) — "Все" добавляется самим
+// select'ом в компоненте, здесь только реальные значения состояния.
+export const MONTAGE_MATERIALS_STATE_ORDER: MontageMaterialsState[] = ['COMPLETE', 'PARTIAL', 'MISSING', 'NOT_TRACKED']
+
+export const MONTAGE_MATERIALS_STATE_LABELS: Record<MontageMaterialsState, string> = {
+  COMPLETE:    'Всё заполнено',
+  PARTIAL:     'Заполнено частично',
+  MISSING:     'Материалы отсутствуют',
+  NOT_TRACKED: 'Контроль не применяется',
+}
+
+export interface MontageMaterialsStateInput {
+  status: MontageStatus
+  sourceReceivedAt: string | Date | null
+  sourceMaterialsNasUrl: string | null
+  mountedMaterialNasUrl: string | null
+  isArchived: boolean
+}
+
+export interface MontageMaterialsMissingFields {
+  missingSource: boolean
+  missingFinal: boolean
+}
+
+// Какая из двух ссылок отсутствует, ТОЛЬКО среди обязательных на данном
+// статусе (не гейтится датой/архивом/отменой — вызывающая сторона уже знает
+// это через getMontageMaterialsState и обычно проверяет missing-* только
+// когда состояние PARTIAL/MISSING).
+export function getMontageMaterialsMissingFields(
+  project: Pick<MontageMaterialsStateInput, 'status' | 'sourceMaterialsNasUrl' | 'mountedMaterialNasUrl'>,
+): MontageMaterialsMissingFields {
+  const sourceRequired = MONTAGE_SOURCE_NAS_REQUIRED_STATUSES.includes(project.status)
+  const finalRequired = MONTAGE_FINAL_NAS_REQUIRED_STATUSES.includes(project.status)
+  return {
+    missingSource: sourceRequired && !project.sourceMaterialsNasUrl,
+    missingFinal: finalRequired && !project.mountedMaterialNasUrl,
+  }
+}
+
+// Единственное место, решающее COMPLETE/PARTIAL/MISSING/NOT_TRACKED — таблица,
+// карточка, "Требует внимания", аналитика и фильтр читают ТОЛЬКО этот
+// результат, не пересчитывают условие сами (ТЗ п.4: "не дублируй условную
+// логику в нескольких компонентах").
+export function getMontageMaterialsState(project: MontageMaterialsStateInput): MontageMaterialsState {
+  if (project.status === 'CANCELLED' || project.isArchived) return 'NOT_TRACKED'
+  if (!project.sourceReceivedAt) return 'NOT_TRACKED'
+  if (new Date(project.sourceReceivedAt) < MONTAGE_MATERIALS_TRACKING_START_DATE) return 'NOT_TRACKED'
+
+  const sourceRequired = MONTAGE_SOURCE_NAS_REQUIRED_STATUSES.includes(project.status)
+  const finalRequired = MONTAGE_FINAL_NAS_REQUIRED_STATUSES.includes(project.status)
+  // "Новый" — ни одна ссылка ещё не обязательна, это не проблема (ТЗ: "для
+  // статуса «Новый» отсутствие готового материала ещё не является проблемой").
+  if (!sourceRequired && !finalRequired) return 'COMPLETE'
+
+  const { missingSource, missingFinal } = getMontageMaterialsMissingFields(project)
+  const requiredCount = (sourceRequired ? 1 : 0) + (finalRequired ? 1 : 0)
+  const missingCount = (missingSource ? 1 : 0) + (missingFinal ? 1 : 0)
+
+  if (missingCount === 0) return 'COMPLETE'
+  if (missingCount === requiredCount) return 'MISSING'
+  return 'PARTIAL'
 }
 
 // ============================================================
@@ -322,18 +405,20 @@ export function isMontageMissingNas(project: { status: MontageStatus; mountedMat
 // ============================================================
 
 export type MontageAttentionReason =
-  | 'NO_EDITOR' | 'OVERDUE' | 'NO_SOURCE' | 'NO_NAS_AFTER_DELIVERY' | 'PAYMENT_UNDEFINED' | 'INCOMPLETE_CARD'
-  | 'NO_CLIENT_LINK' | 'NO_DEADLINE'
+  | 'NO_EDITOR' | 'OVERDUE' | 'NO_SOURCE' | 'PAYMENT_UNDEFINED' | 'INCOMPLETE_CARD'
+  | 'NO_CLIENT_LINK' | 'NO_DEADLINE' | 'NO_SOURCE_NAS' | 'NO_FINAL_NAS' | 'MATERIALS_MISSING'
 
 export const MONTAGE_ATTENTION_LABELS: Record<MontageAttentionReason, string> = {
   NO_EDITOR:              'Без монтажёра',
   OVERDUE:                'Просрочен дедлайн',
   NO_SOURCE:               'Нет исходников',
-  NO_NAS_AFTER_DELIVERY:   'Нет NAS после сдачи',
   PAYMENT_UNDEFINED:       'Оплата не определена',
   INCOMPLETE_CARD:         'Незаполненная карточка',
   NO_CLIENT_LINK:          'Клиент не привязан',
   NO_DEADLINE:             'Не задан дедлайн',
+  NO_SOURCE_NAS:           'Нет исходников на NAS',
+  NO_FINAL_NAS:            'Нет готового материала на NAS',
+  MATERIALS_MISSING:       'Материалы полностью отсутствуют',
 }
 
 export interface MontageAttentionInput {
@@ -343,7 +428,13 @@ export interface MontageAttentionInput {
   deliveredAt: string | Date | null
   // Уже РЕЗОЛВЛЕННАЯ ссылка на исходники (см. getMontageSourceMaterialsUrl) —
   // эта функция не знает про Order/ScheduleEvent, только про готовое значение.
+  // Отдельный, более мягкий вопрос "есть ли ХОТЬ КАКАЯ-ТО рабочая ссылка"
+  // (обычно Яндекс.Диск) — НЕ то же самое, что контроль NAS ниже.
   effectiveSourceMaterialsUrl: string | null
+  // Контроль материалов на NAS (см. getMontageMaterialsState выше) — два
+  // независимых NAS-поля + дата поступления, обязательность зависит от статуса.
+  sourceReceivedAt: string | Date | null
+  sourceMaterialsNasUrl: string | null
   mountedMaterialNasUrl: string | null
   clientAmount: number | null
   clientPaymentStatus: MontageClientPaymentStatus
@@ -356,16 +447,18 @@ export interface MontageAttentionInput {
   hasNoClientLink: boolean
   // true — проект создан историческим импортом (MontageProject.importSource
   // задан), а не через саму платформу. Старая Google-таблица никогда не
-  // фиксировала отдельную ссылку на исходники/финальный NAS почти для
-  // никаких проектов (см. отчёт dry-run: 17 из 76 с исходниками, 0 с NAS) —
-  // без этого флага ПОЧТИ ВСЕ 76 исторических проектов сразу попадали бы в
-  // «Требуют внимания» из-за NO_SOURCE/NO_NAS_AFTER_DELIVERY, что превращает
-  // список из "текущих проблем, требующих действия" в бесполезный "почти
-  // весь архив" — те же исторические работы уже давно сданы и закрыты, искать
-  // для них исходники/NAS задним числом нецелесообразно. Остальные причины
-  // (нет клиента, нет монтажёра, просрочка, неопределённая оплата, пустая
-  // карточка) по-прежнему применяются и к историческим записям — они остаются
-  // реально значимыми независимо от источника данных.
+  // фиксировала отдельную ссылку на исходники почти для никаких проектов
+  // (см. отчёт dry-run: 17 из 76 с исходниками) — без этого флага почти все
+  // 76 исторических проектов сразу попадали бы в «Требуют внимания» из-за
+  // NO_SOURCE, что превращает список из "текущих проблем, требующих действия"
+  // в бесполезный "почти весь архив". Контроль NAS (NO_SOURCE_NAS/NO_FINAL_NAS/
+  // MATERIALS_MISSING, см. getMontageMaterialsState) этим флагом НЕ гейтится —
+  // у него своя, более точная защита от старых данных: дата поступления
+  // (MONTAGE_MATERIALS_TRACKING_START_DATE), все 76 исторических проектов
+  // поступили задолго до неё и автоматически получают NOT_TRACKED. Остальные
+  // причины (нет клиента, нет монтажёра, просрочка, неопределённая оплата,
+  // пустая карточка) по-прежнему применяются и к историческим записям — они
+  // остаются реально значимыми независимо от источника данных.
   isHistoricalImport: boolean
   // Архивный проект (см. MontageProject.isArchived) полностью выведен из
   // оперативной работы — тот же смысл, что и раньше был у статуса ARCHIVED,
@@ -392,10 +485,28 @@ export function getMontageAttentionReasons(project: MontageAttentionInput, now: 
   if (!project.isHistoricalImport) {
     if (!project.effectiveSourceMaterialsUrl && !MONTAGE_ATTENTION_EXEMPT_STATUSES.includes(project.status)) reasons.push('NO_SOURCE')
     if (!project.deadlineDate && !MONTAGE_ATTENTION_EXEMPT_STATUSES.includes(project.status)) reasons.push('NO_DEADLINE')
-    if (isMontageMissingNas({ status: project.status, mountedMaterialNasUrl: project.mountedMaterialNasUrl })) reasons.push('NO_NAS_AFTER_DELIVERY')
   }
   if (project.clientAmount != null && project.clientPaymentStatus === 'NOT_SPECIFIED') reasons.push('PAYMENT_UNDEFINED')
   if (!project.title && !project.description) reasons.push('INCOMPLETE_CARD')
+
+  // Контроль материалов на NAS — своя, более точная защита от старых данных
+  // (дата поступления), поэтому НЕ внутри isHistoricalImport-блока выше (см.
+  // комментарий у MontageAttentionInput.isHistoricalImport). Ровно одна
+  // причина на проект (ТЗ п.9: "не создавать дубли предупреждений") —
+  // MATERIALS_MISSING заменяет собой NO_SOURCE_NAS+NO_FINAL_NAS, когда
+  // отсутствуют обе обязательные ссылки разом.
+  const materialsState = getMontageMaterialsState({
+    status: project.status, sourceReceivedAt: project.sourceReceivedAt,
+    sourceMaterialsNasUrl: project.sourceMaterialsNasUrl, mountedMaterialNasUrl: project.mountedMaterialNasUrl,
+    isArchived: project.isArchived,
+  })
+  if (materialsState === 'MISSING') {
+    reasons.push('MATERIALS_MISSING')
+  } else if (materialsState === 'PARTIAL') {
+    const { missingSource, missingFinal } = getMontageMaterialsMissingFields(project)
+    if (missingSource) reasons.push('NO_SOURCE_NAS')
+    else if (missingFinal) reasons.push('NO_FINAL_NAS')
+  }
 
   return reasons
 }
@@ -441,6 +552,7 @@ export interface MontageStatsInput {
   deadlineDate: string | Date | null
   deliveredAt: string | Date | null
   effectiveSourceMaterialsUrl: string | null
+  sourceMaterialsNasUrl: string | null
   mountedMaterialNasUrl: string | null
   title: string | null
   description: string | null
@@ -506,6 +618,7 @@ export function computeMontageDashboardStats(projects: MontageStatsInput[], now:
     const attention = getMontageAttentionReasons({
       status: p.status, editorId: p.editorId, deadlineDate: p.deadlineDate, deliveredAt: p.deliveredAt,
       effectiveSourceMaterialsUrl: p.effectiveSourceMaterialsUrl, mountedMaterialNasUrl: p.mountedMaterialNasUrl,
+      sourceReceivedAt: p.sourceReceivedAt, sourceMaterialsNasUrl: p.sourceMaterialsNasUrl,
       clientAmount: p.clientAmount, clientPaymentStatus: p.clientPaymentStatus, title: p.title, description: p.description,
       hasNoClientLink: p.hasNoClientLink, isHistoricalImport: p.isHistoricalImport, isArchived: p.isArchived,
     }, now)

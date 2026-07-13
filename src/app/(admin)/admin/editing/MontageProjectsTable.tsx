@@ -2,14 +2,15 @@
 
 import { useMemo, useState } from 'react'
 import Link from 'next/link'
-import { Search, ArrowUp, ArrowDown, ArrowUpDown, Cloud, Server } from 'lucide-react'
+import { Search, ArrowUp, ArrowDown, ArrowUpDown, Cloud, Server, AlertTriangle } from 'lucide-react'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
 import GlowPill from '@/components/ui/glow-pill'
 import type { MontageProjectDTO } from '@/lib/actions/montage'
 import type { EditorProfileListItemDTO } from '@/lib/actions/editors'
 import {
   MONTAGE_STATUS_ORDER, MONTAGE_STATUS_LABELS, MONTAGE_CLIENT_PAYMENT_STATUS_LABELS, MONTAGE_EDITOR_PAYMENT_STATUS_LABELS,
-  MONTAGE_ACTIVE_STATUSES, MONTAGE_CONTENT_TYPE_LABELS, computeMontageProfit, type MontageStatus,
+  MONTAGE_ACTIVE_STATUSES, MONTAGE_CONTENT_TYPE_LABELS, MONTAGE_MATERIALS_STATE_ORDER, MONTAGE_MATERIALS_STATE_LABELS,
+  getMontageMaterialsMissingFields, computeMontageProfit, type MontageStatus, type MontageMaterialsState,
 } from '@/lib/montage-model'
 
 // Фильтр статуса показывает и терминальный CANCELLED (вне MONTAGE_STATUS_ORDER,
@@ -24,6 +25,87 @@ function contentTypeLabel(p: Pick<MontageProjectDTO, 'contentType' | 'customCont
   return MONTAGE_CONTENT_TYPE_LABELS[p.contentType]
 }
 import MontageStatusBadge from './MontageStatusBadge'
+
+// Подсветка всей строки по состоянию материалов (ТЗ: "предупреждение должно
+// подсвечивать всю строку, аккуратно, без сплошной заливки"). COMPLETE/
+// NOT_TRACKED возвращают '' — строка остаётся полностью обычной, включая
+// стандартную border-zinc-800/hover, поэтому в месте использования при пустой
+// строке добавляется 'border-zinc-800' отдельно (см. ниже), а не встроено
+// сюда, — так конфликтующий border-цвет никогда не оказывается в одной
+// строке классов дважды. Тени/фон — те же amber/red оттенки, что уже
+// используются во всём разделе "Монтаж" для warning/danger (карточка
+// проекта, дашборд), просто применённые на уровне строки, а не бэйджа.
+function materialsRowClassName(state: MontageMaterialsState): string {
+  if (state === 'PARTIAL') {
+    return 'border-amber-600/40 bg-amber-500/[0.04] shadow-[inset_0_0_0_1px_rgba(217,119,6,0.12),0_0_10px_-4px_rgba(245,158,11,0.35)] hover:bg-amber-500/[0.08]'
+  }
+  if (state === 'MISSING') {
+    return 'border-red-700/50 bg-red-500/[0.05] shadow-[inset_0_0_0_1px_rgba(185,28,28,0.15),0_0_16px_-4px_rgba(239,68,68,0.45)] hover:bg-red-500/10'
+  }
+  return ''
+}
+
+// Колонка "Материалы" — единственное место, читающее p.materialsState (см.
+// getMontageMaterialsState, montage-model.ts) для решения, какие плашки
+// показать; условная логика "что считать проблемой" здесь не дублируется,
+// только отображение уже готового состояния + какого именно поля не хватает
+// (getMontageMaterialsMissingFields — та же причина, что видна в "Требует
+// внимания", просто в виде плашки, а не текста).
+function MontageMaterialsCell({ project, onOpenMaterials }: { project: MontageProjectDTO; onOpenMaterials: () => void }) {
+  const { materialsState, sourceMaterialsNasUrl, mountedMaterialNasUrl } = project
+
+  if (materialsState === 'NOT_TRACKED' && !sourceMaterialsNasUrl && !mountedMaterialNasUrl) {
+    return <span className="text-zinc-600 text-xs">—</span>
+  }
+
+  if (materialsState === 'MISSING') {
+    return (
+      <GlowPill
+        as="button" onClick={onOpenMaterials} color="red" size="sm" icon={AlertTriangle}
+        ariaLabel="Материалы не прикреплены — открыть карточку и перейти к разделу материалов"
+        title="Не хватает и исходников, и готового материала на NAS"
+      >
+        Нет материалов
+      </GlowPill>
+    )
+  }
+
+  const { missingSource, missingFinal } = getMontageMaterialsMissingFields(project)
+
+  return (
+    <div className="flex flex-col items-start gap-1">
+      {sourceMaterialsNasUrl ? (
+        <GlowPill as="a" href={sourceMaterialsNasUrl} ariaLabel="Открыть исходники на NAS" color="green" size="sm" icon={Cloud}>
+          Исходники NAS
+        </GlowPill>
+      ) : missingSource ? (
+        <GlowPill
+          as="button" onClick={onOpenMaterials} color="amber" size="sm" icon={AlertTriangle}
+          ariaLabel="Нет исходников на NAS — открыть карточку и перейти к разделу материалов"
+          title="Не прикреплена ссылка на исходники на NAS"
+        >
+          Нет исходников
+        </GlowPill>
+      ) : null}
+      {mountedMaterialNasUrl ? (
+        <GlowPill as="a" href={mountedMaterialNasUrl} ariaLabel="Открыть готовый материал на NAS" color="violet" size="sm" icon={Server}>
+          Готовый материал
+        </GlowPill>
+      ) : missingFinal ? (
+        <GlowPill
+          as="button" onClick={onOpenMaterials} color="amber" size="sm" icon={AlertTriangle}
+          ariaLabel="Нет готового материала на NAS — открыть карточку и перейти к разделу материалов"
+          title="Не прикреплена ссылка на готовый материал на NAS"
+        >
+          Нет готового
+        </GlowPill>
+      ) : null}
+      {!sourceMaterialsNasUrl && !missingSource && !mountedMaterialNasUrl && !missingFinal && (
+        <span className="text-zinc-600 text-xs">—</span>
+      )}
+    </div>
+  )
+}
 
 export type MontageProjectsFilterPreset =
   | { kind: 'status'; statuses: MontageStatus[] }
@@ -72,11 +154,19 @@ function initialFiltersFromPreset(preset: MontageProjectsFilterPreset | null) {
   return { statusFilter: 'ALL' as const, activeOnly: false, attentionOnly: false }
 }
 
+interface OpenProjectOptions {
+  // Открыть карточку и сразу прокрутить/сфокусировать раздел "Материалы" —
+  // используется предупреждающими плашками колонки материалов (ТЗ п.7).
+  // Обычный клик по строке передаёт options не задав, полная карточка
+  // открывается как раньше, без принудительной прокрутки.
+  focusMaterials?: boolean
+}
+
 interface Props {
   projects: MontageProjectDTO[]
   editors: EditorProfileListItemDTO[]
   initialFilterPreset: MontageProjectsFilterPreset | null
-  onOpenProject: (project: MontageProjectDTO) => void
+  onOpenProject: (project: MontageProjectDTO, options?: OpenProjectOptions) => void
 }
 
 export default function MontageProjectsTable({ projects, editors, initialFilterPreset, onOpenProject }: Props) {
@@ -88,6 +178,7 @@ export default function MontageProjectsTable({ projects, editors, initialFilterP
   const [attentionOnly, setAttentionOnly] = useState(initialFilters.attentionOnly)
   const [overdueOnly, setOverdueOnly] = useState(false)
   const [activeOnly, setActiveOnly] = useState(initialFilters.activeOnly)
+  const [materialsFilter, setMaterialsFilter] = useState<MontageMaterialsState | 'ALL'>('ALL')
   // По умолчанию скрыты — архив специально существует, чтобы убрать сданные/
   // отменённые проекты из повседневного рабочего вида (см. archiveMontageProject,
   // actions/montage.ts), иначе таблица бесконечно растёт и не разгружается.
@@ -111,9 +202,10 @@ export default function MontageProjectsTable({ projects, editors, initialFilterP
       if (attentionOnly && p.attentionReasons.length === 0) return false
       if (overdueOnly && !p.isOverdue) return false
       if (hideArchived && p.isArchived) return false
+      if (materialsFilter !== 'ALL' && p.materialsState !== materialsFilter) return false
       return true
     })
-  }, [projects, search, statusFilter, activeOnly, editorFilter, attentionOnly, overdueOnly, hideArchived])
+  }, [projects, search, statusFilter, activeOnly, editorFilter, attentionOnly, overdueOnly, hideArchived, materialsFilter])
 
   const sorted = useMemo(() => {
     const arr = [...filtered]
@@ -155,6 +247,14 @@ export default function MontageProjectsTable({ projects, editors, initialFilterP
         >
           <option value="ALL">Все монтажёры</option>
           {editors.map(ed => <option key={ed.id} value={ed.id}>{ed.displayName}</option>)}
+        </select>
+        <select
+          value={materialsFilter}
+          onChange={e => setMaterialsFilter(e.target.value as MontageMaterialsState | 'ALL')}
+          className="h-10 bg-zinc-900 border border-zinc-800 rounded-lg px-3 text-sm text-zinc-300 outline-none focus:border-[#00c26b] transition-colors"
+        >
+          <option value="ALL">Материалы: все</option>
+          {MONTAGE_MATERIALS_STATE_ORDER.map(s => <option key={s} value={s}>{MONTAGE_MATERIALS_STATE_LABELS[s]}</option>)}
         </select>
         <label className="flex items-center gap-1.5 text-xs text-zinc-400 cursor-pointer select-none">
           <input type="checkbox" checked={activeOnly} onChange={e => setActiveOnly(e.target.checked)} className="accent-[#00c26b]" />
@@ -217,7 +317,7 @@ export default function MontageProjectsTable({ projects, editors, initialFilterP
                 <TableRow
                   key={p.id}
                   onClick={() => onOpenProject(p)}
-                  className="border-zinc-800 cursor-pointer"
+                  className={`${materialsRowClassName(p.materialsState) || 'border-zinc-800'} cursor-pointer transition-colors`}
                 >
                   <TableCell>
                     <p className="text-zinc-200 text-sm">{formatDate(p.sourceReceivedAt)}</p>
@@ -269,22 +369,7 @@ export default function MontageProjectsTable({ projects, editors, initialFilterP
                     <p className="text-xs text-zinc-500">Монтажёр: {MONTAGE_EDITOR_PAYMENT_STATUS_LABELS[p.editorPaymentStatus]}</p>
                   </TableCell>
                   <TableCell onClick={e => e.stopPropagation()}>
-                    <div className="flex flex-col items-start gap-1">
-                      {p.mountedMaterialNasUrl && (
-                        <GlowPill as="a" href={p.mountedMaterialNasUrl} ariaLabel="Открыть NAS" color="violet" size="sm" icon={Server}>
-                          NAS
-                        </GlowPill>
-                      )}
-                      {!p.mountedMaterialNasUrl && p.attentionReasons.includes('NO_NAS_AFTER_DELIVERY') && (
-                        <span className="text-[11px] text-amber-400 bg-amber-950/30 rounded-full px-2 py-0.5">Нет NAS</span>
-                      )}
-                      {p.effectiveSourceMaterialsUrl && (
-                        <GlowPill as="a" href={p.effectiveSourceMaterialsUrl} ariaLabel="Открыть исходники" color="green" size="sm" icon={Cloud}>
-                          Исходники
-                        </GlowPill>
-                      )}
-                      {!p.mountedMaterialNasUrl && !p.effectiveSourceMaterialsUrl && <span className="text-zinc-600 text-xs">—</span>}
-                    </div>
+                    <MontageMaterialsCell project={p} onOpenMaterials={() => onOpenProject(p, { focusMaterials: true })} />
                   </TableCell>
                 </TableRow>
               )
