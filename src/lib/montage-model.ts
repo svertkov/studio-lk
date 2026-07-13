@@ -595,6 +595,12 @@ export function computeMontageDashboardStats(projects: MontageStatsInput[], now:
   let clientDebt = 0, studioDebt = 0
 
   for (const p of projects) {
+    // Отменённый проект не должен попадать в выручку/расходы/прибыль — эти
+    // деньги фактически не заработаны студией. Эта же функция теперь также
+    // питает общую страницу "Финансы" (см. finance-model.ts), поэтому фикс
+    // делается один раз здесь, а не отдельным фильтром на стороне вызова.
+    if (p.status === 'CANCELLED') continue
+
     if (MONTAGE_DELIVERED_STATUSES.includes(p.status)) deliveredCount += 1
 
     if (p.sourceReceivedAt) {

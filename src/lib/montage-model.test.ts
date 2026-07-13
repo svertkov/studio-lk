@@ -649,6 +649,19 @@ describe('computeMontageDashboardStats — единый источник KPI д�
     expect(stats.attentionCount).toBe(1)
   })
 
+  it('excludes CANCELLED projects entirely from revenue/expenses/profit (money never actually earned)', () => {
+    const stats = computeMontageDashboardStats([
+      makeStatsInput({ clientAmount: 20000, editorAmount: 16000 }),
+      makeStatsInput({ status: 'CANCELLED', clientAmount: 50000, editorAmount: 40000, clientPaymentStatus: 'PENDING', editorPaymentStatus: 'PENDING' }),
+    ], now)
+    expect(stats.revenueTotal).toBe(20000)
+    expect(stats.expensesTotal).toBe(16000)
+    expect(stats.profit).toBe(4000)
+    expect(stats.clientDebt).toBe(0)
+    expect(stats.studioDebt).toBe(0)
+    expect(stats.deliveredCount).toBe(1)
+  })
+
   it('returns zeroed stats for an empty project list', () => {
     const stats = computeMontageDashboardStats([], now)
     expect(stats).toEqual({

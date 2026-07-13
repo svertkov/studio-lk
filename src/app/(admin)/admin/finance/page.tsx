@@ -2,8 +2,11 @@ import Link from 'next/link'
 import { CreditCard, ChevronRight, Info, Hourglass } from 'lucide-react'
 import { getFinanceSummary, getSubscriptionsSummary } from '@/lib/actions/finance'
 import { getExpensesSummary, getExpensesByCategory, getOutstandingLiabilities } from '@/lib/actions/expenses'
+import { getMontageDashboardStats } from '@/lib/actions/montage'
+import { computeCombinedFinanceSummary } from '@/lib/finance-model'
 import DonutChart from '@/components/ui/donut-chart'
 import FinanceStatCards from './FinanceStatCards'
+import MontageFinanceBreakdown from './MontageFinanceBreakdown'
 import BookingIssuesBlock from '../dashboard/BookingIssuesBlock'
 
 const CHART_COLORS = ['#00c26b', '#3b82f6', '#f59e0b', '#a855f7', '#ef4444', '#14b8a6']
@@ -37,25 +40,32 @@ function subscriptionWord(n: number) {
 }
 
 export default async function FinancePage() {
-  const [summaryResult, subsResult, expensesResult, expensesByCategoryResult, outstandingResult] = await Promise.all([
+  const [summaryResult, subsResult, expensesResult, expensesByCategoryResult, outstandingResult, montageResult] = await Promise.all([
     getFinanceSummary(),
     getSubscriptionsSummary(),
     getExpensesSummary(),
     getExpensesByCategory(),
     getOutstandingLiabilities(),
+    getMontageDashboardStats(),
   ])
   const stats = summaryResult.data
   const subs = subsResult.data
   const expenses = expensesResult.data
   const expensesByCategory = expensesByCategoryResult.data
   const outstanding = outstandingResult.data.slice(0, 5)
+  const montage = montageResult.data
 
-  // Чистая прибыль — от ФАКТИЧЕСКИ оплаченных расходов (реальное движение денег).
-  // Прогнозная прибыль (с учётом ещё не оплаченных обязательств) — только в подписи,
-  // чтобы не перепутать с реальной прибылью.
-  const grossTotal = stats.grossTotal ?? 0
-  const netProfit = grossTotal - expenses.actualTotal
-  const projectedProfit = grossTotal - expenses.plannedTotal
+  // Единая сборка "Финансов" из трёх независимых источников денег (визиты,
+  // обязательства, монтаж) — вся арифметика в одном чистом helper'е
+  // (finance-model.ts), а не разбросана инлайн по странице (см. AGENTS.md).
+  const combined = montage
+    ? computeCombinedFinanceSummary(stats, expenses, montage)
+    : computeCombinedFinanceSummary(stats, expenses, {
+        deliveredCount: 0, reportingSince: null, revenueTotal: 0, revenuePaid: 0,
+        expensesTotal: 0, expensesPaid: 0, profit: 0, margin: null,
+        activeCount: 0, attentionCount: 0, clientDebt: 0, studioDebt: 0,
+      })
+  const { totalRevenue: grossTotal, netProfit, projectedProfit } = combined
   const margin = grossTotal > 0 ? (netProfit / grossTotal) * 100 : null
 
   return (
@@ -67,23 +77,30 @@ export default async function FinancePage() {
 
       <FinanceStatCards
         grossTotal={formatMoneyCompact(grossTotal)}
-        actualExpensesTotal={formatMoneyCompact(expenses.actualTotal)}
-        plannedExpensesTotal={formatMoneyCompact(expenses.plannedTotal)}
+        actualExpensesTotal={formatMoneyCompact(combined.actualExpensesTotal)}
+        plannedExpensesTotal={formatMoneyCompact(combined.plannedExpensesTotal)}
         netProfit={formatMoneyCompact(netProfit)}
         marginHint={margin != null ? `маржа ${margin.toFixed(0)}%` : 'по факт. расходам'}
-        outstandingTotal={formatMoneyCompact(expenses.remainingTotal)}
-        outstandingHint={expenses.partialCount + expenses.unpaidCount > 0 ? `${expenses.partialCount + expenses.unpaidCount} обязательств` : 'всё оплачено'}
+        outstandingTotal={formatMoneyCompact(combined.outstandingTotal)}
+        outstandingHint={
+          expenses.partialCount + expenses.unpaidCount > 0 || combined.montageOutstanding > 0
+            ? `${expenses.partialCount + expenses.unpaidCount} обязательств${combined.montageOutstanding > 0 ? ' + монтажёрам' : ''}`
+            : 'всё оплачено'
+        }
         totalVisitsHint={`${stats.totalVisits} визитов`}
         avgCheck={formatMoneyCompact(stats.avgCheck)}
         activeSubscriptions={String(subs.activeCount)}
         remainingHoursHint={`осталось ${subs.remainingHoursTotal % 1 === 0 ? subs.remainingHoursTotal.toFixed(0) : subs.remainingHoursTotal.toFixed(1)} ч`}
       />
 
+      <MontageFinanceBreakdown combined={combined} />
+
       <div className="flex items-start gap-2 text-zinc-600 text-xs px-1">
         <Info className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
         <p>
           Прогнозная прибыль (с учётом всех плановых расходов, даже ещё не оплаченных): {formatMoney(projectedProfit)}.
-          {' '}Средний чек = сумма выручки / количество визитов с указанной суммой оплаты.
+          {' '}Средний чек = сумма выручки / количество визитов с указанной суммой оплаты (без учёта монтажа).
+          {combined.montageReportingSince && ` Монтаж учитывается с ${formatDate(combined.montageReportingSince)}.`}
         </p>
       </div>
 
