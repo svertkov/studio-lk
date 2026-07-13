@@ -284,44 +284,55 @@ export default function MontageProjectsTable({ projects, editors, initialFilterP
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-3 flex-wrap">
-        <div className="relative flex-1 min-w-[220px]">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
-          <input
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            placeholder="Поиск по клиенту, проекту, монтажёру, комментарию..."
-            className="w-full h-10 bg-zinc-900 border border-zinc-800 rounded-lg pl-9 pr-3 text-sm text-zinc-200 placeholder-zinc-600 outline-none focus:border-[#00c26b] transition-colors"
-          />
+      <div className="space-y-3">
+        {/* Строка 1 — фильтры-выборки (поиск + dropdown), сузили таблицу по
+            конкретному значению. Строка 2 (ниже) — тумблеры отображения,
+            концептуально другой тип фильтра ("показать/скрыть" вместо
+            "выбрать значение"), поэтому визуально разнесены отступом, а не
+            обводкой/линией (ТЗ: "разделяться только воздухом"). */}
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="relative flex-1 min-w-[220px]">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
+            <input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Поиск по клиенту, проекту, монтажёру, комментарию..."
+              className="w-full h-10 bg-zinc-900 border border-zinc-800 rounded-lg pl-9 pr-3 text-sm text-zinc-200 placeholder-zinc-600 outline-none focus:border-[#00c26b] transition-colors"
+            />
+          </div>
+          <select
+            value={statusFilter}
+            onChange={e => setStatusFilter(e.target.value as MontageStatus | 'ALL')}
+            className="h-10 bg-zinc-900 border border-zinc-800 rounded-lg px-3 text-sm text-zinc-300 outline-none focus:border-[#00c26b] transition-colors"
+          >
+            <option value="ALL">Все статусы</option>
+            {STATUS_FILTER_OPTIONS.map(s => <option key={s} value={s}>{MONTAGE_STATUS_LABELS[s]}</option>)}
+          </select>
+          <select
+            value={editorFilter}
+            onChange={e => setEditorFilter(e.target.value)}
+            className="h-10 bg-zinc-900 border border-zinc-800 rounded-lg px-3 text-sm text-zinc-300 outline-none focus:border-[#00c26b] transition-colors"
+          >
+            <option value="ALL">Все монтажёры</option>
+            {editors.map(ed => <option key={ed.id} value={ed.id}>{ed.displayName}</option>)}
+          </select>
+          <select
+            value={materialsFilter}
+            onChange={e => setMaterialsFilter(e.target.value as MontageMaterialsState | 'ALL')}
+            className="h-10 bg-zinc-900 border border-zinc-800 rounded-lg px-3 text-sm text-zinc-300 outline-none focus:border-[#00c26b] transition-colors"
+          >
+            <option value="ALL">Материалы: все</option>
+            {MONTAGE_MATERIALS_STATE_ORDER.map(s => <option key={s} value={s}>{MONTAGE_MATERIALS_STATE_LABELS[s]}</option>)}
+          </select>
         </div>
-        <select
-          value={statusFilter}
-          onChange={e => setStatusFilter(e.target.value as MontageStatus | 'ALL')}
-          className="h-10 bg-zinc-900 border border-zinc-800 rounded-lg px-3 text-sm text-zinc-300 outline-none focus:border-[#00c26b] transition-colors"
-        >
-          <option value="ALL">Все статусы</option>
-          {STATUS_FILTER_OPTIONS.map(s => <option key={s} value={s}>{MONTAGE_STATUS_LABELS[s]}</option>)}
-        </select>
-        <select
-          value={editorFilter}
-          onChange={e => setEditorFilter(e.target.value)}
-          className="h-10 bg-zinc-900 border border-zinc-800 rounded-lg px-3 text-sm text-zinc-300 outline-none focus:border-[#00c26b] transition-colors"
-        >
-          <option value="ALL">Все монтажёры</option>
-          {editors.map(ed => <option key={ed.id} value={ed.id}>{ed.displayName}</option>)}
-        </select>
-        <select
-          value={materialsFilter}
-          onChange={e => setMaterialsFilter(e.target.value as MontageMaterialsState | 'ALL')}
-          className="h-10 bg-zinc-900 border border-zinc-800 rounded-lg px-3 text-sm text-zinc-300 outline-none focus:border-[#00c26b] transition-colors"
-        >
-          <option value="ALL">Материалы: все</option>
-          {MONTAGE_MATERIALS_STATE_ORDER.map(s => <option key={s} value={s}>{MONTAGE_MATERIALS_STATE_LABELS[s]}</option>)}
-        </select>
-        <ToggleChip checked={activeOnly} onChange={handleActiveOnlyChange}>Только в работе</ToggleChip>
-        <ToggleChip checked={overdueOnly} onChange={handleOverdueOnlyChange}>Только просроченные</ToggleChip>
-        <ToggleChip checked={attentionOnly} onChange={handleAttentionOnlyChange}>Требуют внимания</ToggleChip>
-        <ToggleChip checked={hideArchived} onChange={handleHideArchivedChange}>Скрыть архивные</ToggleChip>
+
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-xs text-zinc-500 font-medium mr-1">Быстрые фильтры</span>
+          <ToggleChip checked={activeOnly} onChange={handleActiveOnlyChange}>Только в работе</ToggleChip>
+          <ToggleChip checked={overdueOnly} onChange={handleOverdueOnlyChange}>Только просроченные</ToggleChip>
+          <ToggleChip checked={attentionOnly} onChange={handleAttentionOnlyChange}>Требуют внимания</ToggleChip>
+          <ToggleChip checked={hideArchived} onChange={handleHideArchivedChange}>Скрыть архивные</ToggleChip>
+        </div>
       </div>
 
       <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
