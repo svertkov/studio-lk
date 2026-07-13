@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   computeMontageProfit, computeMontageMargin,
+  classifyMontageContentType,
   computeMontageDeadline, isMontageOverdue, montageDeadlineLabel,
   getMontageSourceMaterialsUrl, isMontageMissingNas,
   getMontageAttentionReasons, type MontageAttentionInput,
@@ -42,6 +43,57 @@ describe('computeMontageMargin', () => {
   })
 })
 
+describe('classifyMontageContentType — категоризация по названию проекта', () => {
+  it('classifies a podcast title', () => {
+    expect(classifyMontageContentType('Монтаж подкаста от 07.10.2025')).toEqual({ contentType: 'PODCAST', customContentType: null })
+  })
+
+  it('classifies "ГГ" abbreviation as TALKING_HEAD — real historical title, regression for \\b-vs-кириллица', () => {
+    // \b не работает вокруг кириллицы в JS без /u (буквы кириллицы — не \w),
+    // поэтому \bгг\b раньше тихо никогда не совпадал — нашли на реальных
+    // исторических данных ("Монтаж ГГ от 03.11.2025" уходил в OTHER).
+    expect(classifyMontageContentType('Монтаж ГГ от 03.11.2025')).toEqual({ contentType: 'TALKING_HEAD', customContentType: null })
+  })
+
+  it('classifies full "говорящая голова" wording as TALKING_HEAD', () => {
+    expect(classifyMontageContentType('Монтаж говорящей головы по материалам').contentType).toBe('TALKING_HEAD')
+  })
+
+  it('classifies "видеовизитка" as TALKING_HEAD', () => {
+    expect(classifyMontageContentType('Монтаж видеовизитки').contentType).toBe('TALKING_HEAD')
+  })
+
+  it('classifies reels as SHORT_FORM', () => {
+    expect(classifyMontageContentType('Монтаж 5 рилсов от 03.11.2025').contentType).toBe('SHORT_FORM')
+  })
+
+  it('prefers SHORT_FORM over PODCAST when both keywords are present (ТЗ: "Два рилса по подкасту")', () => {
+    expect(classifyMontageContentType('Два рилса по подкасту от 06.12.2025').contentType).toBe('SHORT_FORM')
+  })
+
+  it('classifies a musical jingle as MOTION_DESIGN (ТЗ example)', () => {
+    expect(classifyMontageContentType('Музыкальный джингл').contentType).toBe('MOTION_DESIGN')
+  })
+
+  it('prefers PRESENTATION over MOTION_DESIGN for "моушен-дизайн презентации" (ТЗ example)', () => {
+    expect(classifyMontageContentType('Моушен-дизайн презентации').contentType).toBe('PRESENTATION')
+  })
+
+  it('classifies "мастер-класс" as PRESENTATION (ТЗ example)', () => {
+    expect(classifyMontageContentType('Монтаж мастер-класса по материалам').contentType).toBe('PRESENTATION')
+  })
+
+  it('falls back to OTHER with the original text preserved when nothing matches', () => {
+    expect(classifyMontageContentType('Монтаж 2 роликов + осьминог')).toEqual({
+      contentType: 'OTHER', customContentType: 'Монтаж 2 роликов + осьминог',
+    })
+  })
+
+  it('OTHER customContentType is null for empty input rather than an empty string', () => {
+    expect(classifyMontageContentType('   ')).toEqual({ contentType: 'OTHER', customContentType: null })
+  })
+})
+
 describe('computeMontageDeadline', () => {
   it('uses deadlineDate as-is for FIXED_DATE', () => {
     const d = computeMontageDeadline({
@@ -72,6 +124,39 @@ describe('computeMontageDeadline', () => {
     })
     expect(d).toBeNull()
   })
+
+  it('defaults to calendar days when turnaroundDayType is not given', () => {
+    const d = computeMontageDeadline({
+      sourceReceivedAt: '2026-07-01', deadlineType: 'DURATION_DAYS', deadlineDate: null, turnaroundDays: 10,
+    })
+    expect(d?.toISOString().slice(0, 10)).toBe('2026-07-11')
+  })
+
+  it('skips Saturday/Sunday for BUSINESS turnaround days', () => {
+    // 2026-07-01 — среда. +3 рабочих дня: чт(02), пт(03), пропуск сб/вс(04-05), пн(06).
+    const d = computeMontageDeadline({
+      sourceReceivedAt: '2026-07-01', deadlineType: 'DURATION_DAYS', deadlineDate: null,
+      turnaroundDays: 3, turnaroundDayType: 'BUSINESS',
+    })
+    expect(d?.toISOString().slice(0, 10)).toBe('2026-07-06')
+  })
+
+  it('CALENDAR turnaround days counts weekends normally, unlike BUSINESS', () => {
+    const d = computeMontageDeadline({
+      sourceReceivedAt: '2026-07-01', deadlineType: 'DURATION_DAYS', deadlineDate: null,
+      turnaroundDays: 3, turnaroundDayType: 'CALENDAR',
+    })
+    expect(d?.toISOString().slice(0, 10)).toBe('2026-07-04')
+  })
+
+  it('a business-day span starting on a weekend still only counts weekdays', () => {
+    // 2026-07-04 — суббота. +1 рабочий день -> понедельник 06-е (пропускает вс).
+    const d = computeMontageDeadline({
+      sourceReceivedAt: '2026-07-04', deadlineType: 'DURATION_DAYS', deadlineDate: null,
+      turnaroundDays: 1, turnaroundDayType: 'BUSINESS',
+    })
+    expect(d?.toISOString().slice(0, 10)).toBe('2026-07-06')
+  })
 })
 
 describe('isMontageOverdue / montageDeadlineLabel', () => {
@@ -88,14 +173,19 @@ describe('isMontageOverdue / montageDeadlineLabel', () => {
     expect(isMontageOverdue(project, now)).toBe(false)
   })
 
-  it('shows "Сдано вовремя" when delivered on or before the deadline', () => {
-    const project = { deadlineDate: '2026-07-10', status: 'DELIVERED' as const, deliveredAt: '2026-07-09' }
+  it('shows "Сдано вовремя" when delivered exactly on the deadline', () => {
+    const project = { deadlineDate: '2026-07-10', status: 'DELIVERED' as const, deliveredAt: '2026-07-10' }
     expect(montageDeadlineLabel(project, now)).toBe('Сдано вовремя')
   })
 
   it('shows delay in days when delivered after the deadline', () => {
     const project = { deadlineDate: '2026-07-10', status: 'DELIVERED' as const, deliveredAt: '2026-07-13' }
     expect(montageDeadlineLabel(project, now)).toBe('Сдано с опозданием на 3 дня')
+  })
+
+  it('shows early delivery separately from on-time', () => {
+    const project = { deadlineDate: '2026-07-10', status: 'DELIVERED' as const, deliveredAt: '2026-07-07' }
+    expect(montageDeadlineLabel(project, now)).toBe('Сдан на 3 дня раньше')
   })
 
   it('shows remaining days for an upcoming deadline', () => {
@@ -108,9 +198,16 @@ describe('isMontageOverdue / montageDeadlineLabel', () => {
     expect(montageDeadlineLabel(project, now)).toBe('Дедлайн сегодня')
   })
 
-  it('is never overdue for CANCELLED/ARCHIVED regardless of the date', () => {
+  it('is never overdue for CANCELLED regardless of the date', () => {
     expect(isMontageOverdue({ deadlineDate: '2026-01-01', status: 'CANCELLED', deliveredAt: null }, now)).toBe(false)
-    expect(isMontageOverdue({ deadlineDate: '2026-01-01', status: 'ARCHIVED', deliveredAt: null }, now)).toBe(false)
+  })
+
+  it('is never overdue for an archived project regardless of the date (isArchived overlay, not a status)', () => {
+    expect(isMontageOverdue({ deadlineDate: '2026-01-01', status: 'IN_PROGRESS', deliveredAt: null, isArchived: true }, now)).toBe(false)
+  })
+
+  it('shows no deadline label at all for an archived project, even overdue', () => {
+    expect(montageDeadlineLabel({ deadlineDate: '2026-01-01', status: 'IN_PROGRESS', deliveredAt: null, isArchived: true }, now)).toBeNull()
   })
 
   it('returns null label when there is no deadline at all', () => {
@@ -133,9 +230,8 @@ describe('getMontageSourceMaterialsUrl — не дублирует ScheduleEvent
 })
 
 describe('isMontageMissingNas', () => {
-  it('flags READY/DELIVERED projects without a NAS link', () => {
+  it('flags DELIVERED projects without a NAS link', () => {
     expect(isMontageMissingNas({ status: 'DELIVERED', mountedMaterialNasUrl: null })).toBe(true)
-    expect(isMontageMissingNas({ status: 'READY', mountedMaterialNasUrl: null })).toBe(true)
   })
 
   it('does not flag projects that already have a NAS link', () => {
@@ -164,6 +260,7 @@ describe('getMontageAttentionReasons — единый источник для KP
       description: null,
       hasNoClientLink: false,
       isHistoricalImport: false,
+      isArchived: false,
       ...overrides,
     }
   }
@@ -172,14 +269,24 @@ describe('getMontageAttentionReasons — единый источник для KP
     expect(getMontageAttentionReasons(makeInput(), now)).toEqual([])
   })
 
-  it('flags a project with no editor assigned once past NEW/NEEDS_INFO', () => {
-    expect(getMontageAttentionReasons(makeInput({ editorId: null, status: 'READY_FOR_ASSIGNMENT' }), now)).toContain('NO_EDITOR')
+  it('flags a project with no editor assigned once past NEW', () => {
+    expect(getMontageAttentionReasons(makeInput({ editorId: null, status: 'IN_PROGRESS' }), now)).toContain('NO_EDITOR')
   })
 
-  it('does not flag a brand-new project for missing editor/source yet', () => {
-    const reasons = getMontageAttentionReasons(makeInput({ editorId: null, status: 'NEW', effectiveSourceMaterialsUrl: null }), now)
+  it('does not flag a brand-new project for missing editor/source/deadline yet', () => {
+    const reasons = getMontageAttentionReasons(makeInput({ editorId: null, status: 'NEW', effectiveSourceMaterialsUrl: null, deadlineDate: null }), now)
     expect(reasons).not.toContain('NO_EDITOR')
     expect(reasons).not.toContain('NO_SOURCE')
+    expect(reasons).not.toContain('NO_DEADLINE')
+  })
+
+  it('flags a non-exempt project with no deadline at all', () => {
+    expect(getMontageAttentionReasons(makeInput({ status: 'IN_PROGRESS', deadlineDate: null }), now)).toContain('NO_DEADLINE')
+  })
+
+  it('does not flag a historical-import project for missing deadline (same exemption as source/NAS)', () => {
+    const reasons = getMontageAttentionReasons(makeInput({ status: 'IN_PROGRESS', deadlineDate: null, isHistoricalImport: true }), now)
+    expect(reasons).not.toContain('NO_DEADLINE')
   })
 
   it('flags an overdue project', () => {
@@ -211,7 +318,7 @@ describe('getMontageAttentionReasons — единый источник для KP
 
   it('still flags other issues (no client, no editor) on historical-import projects', () => {
     const reasons = getMontageAttentionReasons(makeInput({
-      isHistoricalImport: true, hasNoClientLink: true, editorId: null, status: 'ASSIGNED',
+      isHistoricalImport: true, hasNoClientLink: true, editorId: null, status: 'IN_PROGRESS',
     }), now)
     expect(reasons).toContain('NO_CLIENT_LINK')
     expect(reasons).toContain('NO_EDITOR')
@@ -234,16 +341,18 @@ describe('getMontageAttentionReasons — единый источник для KP
     expect(getMontageAttentionReasons(makeInput({ hasNoClientLink: false }), now)).not.toContain('NO_CLIENT_LINK')
   })
 
-  it('never flags CANCELLED or ARCHIVED projects, no matter what is missing', () => {
+  it('never flags CANCELLED projects, no matter what is missing', () => {
     expect(getMontageAttentionReasons(makeInput({ status: 'CANCELLED', editorId: null, deadlineDate: '2020-01-01' }), now)).toEqual([])
-    expect(getMontageAttentionReasons(makeInput({ status: 'ARCHIVED', editorId: null, deadlineDate: '2020-01-01' }), now)).toEqual([])
+  })
+
+  it('never flags archived projects, no matter what is missing (isArchived overlay, not a status)', () => {
+    expect(getMontageAttentionReasons(makeInput({ status: 'IN_PROGRESS', editorId: null, deadlineDate: '2020-01-01', isArchived: true }), now)).toEqual([])
   })
 })
 
 describe('mapMontageStatusToOrderStatus — однонаправленная связь с CRM', () => {
   it('moves the order to REVISIONS when the montage enters a revisions state', () => {
     expect(mapMontageStatusToOrderStatus('REVISIONS', 'EDITING')).toBe('REVISIONS')
-    expect(mapMontageStatusToOrderStatus('AWAITING_REVISIONS', 'EDITING')).toBe('REVISIONS')
   })
 
   it('does not re-trigger REVISIONS when the order is already there', () => {
@@ -296,6 +405,7 @@ describe('computeMontageDashboardStats — единый источник KPI д�
       description: null,
       hasNoClientLink: false,
       isHistoricalImport: false,
+      isArchived: false,
       ...overrides,
     }
   }
@@ -349,11 +459,20 @@ describe('computeMontageDashboardStats — единый источник KPI д�
 
   it('counts active and attention-needing projects using the shared predicates', () => {
     const stats = computeMontageDashboardStats([
-      makeStatsInput({ status: 'IN_PROGRESS', clientAmount: null, editorAmount: null, deadlineDate: null }),
+      // deadlineDate задан (в отличие от прочих overrides) — иначе строка сама
+      // словила бы ещё и NO_DEADLINE, а тест проверяет именно NAS-кейс изолированно.
+      makeStatsInput({ status: 'IN_PROGRESS', clientAmount: null, editorAmount: null, deadlineDate: '2026-08-01' }),
       makeStatsInput({ status: 'DELIVERED', mountedMaterialNasUrl: null, clientAmount: null, editorAmount: null }),
       makeStatsInput({ status: 'CANCELLED', editorId: null, clientAmount: null, editorAmount: null }),
     ], now)
     expect(stats.activeCount).toBe(1)
+    expect(stats.attentionCount).toBe(1)
+  })
+
+  it('a project missing its deadline also counts toward attentionCount (NO_DEADLINE)', () => {
+    const stats = computeMontageDashboardStats([
+      makeStatsInput({ status: 'IN_PROGRESS', deadlineDate: null }),
+    ], now)
     expect(stats.attentionCount).toBe(1)
   })
 
@@ -467,8 +586,9 @@ describe('MONTAGE_STATUS_LABELS / MONTAGE_STATUS_ORDER — consistency', () => {
     }
   })
 
-  it('lists all 14 statuses from the spec exactly once', () => {
-    expect(MONTAGE_STATUS_ORDER).toHaveLength(14)
-    expect(new Set(MONTAGE_STATUS_ORDER).size).toBe(14)
+  it('lists exactly the 5 production statuses once each, excluding the terminal CANCELLED', () => {
+    expect(MONTAGE_STATUS_ORDER).toHaveLength(5)
+    expect(new Set(MONTAGE_STATUS_ORDER).size).toBe(5)
+    expect(MONTAGE_STATUS_ORDER).not.toContain('CANCELLED')
   })
 })

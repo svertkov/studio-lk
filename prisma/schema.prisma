@@ -216,24 +216,51 @@ enum TelegramMessageStatus {
 // МОНТАЖ — производственный workflow проекта монтажа, см. MontageProject.
 // ============================================================
 
-// Порядок соответствует реальному жизненному циклу (см. MONTAGE_STATUS_CONFIG,
-// src/lib/montage-model.ts, единственный источник лейблов/цвета/сортировки —
-// по аналогии с ORDER_STATUS_CONFIG для Order.status).
+// Сокращено с исходных 14 значений до 5 понятных производственных этапов +
+// CANCELLED (ТЗ "Упростить статусы монтажа", 2026-07-13): администратору не
+// нужно различать "Готов к назначению"/"Назначен"/"В работе" — это один этап
+// с точки зрения повседневной работы, разница видна по заполненным полям
+// (editorId, startedAt), а не по отдельному статусу. Причины незаполненности
+// (нет монтажёра/исходников/дедлайна) теперь отдельные предупреждения
+// (см. MontageAttentionReason), не самостоятельные этапы производства.
+// Старые значения (NEEDS_INFO/AWAITING_SOURCE/READY_FOR_ASSIGNMENT/ASSIGNED/
+// AWAITING_REVISIONS/READY/ON_HOLD/ARCHIVED) перенесены в реальные данные
+// скриптом scripts/migrate-montage-statuses/ (см. README.md рядом) и удалены
+// из enum ПОСЛЕ подтверждённого dry-run + apply — на момент удаления в базе
+// не осталось ни одной строки с этими значениями.
+// ON_HOLD заменён на overlay-поля isPaused/pausedAt/pauseReason (тот же
+// принцип, что Order.isArchived — статус НЕ меняется при паузе, см.
+// MontageProject.isPaused). ARCHIVED заменён на isArchived/archivedAt (тоже
+// overlay, как у Order). CANCELLED остаётся полноценным статусом (терминальный,
+// не обратимый как пауза) — не входит в MONTAGE_STATUS_ORDER (не в основном
+// выпадающем списке), устанавливается только явным действием "Отменить проект".
 enum MontageStatus {
   NEW
-  NEEDS_INFO
-  AWAITING_SOURCE
-  READY_FOR_ASSIGNMENT
-  ASSIGNED
   IN_PROGRESS
   IN_REVIEW
-  AWAITING_REVISIONS
   REVISIONS
-  READY
   DELIVERED
-  ON_HOLD
   CANCELLED
-  ARCHIVED
+}
+
+// Категория монтажа — структурированный список вместо свободного текста (ТЗ
+// "Сделать «Тип контента» выпадающим списком"). OTHER + MontageProject.customContentType
+// покрывает всё, что не укладывается в основные 5 категорий — исходный текст
+// никогда не теряется (см. classifyMontageContentType, montage-model.ts).
+enum MontageContentType {
+  PODCAST
+  SHORT_FORM
+  TALKING_HEAD
+  MOTION_DESIGN
+  PRESENTATION
+  OTHER
+}
+
+// Тип дней при задании планового срока количеством дней (не только календарных
+// — ТЗ явно попросил различать рабочие/календарные, см. computeMontageDeadline).
+enum MontageTurnaroundDayType {
+  CALENDAR
+  BUSINESS
 }
 
 // Оплата КЛИЕНТОМ студии за монтаж — независима от EditorPaymentStatus (см.
@@ -1017,17 +1044,17 @@ model EditorProfile {
 // ============================================================
 
 model MontageProject {
-  id          String        @id @default(cuid())
+  id                String              @id @default(cuid())
   // Не @unique: намеренно допускает в будущем несколько проектов монтажа на
   // один заказ (см. комментарий у Order.montageProjects). Идемпотентность
   // АВТОМАТИЧЕСКОГО создания (одно из ТЗ п.6: "не создаётся повторно при
   // каждом сохранении заказа") обеспечивается в коде (ensureMontageProjectForOrder),
   // а не ограничением схемы, ручное добавление второго проекта остаётся возможным.
-  orderId     String?       @map("order_id")
+  orderId           String?             @map("order_id")
   // Только для САМОСТОЯТЕЛЬНЫХ проектов (orderId = null) — см. Client.montageProjects.
   // Для проектов, привязанных к заказу, клиент читается через order.clientId,
   // это поле у них остаётся null (не дублируем).
-  clientId    String?       @map("client_id")
+  clientId          String?             @map("client_id")
   // Снэпшот имени заказчика "как в источнике" — тот же принцип, что
   // Order.clientName: заполняется всегда (в т.ч. когда clientId уже задан),
   // но служит источником отображения ТОЛЬКО пока clientId = null (см.
@@ -1038,14 +1065,41 @@ model MontageProject {
   // Нина" — неоднозначно, не связываем автоматически), но терять сами
   // данные проекта из-за этого не нужно: администратор довяжет клиента
   // вручную позже, а до этого видит исходное имя и пометку "!".
-  clientName  String?       @map("client_name")
-  title       String?
-  description String?
-  // "Тип контента" (ТЗ п.19) — подкаст/рилсы/моушен-дизайн и т.п., свободный
-  // текст: в реальных исторических данных (Google-таблица) формулировки не
-  // унифицированы, вводить закрытый enum на первом этапе преждевременно.
-  contentType String?       @map("content_type")
-  status      MontageStatus @default(NEW)
+  clientName        String?             @map("client_name")
+  title             String?
+  description       String?
+  // Структурированная категория (см. MontageContentType выше) — было свободным
+  // текстом, переведено в enum задним числом: все 76 исторических проектов
+  // классифицированы скриптом scripts/migrate-montage-statuses по названию
+  // (см. classifyMontageContentType, montage-model.ts), ни один текст не
+  // потерян — то, что не удалось уверенно классифицировать, ушло в OTHER
+  // с оригинальным текстом в customContentType ниже.
+  contentType       MontageContentType? @map("content_type")
+  // Ручное уточнение, когда contentType = OTHER — показывается только тогда
+  // в UI (см. ТЗ: "Не хранить пользовательское значение вместо enum").
+  customContentType String?             @map("custom_content_type")
+  status            MontageStatus       @default(NEW)
+
+  // ---- Служебные состояния — НЕ часть основного производственного статуса
+  // (ТЗ "Отдельные служебные состояния"): overlay поверх status, тем же
+  // принципом, что Order.isArchived. ----
+  // Пауза обратима (isPaused переключается туда-обратно), поэтому pausedAt/
+  // pauseReason НЕ очищаются при снятии паузы — остаются историей последней
+  // паузы, тот же принцип, что у одноразовых меток статуса заказа
+  // (Order.completedAt и т.п.: пишутся один раз, не стираются задним числом).
+  isPaused     Boolean   @default(false) @map("is_paused")
+  pausedAt     DateTime? @map("paused_at")
+  pauseReason  String?   @map("pause_reason")
+  // Отмена — терминальная, необратимого действия ("Отменить проект"),
+  // поэтому, в отличие от паузы, это реальный статус (status = CANCELLED),
+  // а cancelledAt/cancelReason — только сопутствующие детали момента отмены.
+  cancelledAt  DateTime? @map("cancelled_at")
+  cancelReason String?   @map("cancel_reason")
+  // Архивация — отдельное действие ПОСЛЕ Сдан/Отменён (ТЗ "Архивация —
+  // отдельное действие"), тот же overlay-принцип, что Order.isArchived;
+  // archivedAt уже существовал в схеме (ниже), isArchived добавлен, чтобы
+  // явно фильтровать "архивный / не архивный", а не полагаться на naличие даты.
+  isArchived   Boolean   @default(false) @map("is_archived")
 
   editorId            String?   @map("editor_id")
   // Дополнительные исполнители — простой список id EditorProfile без ролей
@@ -1055,21 +1109,35 @@ model MontageProject {
   additionalEditorIds String[]  @map("additional_editor_ids")
   assignedAt          DateTime? @map("assigned_at")
 
-  sourceReceivedAt DateTime?            @map("source_received_at")
-  startedAt        DateTime?            @map("started_at")
+  sourceReceivedAt  DateTime?                 @map("source_received_at")
+  startedAt         DateTime?                 @map("started_at")
   // Способ задания срока и сам срок — см. MontageDeadlineType выше.
-  deadlineType     MontageDeadlineType? @map("deadline_type")
+  deadlineType      MontageDeadlineType?      @map("deadline_type")
   // Итоговая рассчитанная дата дедлайна независимо от deadlineType — единый
   // helper computeMontageDeadline (src/lib/montage-model.ts) пересчитывает её
   // при сохранении, здесь всегда хранится готовое значение для сортировки/
   // фильтров/просрочки без пересчёта на каждом чтении.
-  deadlineDate     DateTime?            @map("deadline_date")
+  deadlineDate      DateTime?                 @map("deadline_date")
   // Исходное "количество дней", если выбран этот способ — хранится отдельно от
   // deadlineDate (см. ТЗ п.19: "не хранить только строку «10 дней»"), чтобы при
   // повторном открытии карточки показать именно то число, которое ввели.
-  turnaroundDays   Int?                 @map("turnaround_days")
-  completedAt      DateTime?            @map("completed_at")
-  deliveredAt      DateTime?            @map("delivered_at")
+  turnaroundDays    Int?                      @map("turnaround_days")
+  // Календарные или рабочие дни — влияет на то, как turnaroundDays превращается
+  // в deadlineDate (см. computeMontageDeadline, montage-model.ts: рабочие дни
+  // пропускают субботу/воскресенье, без учёта праздников — календаря
+  // праздников в проекте нет и заводить его ради одного поля преждевременно).
+  turnaroundDayType MontageTurnaroundDayType? @map("turnaround_day_type")
+  // Технический момент перехода в "Сдан" — заполняется СЕРВЕРОМ автоматически
+  // при смене статуса (см. actions/montage.ts), больше не отдельное поле формы
+  // (ТЗ "Убрать путаницу с датой завершения работы": администратор видит и
+  // редактирует только 4 понятных поля срока — deliveredAt среди них
+  // "фактическая дата сдачи клиенту", а completedAt — внутренняя метка для
+  // аналитики, не показывается как отдельный ввод).
+  completedAt       DateTime?                 @map("completed_at")
+  // Фактическая дата сдачи материала клиенту — единственное "факт"-поле среди
+  // видимых в форме, сравнивается с deadlineDate через montageDeadlineLabel
+  // (montage-model.ts) для "сдано вовремя/с опозданием".
+  deliveredAt       DateTime?                 @map("delivered_at")
 
   // ---- Финансы: два независимых источника суммы, прибыль считается, а не
   // хранится (см. computeMontageProfit, src/lib/montage-model.ts) ----

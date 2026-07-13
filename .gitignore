@@ -48,6 +48,7 @@ CREDENTIALS.md
 scripts/backfill-visit-times/backups/
 scripts/promote-visits-to-orders/backups/
 scripts/import-montage-projects/backups/
+scripts/migrate-montage-statuses/backups/
 
 # db backups — по умолчанию пишутся вне папки проекта (см.
 # scripts/db-backup/README.md), но на случай если BACKUP_DIR переопределят

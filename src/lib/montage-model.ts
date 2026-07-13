@@ -4,10 +4,16 @@
 // дашбордом, таблицей проектов, карточкой проекта, карточкой монтажёра и
 // карточкой клиента — а не копируются по компонентам (см. AGENTS.md, п.4).
 
-import type { MontageStatus, MontageClientPaymentStatus, MontageEditorPaymentStatus, MontageDeadlineType, OrderStatus } from '@prisma/client'
+import type {
+  MontageStatus, MontageClientPaymentStatus, MontageEditorPaymentStatus, MontageDeadlineType,
+  MontageContentType, MontageTurnaroundDayType, OrderStatus,
+} from '@prisma/client'
 import { monthKey } from '@/lib/order-model'
 
-export type { MontageStatus, MontageClientPaymentStatus, MontageEditorPaymentStatus, MontageDeadlineType }
+export type {
+  MontageStatus, MontageClientPaymentStatus, MontageEditorPaymentStatus, MontageDeadlineType,
+  MontageContentType, MontageTurnaroundDayType,
+}
 
 // ============================================================
 // СТАТУСЫ ПРОЕКТА МОНТАЖА — единственный источник лейбла/порядка/цвета,
@@ -15,6 +21,13 @@ export type { MontageStatus, MontageClientPaymentStatus, MontageEditorPaymentSta
 // готовый Tailwind-класс (text-*), а не CSS-токен: раздел "Монтаж" не
 // использует drag&drop-канбан с glow-колонками, как CRM, только таблицу и
 // компактные статус-плашки — усложнять до уровня ORDER_STATUS_CONFIG незачем.
+//
+// 5 понятных производственных этапов + CANCELLED (терминальный, не входит в
+// MONTAGE_STATUS_ORDER — см. ниже) — сокращено с 14 значений (см. комментарий
+// у enum MontageStatus в schema.prisma). Пауза и архив — больше НЕ статусы,
+// это overlay-поля isPaused/isArchived поверх текущего status (см. Order.isArchived
+// за тем же принципом) — их состояние не показывается через эту конфигурацию,
+// а отдельными плашками в UI (MontageProjectsTable.tsx/MontageProjectModal.tsx).
 // ============================================================
 
 export interface MontageStatusConfig {
@@ -24,20 +37,14 @@ export interface MontageStatusConfig {
 }
 
 const MONTAGE_STATUS_CONFIG: Record<MontageStatus, MontageStatusConfig> = {
-  NEW:                  { label: 'Новый',              order: 1,  color: 'text-blue-400' },
-  NEEDS_INFO:           { label: 'Требует заполнения',  order: 2,  color: 'text-amber-400' },
-  AWAITING_SOURCE:      { label: 'Ожидает исходники',   order: 3,  color: 'text-amber-400' },
-  READY_FOR_ASSIGNMENT: { label: 'Готов к назначению',  order: 4,  color: 'text-cyan-400' },
-  ASSIGNED:             { label: 'Назначен',            order: 5,  color: 'text-cyan-400' },
-  IN_PROGRESS:          { label: 'В работе',            order: 6,  color: 'text-yellow-400' },
-  IN_REVIEW:            { label: 'На проверке',         order: 7,  color: 'text-yellow-400' },
-  AWAITING_REVISIONS:   { label: 'Ожидает правки',      order: 8,  color: 'text-orange-400' },
-  REVISIONS:            { label: 'Правки',              order: 9,  color: 'text-orange-400' },
-  READY:                { label: 'Готов',               order: 10, color: 'text-lime-400' },
-  DELIVERED:            { label: 'Сдан',                order: 11, color: 'text-green-500' },
-  ON_HOLD:              { label: 'Приостановлен',       order: 12, color: 'text-zinc-400' },
-  CANCELLED:            { label: 'Отменён',             order: 13, color: 'text-red-400' },
-  ARCHIVED:             { label: 'Архив',                order: 14, color: 'text-zinc-500' },
+  NEW:         { label: 'Новый',           order: 1, color: 'text-blue-400' },
+  IN_PROGRESS: { label: 'В работе',        order: 2, color: 'text-cyan-400' },
+  IN_REVIEW:   { label: 'На согласовании', order: 3, color: 'text-violet-400' },
+  REVISIONS:   { label: 'Правки',          order: 4, color: 'text-amber-400' },
+  DELIVERED:   { label: 'Сдан',            order: 5, color: 'text-green-500' },
+  // Терминальный, вне основного производственного цикла — свой нейтральный
+  // цвет, чтобы визуально не путаться с обычными этапами выше.
+  CANCELLED:   { label: 'Отменён',         order: 99, color: 'text-red-400' },
 }
 
 export function getMontageStatusConfig(status: MontageStatus): MontageStatusConfig {
@@ -48,15 +55,14 @@ export const MONTAGE_STATUS_LABELS: Record<MontageStatus, string> = Object.fromE
   (Object.keys(MONTAGE_STATUS_CONFIG) as MontageStatus[]).map(s => [s, MONTAGE_STATUS_CONFIG[s].label]),
 ) as Record<MontageStatus, string>
 
-export const MONTAGE_STATUS_ORDER: MontageStatus[] = (Object.keys(MONTAGE_STATUS_CONFIG) as MontageStatus[])
-  .sort((a, b) => MONTAGE_STATUS_CONFIG[a].order - MONTAGE_STATUS_CONFIG[b].order)
+// Основной выпадающий список карточки/фильтров — ТОЛЬКО 5 производственных
+// этапов, без CANCELLED (тот устанавливается исключительно действием
+// "Отменить проект", см. cancelMontageProject в actions/montage.ts).
+export const MONTAGE_STATUS_ORDER: MontageStatus[] = ['NEW', 'IN_PROGRESS', 'IN_REVIEW', 'REVISIONS', 'DELIVERED']
 
 // Статусы, которые считаются "активной работой" (для KPI "В работе" на
-// дашборде и фильтра "Активные проекты" в карточке клиента/монтажёра) —
-// всё, что уже назначено и не является финальным/приостановленным состоянием.
-export const MONTAGE_ACTIVE_STATUSES: MontageStatus[] = [
-  'ASSIGNED', 'IN_PROGRESS', 'IN_REVIEW', 'AWAITING_REVISIONS', 'REVISIONS', 'READY',
-]
+// дашборде и фильтра "Активные проекты" в карточке клиента/монтажёра).
+export const MONTAGE_ACTIVE_STATUSES: MontageStatus[] = ['IN_PROGRESS', 'IN_REVIEW', 'REVISIONS']
 
 // Статусы, которые считаются "смонтировано" (KPI "Смонтировано проектов" на
 // дашборде, п.10 ТЗ) — только реально сданные клиенту.
@@ -77,6 +83,69 @@ export const MONTAGE_EDITOR_PAYMENT_STATUS_LABELS: Record<MontageEditorPaymentSt
   PARTIALLY_PAID: 'Частично выплачено',
   PAID:           'Выплачено',
   NOT_REQUIRED:   'Не требуется',
+}
+
+// ============================================================
+// ТИП КОНТЕНТА — структурированная категория вместо свободного текста (ТЗ
+// "Сделать «Тип контента» выпадающим списком"). OTHER — единственное
+// значение, для которого показывается customContentType (см. схему).
+// ============================================================
+
+export const MONTAGE_CONTENT_TYPE_ORDER: MontageContentType[] = [
+  'PODCAST', 'SHORT_FORM', 'TALKING_HEAD', 'MOTION_DESIGN', 'PRESENTATION', 'OTHER',
+]
+
+export const MONTAGE_CONTENT_TYPE_LABELS: Record<MontageContentType, string> = {
+  PODCAST:       'Подкаст',
+  SHORT_FORM:    'Рилс / короткие ролики',
+  TALKING_HEAD:  'Говорящая голова',
+  MOTION_DESIGN: 'Motion design',
+  PRESENTATION:  'Презентация / корпоративное видео',
+  OTHER:         'Прочее',
+}
+
+// Ключевые слова для автоматической классификации исторических/импортированных
+// проектов по названию (ТЗ п.7) — ПОРЯДОК ВАЖЕН: правила проверяются по
+// очереди, побеждает первое совпадение. PRESENTATION проверяется раньше
+// MOTION_DESIGN, потому что "моушен-презентация"/"моушен-дизайн презентации"
+// по прямому примеру ТЗ должны попасть в "Презентация", а не в "Motion
+// design" — иначе общее слово "моушен" забрало бы их себе первым. Аналогично
+// SHORT_FORM проверяется раньше PODCAST: "Два рилса по подкасту" — это
+// проект-рилс (по формату сдачи), а не подкаст, хотя оба слова есть в тексте.
+// \b НЕ работает как ожидается вокруг кириллицы в JS (без /u \w значит только
+// [A-Za-z0-9_], поэтому любая кириллическая буква для \b — "не-словесный"
+// символ, и \bгг\b тихо никогда не совпадает) — обнаружено на реальных
+// исторических данных ("Монтаж ГГ от 03.11.2025" уходил в OTHER вместо
+// TALKING_HEAD). Вместо \b — явные lookaround по кириллическому классу букв.
+const CYR_LETTER = 'а-яё'
+const CONTENT_TYPE_RULES: { type: MontageContentType; pattern: RegExp }[] = [
+  { type: 'PRESENTATION',  pattern: /презентац|мастер.?класс|корпоратив|промо(?:ролик|видео|материал)/i },
+  { type: 'TALKING_HEAD',  pattern: new RegExp(`говорящ|видеовизит|(?<![${CYR_LETTER}])гг(?![${CYR_LETTER}])`, 'i') },
+  { type: 'SHORT_FORM',    pattern: new RegExp(`рилс|шортс|short|нарезк|(?<![${CYR_LETTER}])клип`, 'i') },
+  { type: 'MOTION_DESIGN', pattern: /моушен|motion|анимаци|джингл|график/i },
+  { type: 'PODCAST',       pattern: /подкаст|интервью/i },
+]
+
+export interface MontageContentTypeClassification {
+  contentType: MontageContentType
+  // Заполнен только для OTHER — исходный текст никогда не теряется (ТЗ:
+  // "Не терять исходное описание проекта"), даже когда классификация
+  // неуверенная. Для остальных категорий null: сам title/description уже
+  // хранит оригинальный текст отдельно, дублировать его в customContentType
+  // незачем (AGENTS.md — не дублировать данные ради одного экрана).
+  customContentType: string | null
+}
+
+// Классифицирует ОДИН свободный текст (обычно title проекта) в структурированную
+// категорию. Неоднозначные/нераспознанные значения сознательно уходят в OTHER
+// с сохранением исходного текста, а не угадываются "по смыслу" — угадывание
+// закрытого enum из свободного текста менее предсказуемо, чем явное "Прочее".
+export function classifyMontageContentType(text: string): MontageContentTypeClassification {
+  const trimmed = text.trim()
+  for (const rule of CONTENT_TYPE_RULES) {
+    if (rule.pattern.test(trimmed)) return { contentType: rule.type, customContentType: null }
+  }
+  return { contentType: 'OTHER', customContentType: trimmed || null }
 }
 
 // ============================================================
@@ -103,11 +172,11 @@ export function computeMontageMargin(clientAmount: number | null, editorAmount: 
 // MontageProject.deadlineDate, эта функция — единственное место, где решается
 // "какая дата дедлайна", дальше везде читается уже готовое поле.
 //
-// Только календарные дни (не рабочие) — в проекте нет ни одного существующего
-// механизма расчёта рабочих дней/праздников, вводить его ради одного поля
-// одной новой фичи было бы преждевременным усложнением (ТЗ явно предупреждал
-// не добавлять поля/логику вслепую); при необходимости расширяется позже без
-// изменения формы хранения (deadlineType остаётся enum).
+// Календарные ИЛИ рабочие дни (turnaroundDayType) — рабочие пропускают
+// субботу/воскресенье. Праздники намеренно не учитываются: в проекте нет
+// календаря праздников, а заводить его ради одного поля было бы преждевременным
+// усложнением (тот же принцип "не добавлять то, что не просили" — праздники
+// никто не просил).
 // ============================================================
 
 export interface MontageDeadlineInput {
@@ -115,6 +184,22 @@ export interface MontageDeadlineInput {
   deadlineType: MontageDeadlineType | null
   deadlineDate: string | Date | null | undefined
   turnaroundDays: number | null | undefined
+  turnaroundDayType?: MontageTurnaroundDayType | null
+}
+
+// Добавляет N рабочих дней (пропуская сб/вс) к дате — суббота/воскресенье
+// самой даты начала НЕ считаются днём отсчёта (первый рабочий день считается
+// от следующего дня после старта, тот же принцип "через N дней", что и у
+// календарного варианта).
+function addBusinessDays(start: Date, days: number): Date {
+  const d = new Date(start)
+  let added = 0
+  while (added < days) {
+    d.setDate(d.getDate() + 1)
+    const dow = d.getDay() // 0 = вс, 6 = сб
+    if (dow !== 0 && dow !== 6) added += 1
+  }
+  return d
 }
 
 export function computeMontageDeadline(input: MontageDeadlineInput): Date | null {
@@ -123,6 +208,9 @@ export function computeMontageDeadline(input: MontageDeadlineInput): Date | null
   }
   if (input.deadlineType === 'DURATION_DAYS') {
     if (!input.sourceReceivedAt || input.turnaroundDays == null) return null
+    if (input.turnaroundDayType === 'BUSINESS') {
+      return addBusinessDays(new Date(input.sourceReceivedAt), input.turnaroundDays)
+    }
     const d = new Date(input.sourceReceivedAt)
     d.setDate(d.getDate() + input.turnaroundDays)
     return d
@@ -140,13 +228,21 @@ function pluralizeDays(n: number): string {
 
 // Статусы, для которых просрочка/обратный отсчёт больше не имеют смысла —
 // проект либо уже сдан, либо снят с производства (ТЗ п.20: просрочен, если
-// deadlineDate < now И статус не «Сдан»/«Отменён»/«Архив»).
-const MONTAGE_DEADLINE_INACTIVE_STATUSES: MontageStatus[] = ['DELIVERED', 'CANCELLED', 'ARCHIVED']
+// deadlineDate < now И статус не «Сдан»/«Отменён»). Архив проверяется отдельным
+// полем isArchived (см. ниже) — это больше не значение статуса.
+const MONTAGE_DEADLINE_INACTIVE_STATUSES: MontageStatus[] = ['DELIVERED', 'CANCELLED']
 
 export interface MontageDeadlineStateInput {
   deadlineDate: string | Date | null
   status: MontageStatus
   deliveredAt: string | Date | null
+  // Архивный проект не в производстве — просрочка/обратный отсчёт для него
+  // так же не имеет смысла, как и для CANCELLED (см. MontageProject.isArchived
+  // в схеме, тот же overlay-принцип, что Order.isArchived). Необязателен —
+  // старые вызовы без этого поля продолжают работать как раньше (undefined
+  // трактуется как false), это не меняет поведение везде, где isArchived
+  // ещё не подключён.
+  isArchived?: boolean
 }
 
 // Разница в календарных днях (не часах) между двумя датами — дедлайн это
@@ -160,6 +256,7 @@ function calendarDaysBetween(a: Date, b: Date): number {
 
 export function isMontageOverdue(project: MontageDeadlineStateInput, now: Date = new Date()): boolean {
   if (!project.deadlineDate) return false
+  if (project.isArchived) return false
   if (MONTAGE_DEADLINE_INACTIVE_STATUSES.includes(project.status)) return false
   return calendarDaysBetween(new Date(project.deadlineDate), now) < 0
 }
@@ -174,10 +271,11 @@ export function montageDeadlineLabel(project: MontageDeadlineStateInput, now: Da
   if (project.status === 'DELIVERED' && project.deliveredAt) {
     const delivered = new Date(project.deliveredAt)
     const diffDays = calendarDaysBetween(delivered, deadline)
-    if (diffDays <= 0) return 'Сдано вовремя'
+    if (diffDays < 0) return `Сдан на ${Math.abs(diffDays)} ${pluralizeDays(Math.abs(diffDays))} раньше`
+    if (diffDays === 0) return 'Сдано вовремя'
     return `Сдано с опозданием на ${diffDays} ${pluralizeDays(diffDays)}`
   }
-  if (MONTAGE_DEADLINE_INACTIVE_STATUSES.includes(project.status)) return null
+  if (project.isArchived || MONTAGE_DEADLINE_INACTIVE_STATUSES.includes(project.status)) return null
 
   const diffDays = calendarDaysBetween(deadline, now)
   if (diffDays < 0) return `Просрочено на ${Math.abs(diffDays)} ${pluralizeDays(Math.abs(diffDays))}`
@@ -201,7 +299,17 @@ export function getMontageSourceMaterialsUrl(
   return project.sourceMaterialsUrl ?? orderYandexDiskUrl ?? null
 }
 
-const MONTAGE_COMPLETE_STATUSES: MontageStatus[] = ['READY', 'DELIVERED']
+const MONTAGE_COMPLETE_STATUSES: MontageStatus[] = ['DELIVERED']
+
+// Архивировать можно только проект, уже покинувший производственный цикл —
+// та же граница, что actions/montage.ts проверяет на сервере перед
+// archiveMontageProject; экспортирована отсюда (а не задана заново в
+// actions/montage.ts или в карточке), чтобы кнопка "Отправить в архив" в
+// MontageProjectModal.tsx показывалась по ТОЙ ЖЕ границе, что реально
+// разрешает сервер, а не по второй, случайно рассинхронизированной копии
+// (AGENTS.md, п.4). 'use server'-файлы не могут экспортировать константы —
+// поэтому общий источник живёт здесь, а не в actions/montage.ts.
+export const MONTAGE_ARCHIVABLE_STATUSES: MontageStatus[] = ['DELIVERED', 'CANCELLED']
 
 export function isMontageMissingNas(project: { status: MontageStatus; mountedMaterialNasUrl: string | null }): boolean {
   return MONTAGE_COMPLETE_STATUSES.includes(project.status) && !project.mountedMaterialNasUrl
@@ -214,7 +322,8 @@ export function isMontageMissingNas(project: { status: MontageStatus; mountedMat
 // ============================================================
 
 export type MontageAttentionReason =
-  | 'NO_EDITOR' | 'OVERDUE' | 'NO_SOURCE' | 'NO_NAS_AFTER_DELIVERY' | 'PAYMENT_UNDEFINED' | 'INCOMPLETE_CARD' | 'NO_CLIENT_LINK'
+  | 'NO_EDITOR' | 'OVERDUE' | 'NO_SOURCE' | 'NO_NAS_AFTER_DELIVERY' | 'PAYMENT_UNDEFINED' | 'INCOMPLETE_CARD'
+  | 'NO_CLIENT_LINK' | 'NO_DEADLINE'
 
 export const MONTAGE_ATTENTION_LABELS: Record<MontageAttentionReason, string> = {
   NO_EDITOR:              'Без монтажёра',
@@ -224,6 +333,7 @@ export const MONTAGE_ATTENTION_LABELS: Record<MontageAttentionReason, string> = 
   PAYMENT_UNDEFINED:       'Оплата не определена',
   INCOMPLETE_CARD:         'Незаполненная карточка',
   NO_CLIENT_LINK:          'Клиент не привязан',
+  NO_DEADLINE:             'Не задан дедлайн',
 }
 
 export interface MontageAttentionInput {
@@ -257,21 +367,31 @@ export interface MontageAttentionInput {
   // карточка) по-прежнему применяются и к историческим записям — они остаются
   // реально значимыми независимо от источника данных.
   isHistoricalImport: boolean
+  // Архивный проект (см. MontageProject.isArchived) полностью выведен из
+  // оперативной работы — тот же смысл, что и раньше был у статуса ARCHIVED,
+  // но теперь это отдельное overlay-поле, а не значение status (см. схему).
+  isArchived: boolean
 }
 
-const MONTAGE_ATTENTION_EXEMPT_STATUSES: MontageStatus[] = ['CANCELLED', 'ARCHIVED', 'NEW', 'NEEDS_INFO']
+// NEW покрывает и то, что раньше было NEEDS_INFO/AWAITING_SOURCE — этап "ещё
+// не начали", для которого рано ругаться на отсутствие монтажёра/исходников/
+// дедлайна (это ожидаемо для только что созданной карточки, не проблема).
+const MONTAGE_ATTENTION_EXEMPT_STATUSES: MontageStatus[] = ['CANCELLED', 'NEW']
 
 export function getMontageAttentionReasons(project: MontageAttentionInput, now: Date = new Date()): MontageAttentionReason[] {
-  if (project.status === 'CANCELLED' || project.status === 'ARCHIVED') return []
+  if (project.status === 'CANCELLED' || project.isArchived) return []
   const reasons: MontageAttentionReason[] = []
 
   if (project.hasNoClientLink) reasons.push('NO_CLIENT_LINK')
   if (!project.editorId && !MONTAGE_ATTENTION_EXEMPT_STATUSES.includes(project.status)) reasons.push('NO_EDITOR')
-  if (isMontageOverdue({ deadlineDate: project.deadlineDate, status: project.status, deliveredAt: project.deliveredAt }, now)) {
+  if (isMontageOverdue({
+    deadlineDate: project.deadlineDate, status: project.status, deliveredAt: project.deliveredAt, isArchived: project.isArchived,
+  }, now)) {
     reasons.push('OVERDUE')
   }
   if (!project.isHistoricalImport) {
     if (!project.effectiveSourceMaterialsUrl && !MONTAGE_ATTENTION_EXEMPT_STATUSES.includes(project.status)) reasons.push('NO_SOURCE')
+    if (!project.deadlineDate && !MONTAGE_ATTENTION_EXEMPT_STATUSES.includes(project.status)) reasons.push('NO_DEADLINE')
     if (isMontageMissingNas({ status: project.status, mountedMaterialNasUrl: project.mountedMaterialNasUrl })) reasons.push('NO_NAS_AFTER_DELIVERY')
   }
   if (project.clientAmount != null && project.clientPaymentStatus === 'NOT_SPECIFIED') reasons.push('PAYMENT_UNDEFINED')
@@ -295,7 +415,7 @@ export function mapMontageStatusToOrderStatus(
   montageStatus: MontageStatus, currentOrderStatus: OrderStatus,
 ): OrderStatus | null {
   if (currentOrderStatus !== 'EDITING' && currentOrderStatus !== 'REVISIONS') return null
-  if ((montageStatus === 'AWAITING_REVISIONS' || montageStatus === 'REVISIONS') && currentOrderStatus !== 'REVISIONS') {
+  if (montageStatus === 'REVISIONS' && currentOrderStatus !== 'REVISIONS') {
     return 'REVISIONS'
   }
   if (montageStatus === 'DELIVERED') return 'COMPLETED'
@@ -326,6 +446,7 @@ export interface MontageStatsInput {
   description: string | null
   hasNoClientLink: boolean
   isHistoricalImport: boolean
+  isArchived: boolean
 }
 
 export interface MontageDashboardStats {
@@ -386,7 +507,7 @@ export function computeMontageDashboardStats(projects: MontageStatsInput[], now:
       status: p.status, editorId: p.editorId, deadlineDate: p.deadlineDate, deliveredAt: p.deliveredAt,
       effectiveSourceMaterialsUrl: p.effectiveSourceMaterialsUrl, mountedMaterialNasUrl: p.mountedMaterialNasUrl,
       clientAmount: p.clientAmount, clientPaymentStatus: p.clientPaymentStatus, title: p.title, description: p.description,
-      hasNoClientLink: p.hasNoClientLink, isHistoricalImport: p.isHistoricalImport,
+      hasNoClientLink: p.hasNoClientLink, isHistoricalImport: p.isHistoricalImport, isArchived: p.isArchived,
     }, now)
     if (attention.length > 0) attentionCount += 1
   }

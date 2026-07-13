@@ -9,8 +9,20 @@ import type { MontageProjectDTO } from '@/lib/actions/montage'
 import type { EditorProfileListItemDTO } from '@/lib/actions/editors'
 import {
   MONTAGE_STATUS_ORDER, MONTAGE_STATUS_LABELS, MONTAGE_CLIENT_PAYMENT_STATUS_LABELS, MONTAGE_EDITOR_PAYMENT_STATUS_LABELS,
-  MONTAGE_ACTIVE_STATUSES, computeMontageProfit, type MontageStatus,
+  MONTAGE_ACTIVE_STATUSES, MONTAGE_CONTENT_TYPE_LABELS, computeMontageProfit, type MontageStatus,
 } from '@/lib/montage-model'
+
+// Фильтр статуса показывает и терминальный CANCELLED (вне MONTAGE_STATUS_ORDER,
+// который отдаёт только 5 производственных этапов для карточки/дропдауна
+// создания) — в таблице отменённые проекты по-прежнему видны, должна быть
+// возможность отфильтровать именно их.
+const STATUS_FILTER_OPTIONS: MontageStatus[] = [...MONTAGE_STATUS_ORDER, 'CANCELLED']
+
+function contentTypeLabel(p: Pick<MontageProjectDTO, 'contentType' | 'customContentType'>): string {
+  if (!p.contentType) return ''
+  if (p.contentType === 'OTHER') return p.customContentType || MONTAGE_CONTENT_TYPE_LABELS.OTHER
+  return MONTAGE_CONTENT_TYPE_LABELS[p.contentType]
+}
 import MontageStatusBadge from './MontageStatusBadge'
 
 export type MontageProjectsFilterPreset =
@@ -31,7 +43,7 @@ function formatDate(v: string | null) {
 type SortKey = 'date' | 'client' | 'deadline' | 'profit'
 
 function haystack(p: MontageProjectDTO): string {
-  return [p.title, p.description, p.clientName, p.companyName, p.editorName, p.contentType, p.internalComment, p.clientComment]
+  return [p.title, p.description, p.clientName, p.companyName, p.editorName, contentTypeLabel(p), p.internalComment, p.clientComment]
     .filter(Boolean).join(' ').toLowerCase()
 }
 
@@ -76,6 +88,10 @@ export default function MontageProjectsTable({ projects, editors, initialFilterP
   const [attentionOnly, setAttentionOnly] = useState(initialFilters.attentionOnly)
   const [overdueOnly, setOverdueOnly] = useState(false)
   const [activeOnly, setActiveOnly] = useState(initialFilters.activeOnly)
+  // По умолчанию скрыты — архив специально существует, чтобы убрать сданные/
+  // отменённые проекты из повседневного рабочего вида (см. archiveMontageProject,
+  // actions/montage.ts), иначе таблица бесконечно растёт и не разгружается.
+  const [hideArchived, setHideArchived] = useState(true)
   const [sortKey, setSortKey] = useState<SortKey>('date')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
 
@@ -94,9 +110,10 @@ export default function MontageProjectsTable({ projects, editors, initialFilterP
       if (editorFilter !== 'ALL' && p.editorId !== editorFilter) return false
       if (attentionOnly && p.attentionReasons.length === 0) return false
       if (overdueOnly && !p.isOverdue) return false
+      if (hideArchived && p.isArchived) return false
       return true
     })
-  }, [projects, search, statusFilter, activeOnly, editorFilter, attentionOnly, overdueOnly])
+  }, [projects, search, statusFilter, activeOnly, editorFilter, attentionOnly, overdueOnly, hideArchived])
 
   const sorted = useMemo(() => {
     const arr = [...filtered]
@@ -129,7 +146,7 @@ export default function MontageProjectsTable({ projects, editors, initialFilterP
           className="h-10 bg-zinc-900 border border-zinc-800 rounded-lg px-3 text-sm text-zinc-300 outline-none focus:border-[#00c26b] transition-colors"
         >
           <option value="ALL">Все статусы</option>
-          {MONTAGE_STATUS_ORDER.map(s => <option key={s} value={s}>{MONTAGE_STATUS_LABELS[s]}</option>)}
+          {STATUS_FILTER_OPTIONS.map(s => <option key={s} value={s}>{MONTAGE_STATUS_LABELS[s]}</option>)}
         </select>
         <select
           value={editorFilter}
@@ -150,6 +167,10 @@ export default function MontageProjectsTable({ projects, editors, initialFilterP
         <label className="flex items-center gap-1.5 text-xs text-zinc-400 cursor-pointer select-none">
           <input type="checkbox" checked={attentionOnly} onChange={e => setAttentionOnly(e.target.checked)} className="accent-[#00c26b]" />
           Требуют внимания
+        </label>
+        <label className="flex items-center gap-1.5 text-xs text-zinc-400 cursor-pointer select-none">
+          <input type="checkbox" checked={hideArchived} onChange={e => setHideArchived(e.target.checked)} className="accent-[#00c26b]" />
+          Скрыть архивные
         </label>
       </div>
 
@@ -215,7 +236,7 @@ export default function MontageProjectsTable({ projects, editors, initialFilterP
                   <TableCell>
                     <p className="text-zinc-200 text-sm truncate max-w-[200px]">{p.title ?? 'Без названия'}</p>
                     <p className="text-zinc-500 text-xs truncate max-w-[200px]">
-                      {p.contentType ?? ''}
+                      {contentTypeLabel(p)}
                       {p.orderId && (
                         <Link href="/admin/crm" onClick={e => e.stopPropagation()} className="text-[#00c26b] hover:underline ml-1">
                           заказ
@@ -223,7 +244,13 @@ export default function MontageProjectsTable({ projects, editors, initialFilterP
                       )}
                     </p>
                   </TableCell>
-                  <TableCell><MontageStatusBadge status={p.status} /></TableCell>
+                  <TableCell>
+                    <div className="flex flex-col items-start gap-1">
+                      <MontageStatusBadge status={p.status} />
+                      {p.isPaused && <span className="text-[10px] text-amber-400 bg-amber-950/30 rounded-full px-1.5 py-0.5 whitespace-nowrap">Приостановлен</span>}
+                      {p.isArchived && <span className="text-[10px] text-zinc-400 bg-zinc-800 rounded-full px-1.5 py-0.5 whitespace-nowrap">В архиве</span>}
+                    </div>
+                  </TableCell>
                   <TableCell>
                     <p className="text-zinc-300 text-sm">{p.editorName ?? '—'}</p>
                   </TableCell>

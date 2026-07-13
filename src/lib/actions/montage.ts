@@ -5,12 +5,14 @@ import { prisma } from '@/lib/prisma'
 import { auth } from '@/auth'
 import type {
   MontageProject, MontageStatus, MontageClientPaymentStatus, MontageEditorPaymentStatus, MontageDeadlineType,
+  MontageContentType, MontageTurnaroundDayType,
   Order, Client, EditorProfile,
 } from '@prisma/client'
 import {
   computeMontageProfit, computeMontageDeadline, isMontageOverdue, montageDeadlineLabel,
   getMontageSourceMaterialsUrl, getMontageAttentionReasons, mapMontageStatusToOrderStatus,
-  computeMontageDashboardStats, type MontageAttentionReason, type MontageDashboardStats,
+  computeMontageDashboardStats, classifyMontageContentType, MONTAGE_ARCHIVABLE_STATUSES,
+  type MontageAttentionReason, type MontageDashboardStats,
 } from '@/lib/montage-model'
 import { updateOrderStatus } from '@/lib/actions/orders'
 
@@ -88,8 +90,24 @@ export interface MontageProjectDTO {
   companyName: string | null
   title: string | null
   description: string | null
-  contentType: string | null
+  contentType: MontageContentType | null
+  // Заполнено только когда contentType === 'OTHER' — исходный текст, который
+  // администратор ввёл вручную, когда ни одна структурированная категория не
+  // подошла (см. classifyMontageContentType, montage-model.ts). Никогда не
+  // подменяет сам enum произвольным текстом.
+  customContentType: string | null
   status: MontageStatus
+  // Пауза — обратимый оверлей ПОВЕРХ текущего status, не отдельный статус (тот
+  // же принцип, что Order.isArchived, см. actions/orders.ts) — управляется
+  // только через pauseMontageProject/resumeMontageProject ниже, никогда через
+  // updateMontageProject.
+  isPaused: boolean
+  pausedAt: string | null
+  pauseReason: string | null
+  // Отмена — терминальный статус (CANCELLED), но с отдельным поводом/датой,
+  // проставляется только через cancelMontageProject.
+  cancelledAt: string | null
+  cancelReason: string | null
   editorId: string | null
   editorName: string | null
   additionalEditorIds: string[]
@@ -99,6 +117,10 @@ export interface MontageProjectDTO {
   deadlineType: MontageDeadlineType | null
   deadlineDate: string | null
   turnaroundDays: number | null
+  turnaroundDayType: MontageTurnaroundDayType | null
+  // Технический таймстамп, больше НЕ поле формы — проставляется автоматически
+  // при первом переходе статуса в DELIVERED (см. updateMontageProject), не
+  // путать с deliveredAt (фактическая дата сдачи клиенту, вводится вручную).
   completedAt: string | null
   deliveredAt: string | null
   clientAmount: number | null
@@ -125,6 +147,7 @@ export interface MontageProjectDTO {
   importSource: string | null
   createdAt: string
   updatedAt: string
+  isArchived: boolean
   archivedAt: string | null
   // ---- Вычисляемые поля (единый источник — src/lib/montage-model.ts, тот же
   // принцип, что ScheduleEventDTO.isCancelled в actions/schedule.ts) ----
@@ -156,7 +179,7 @@ function toDTO(row: MontageProjectWithRelations): MontageProjectDTO {
     { sourceMaterialsUrl: row.sourceMaterialsUrl },
     row.order?.scheduleEvent?.yandexDiskUrl ?? null,
   )
-  const deadlineState = { deadlineDate: row.deadlineDate, status: row.status, deliveredAt: row.deliveredAt }
+  const deadlineState = { deadlineDate: row.deadlineDate, status: row.status, deliveredAt: row.deliveredAt, isArchived: row.isArchived }
   const hasNoClientLink = !row.orderId && !row.clientId
   const isHistoricalImport = !!row.importSource
 
@@ -171,7 +194,13 @@ function toDTO(row: MontageProjectWithRelations): MontageProjectDTO {
     title: row.title,
     description: row.description,
     contentType: row.contentType,
+    customContentType: row.customContentType,
     status: row.status,
+    isPaused: row.isPaused,
+    pausedAt: row.pausedAt ? row.pausedAt.toISOString() : null,
+    pauseReason: row.pauseReason,
+    cancelledAt: row.cancelledAt ? row.cancelledAt.toISOString() : null,
+    cancelReason: row.cancelReason,
     editorId: row.editorId,
     editorName: row.editor?.displayName ?? null,
     additionalEditorIds: row.additionalEditorIds,
@@ -181,6 +210,7 @@ function toDTO(row: MontageProjectWithRelations): MontageProjectDTO {
     deadlineType: row.deadlineType,
     deadlineDate: row.deadlineDate ? row.deadlineDate.toISOString() : null,
     turnaroundDays: row.turnaroundDays,
+    turnaroundDayType: row.turnaroundDayType,
     completedAt: row.completedAt ? row.completedAt.toISOString() : null,
     deliveredAt: row.deliveredAt ? row.deliveredAt.toISOString() : null,
     clientAmount: row.clientAmount,
@@ -205,6 +235,7 @@ function toDTO(row: MontageProjectWithRelations): MontageProjectDTO {
     importSource: row.importSource,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
+    isArchived: row.isArchived,
     archivedAt: row.archivedAt ? row.archivedAt.toISOString() : null,
     isOverdue: isMontageOverdue(deadlineState),
     deadlineLabel: montageDeadlineLabel(deadlineState),
@@ -213,6 +244,7 @@ function toDTO(row: MontageProjectWithRelations): MontageProjectDTO {
       effectiveSourceMaterialsUrl, mountedMaterialNasUrl: row.mountedMaterialNasUrl,
       clientAmount: row.clientAmount, clientPaymentStatus: row.clientPaymentStatus,
       title: row.title, description: row.description, hasNoClientLink, isHistoricalImport,
+      isArchived: row.isArchived,
     }),
     hasNoClientLink,
     isHistoricalImport,
@@ -317,7 +349,11 @@ export interface MontageProjectInput {
   clientId?: string | null
   title?: string
   description?: string
-  contentType?: string
+  contentType?: MontageContentType
+  // Учитывается только когда contentType === 'OTHER' (см. MontageProjectDTO.
+  // customContentType) — при любом другом contentType сохраняется как null,
+  // чтобы на карточке не залипал текст от предыдущего выбора "Прочее".
+  customContentType?: string | null
   status?: MontageStatus
   editorId?: string | null
   additionalEditorIds?: string[]
@@ -326,7 +362,11 @@ export interface MontageProjectInput {
   deadlineType?: MontageDeadlineType | null
   deadlineDate?: string | null
   turnaroundDays?: number | null
-  completedAt?: string | null
+  turnaroundDayType?: MontageTurnaroundDayType | null
+  // completedAt НЕ входит в этот интерфейс — это больше не поле формы (ТЗ:
+  // убрать дублирующую "Дата завершения работы"), см. комментарий у
+  // MontageProjectDTO.completedAt. Проставляется автоматически в
+  // createMontageProject/updateMontageProject при первом переходе в DELIVERED.
   deliveredAt?: string | null
   clientAmount?: number | null
   editorAmount?: number | null
@@ -363,6 +403,16 @@ function resolveAssignedAt(nextEditorId: string | null | undefined, previousEdit
   return new Date()
 }
 
+// customContentType имеет смысл только при contentType === 'OTHER' (см.
+// MontageProjectInput.customContentType) — общий хелпер для create/update,
+// чтобы это правило не разошлось между ними.
+function resolveCustomContentType(
+  contentType: MontageContentType | null | undefined, customContentType: string | null | undefined,
+): string | null {
+  if (contentType !== 'OTHER') return null
+  return customContentType?.trim() || null
+}
+
 export async function createMontageProject(
   input: MontageProjectInput
 ): Promise<{ ok: true; data: MontageProjectDTO } | { ok: false; error: string }> {
@@ -389,7 +439,9 @@ export async function createMontageProject(
       deadlineType: input.deadlineType ?? null,
       deadlineDate: input.deadlineDate ?? null,
       turnaroundDays: input.turnaroundDays ?? null,
+      turnaroundDayType: input.turnaroundDayType ?? null,
     })
+    const initialStatus = input.status ?? 'NEW'
 
     const created = await prisma.montageProject.create({
       data: {
@@ -397,8 +449,9 @@ export async function createMontageProject(
         clientId: input.orderId ? null : (input.clientId ?? null),
         title: input.title?.trim() || null,
         description: input.description?.trim() || null,
-        contentType: input.contentType?.trim() || null,
-        status: input.status ?? 'NEW',
+        contentType: input.contentType ?? null,
+        customContentType: resolveCustomContentType(input.contentType, input.customContentType),
+        status: initialStatus,
         editorId: input.editorId ?? null,
         additionalEditorIds: input.additionalEditorIds ?? [],
         assignedAt: input.editorId ? new Date() : null,
@@ -407,7 +460,13 @@ export async function createMontageProject(
         deadlineType: input.deadlineType ?? null,
         deadlineDate,
         turnaroundDays: input.turnaroundDays ?? null,
-        completedAt: input.completedAt ? new Date(input.completedAt) : null,
+        turnaroundDayType: input.turnaroundDayType ?? null,
+        // completedAt — технический таймстамп, не поле формы (см. интерфейс
+        // MontageProjectInput выше) — проставляется автоматически, только если
+        // проект создаётся сразу в статусе "Сдан" (редкий случай, обычно новый
+        // проект стартует с NEW). Тот же принцип, что и completedAt у Order
+        // (см. updateOrderStatus, actions/orders.ts).
+        completedAt: initialStatus === 'DELIVERED' ? new Date() : null,
         deliveredAt: input.deliveredAt ? new Date(input.deliveredAt) : null,
         clientAmount: input.clientAmount ?? null,
         editorAmount: input.editorAmount ?? null,
@@ -453,13 +512,17 @@ export async function updateMontageProject(
       : existing.sourceReceivedAt
     const nextDeadlineType = input.deadlineType !== undefined ? input.deadlineType : existing.deadlineType
     const nextTurnaroundDays = input.turnaroundDays !== undefined ? input.turnaroundDays : existing.turnaroundDays
+    const nextTurnaroundDayType = input.turnaroundDayType !== undefined ? input.turnaroundDayType : existing.turnaroundDayType
     const nextDeadlineDateInput = input.deadlineDate !== undefined ? input.deadlineDate : existing.deadlineDate?.toISOString() ?? null
     const deadlineDate = computeMontageDeadline({
       sourceReceivedAt: nextSourceReceivedAt ? nextSourceReceivedAt.toISOString() : null,
       deadlineType: nextDeadlineType, deadlineDate: nextDeadlineDateInput, turnaroundDays: nextTurnaroundDays,
+      turnaroundDayType: nextTurnaroundDayType,
     })
 
     const assignedAt = resolveAssignedAt(input.editorId, existing.editorId, existing.assignedAt)
+    const nextContentType = input.contentType !== undefined ? input.contentType : existing.contentType
+    const nextCustomContentTypeInput = input.customContentType !== undefined ? input.customContentType : existing.customContentType
 
     const updated = await prisma.montageProject.update({
       where: { id },
@@ -468,7 +531,13 @@ export async function updateMontageProject(
         clientId: input.clientId !== undefined ? input.clientId : undefined,
         title: input.title !== undefined ? (input.title.trim() || null) : undefined,
         description: input.description !== undefined ? (input.description.trim() || null) : undefined,
-        contentType: input.contentType !== undefined ? (input.contentType.trim() || null) : undefined,
+        contentType: input.contentType !== undefined ? input.contentType : undefined,
+        // Пересчитывается, если поменялось ЛИБО contentType, ЛИБО сам текст —
+        // см. resolveCustomContentType выше: обнуляется, если категория ушла
+        // от OTHER, даже если сам customContentType в этом вызове не передан.
+        customContentType: (input.contentType !== undefined || input.customContentType !== undefined)
+          ? resolveCustomContentType(nextContentType, nextCustomContentTypeInput)
+          : undefined,
         status: input.status ?? undefined,
         editorId: input.editorId !== undefined ? input.editorId : undefined,
         additionalEditorIds: input.additionalEditorIds ?? undefined,
@@ -478,7 +547,14 @@ export async function updateMontageProject(
         deadlineType: nextDeadlineType,
         deadlineDate,
         turnaroundDays: nextTurnaroundDays,
-        completedAt: input.completedAt !== undefined ? (input.completedAt ? new Date(input.completedAt) : null) : undefined,
+        turnaroundDayType: nextTurnaroundDayType,
+        // completedAt больше не читается из input (поле убрано из формы) —
+        // проставляется один раз автоматически при первом переходе в DELIVERED
+        // и дальше не трогается ("sticky", тот же принцип, что у Order.completedAt
+        // в updateOrderStatus, actions/orders.ts).
+        completedAt: input.status === 'DELIVERED' && existing.status !== 'DELIVERED'
+          ? (existing.completedAt ?? new Date())
+          : undefined,
         deliveredAt: input.deliveredAt !== undefined ? (input.deliveredAt ? new Date(input.deliveredAt) : null) : undefined,
         clientAmount: input.clientAmount !== undefined ? input.clientAmount : undefined,
         editorAmount: input.editorAmount !== undefined ? input.editorAmount : undefined,
@@ -522,17 +598,162 @@ export async function updateMontageProject(
 
 // Быстрое назначение монтажёра (виджет "Ответственный монтажёр", ТЗ п.7) —
 // отдельная лёгкая мутация, чтобы назначить исполнителя можно было прямо из
-// таблицы/дашборда без открытия полной карточки редактирования.
+// таблицы/дашборда без открытия полной карточки редактирования. Статус БОЛЬШЕ
+// не двигается автоматически при назначении (значения "Назначен" не
+// существует в новой 5-статусной схеме) — отсутствие монтажёра теперь просто
+// исчезает из причин "Требует внимания" (NO_EDITOR, см. montage-model.ts) само
+// по себе, как только editorId задан; переход в "В работе" — отдельное
+// осознанное действие пользователя.
 export async function assignMontageEditor(
   id: string, editorId: string | null
 ): Promise<{ ok: true; data: MontageProjectDTO } | { ok: false; error: string }> {
-  return updateMontageProject(id, {
-    editorId,
-    // Первое назначение исполнителя сдвигает проект дальше по воронке, но
-    // только если он ещё не продвинут вручную дальше "Назначен" — та же
-    // защита "только вперёд", что у автоперехода editingRequired.
-    status: editorId ? 'ASSIGNED' : undefined,
-  })
+  return updateMontageProject(id, { editorId })
+}
+
+// ============================================================
+// ПАУЗА / ОТМЕНА / АРХИВ — обратимый оверлей (пауза) и терминальные действия
+// (отмена, архив) НЕ являются производственными статусами (см. MONTAGE_STATUS_
+// ORDER, montage-model.ts) — у каждого своя выделенная мутация, а не значение
+// поля status в updateMontageProject. Тот же overlay-принцип, что уже
+// применяется для Order.isArchived (см. unarchiveOrder, actions/orders.ts).
+// ============================================================
+
+export async function pauseMontageProject(
+  id: string, reason?: string | null
+): Promise<{ ok: true; data: MontageProjectDTO } | { ok: false; error: string }> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, error: authResult.error }
+
+  try {
+    const existing = await prisma.montageProject.findUnique({ where: { id } })
+    if (!existing) return { ok: false, error: 'Проект монтажа не найден' }
+    if (existing.status === 'CANCELLED') return { ok: false, error: 'Проект отменён — приостановить нельзя' }
+
+    const updated = await prisma.montageProject.update({
+      where: { id },
+      data: { isPaused: true, pausedAt: new Date(), pauseReason: reason?.trim() || null },
+      include: MONTAGE_INCLUDE,
+    })
+
+    revalidateMontagePaths(updated.order?.clientId ?? updated.clientId)
+    return { ok: true, data: toDTO(updated) }
+  } catch (e) {
+    console.error('[pauseMontageProject]', e)
+    return { ok: false, error: 'Не удалось приостановить проект' }
+  }
+}
+
+export async function resumeMontageProject(
+  id: string
+): Promise<{ ok: true; data: MontageProjectDTO } | { ok: false; error: string }> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, error: authResult.error }
+
+  try {
+    const existing = await prisma.montageProject.findUnique({ where: { id } })
+    if (!existing) return { ok: false, error: 'Проект монтажа не найден' }
+
+    // pausedAt/pauseReason НЕ очищаются (см. схему, комментарий у
+    // MontageProject.pausedAt) — остаются историей последней паузы, только
+    // сам флаг isPaused переключается обратно.
+    const updated = await prisma.montageProject.update({
+      where: { id },
+      data: { isPaused: false },
+      include: MONTAGE_INCLUDE,
+    })
+
+    revalidateMontagePaths(updated.order?.clientId ?? updated.clientId)
+    return { ok: true, data: toDTO(updated) }
+  } catch (e) {
+    console.error('[resumeMontageProject]', e)
+    return { ok: false, error: 'Не удалось возобновить проект' }
+  }
+}
+
+export async function cancelMontageProject(
+  id: string, reason?: string | null
+): Promise<{ ok: true; data: MontageProjectDTO } | { ok: false; error: string }> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, error: authResult.error }
+
+  try {
+    const existing = await prisma.montageProject.findUnique({ where: { id } })
+    if (!existing) return { ok: false, error: 'Проект монтажа не найден' }
+    if (existing.status === 'CANCELLED') return { ok: false, error: 'Проект уже отменён' }
+
+    const updated = await prisma.montageProject.update({
+      where: { id },
+      data: {
+        status: 'CANCELLED',
+        cancelledAt: new Date(),
+        cancelReason: reason?.trim() || null,
+        // Пауза больше не имеет смысла на отменённом проекте — снимаем активный
+        // флаг, чтобы карточка не показывала одновременно "Отменён" и
+        // "Приостановлен". pausedAt/pauseReason не трогаем — та же история,
+        // что и при обычном resumeMontageProject (см. схему).
+        isPaused: false,
+      },
+      include: MONTAGE_INCLUDE,
+    })
+
+    revalidateMontagePaths(updated.order?.clientId ?? updated.clientId)
+    return { ok: true, data: toDTO(updated) }
+  } catch (e) {
+    console.error('[cancelMontageProject]', e)
+    return { ok: false, error: 'Не удалось отменить проект' }
+  }
+}
+
+export async function archiveMontageProject(
+  id: string
+): Promise<{ ok: true; data: MontageProjectDTO } | { ok: false; error: string }> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, error: authResult.error }
+
+  try {
+    const existing = await prisma.montageProject.findUnique({ where: { id } })
+    if (!existing) return { ok: false, error: 'Проект монтажа не найден' }
+    if (!MONTAGE_ARCHIVABLE_STATUSES.includes(existing.status)) {
+      return { ok: false, error: 'В архив можно отправить только сданный или отменённый проект' }
+    }
+
+    const updated = await prisma.montageProject.update({
+      where: { id },
+      data: { isArchived: true, archivedAt: new Date() },
+      include: MONTAGE_INCLUDE,
+    })
+
+    revalidateMontagePaths(updated.order?.clientId ?? updated.clientId)
+    return { ok: true, data: toDTO(updated) }
+  } catch (e) {
+    console.error('[archiveMontageProject]', e)
+    return { ok: false, error: 'Не удалось отправить проект в архив' }
+  }
+}
+
+export async function unarchiveMontageProject(
+  id: string
+): Promise<{ ok: true; data: MontageProjectDTO } | { ok: false; error: string }> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, error: authResult.error }
+
+  try {
+    const existing = await prisma.montageProject.findUnique({ where: { id } })
+    if (!existing) return { ok: false, error: 'Проект монтажа не найден' }
+    if (!existing.isArchived) return { ok: false, error: 'Проект не находится в архиве' }
+
+    const updated = await prisma.montageProject.update({
+      where: { id },
+      data: { isArchived: false, archivedAt: null },
+      include: MONTAGE_INCLUDE,
+    })
+
+    revalidateMontagePaths(updated.order?.clientId ?? updated.clientId)
+    return { ok: true, data: toDTO(updated) }
+  } catch (e) {
+    console.error('[unarchiveMontageProject]', e)
+    return { ok: false, error: 'Не удалось вернуть проект из архива' }
+  }
 }
 
 // ============================================================
@@ -559,12 +780,20 @@ export async function ensureMontageProjectForOrder(orderId: string): Promise<voi
     if (!order) return
 
     const clientLabel = order.client?.name ?? order.clientName
+    // serviceType заказа — свободный текст ("Подкаст", "Видеовизитка" и т.п.),
+    // не enum — прогоняем через тот же классификатор, что и исторический
+    // импорт (classifyMontageContentType, montage-model.ts), а не заводим
+    // вторую эвристику здесь (AGENTS.md, п.4: не дублировать логику).
+    const classification = order.serviceType ? classifyMontageContentType(order.serviceType) : null
     await prisma.montageProject.create({
       data: {
         orderId,
         title: order.title ?? (clientLabel ? `Монтаж — ${clientLabel}` : null),
-        contentType: order.serviceType ?? null,
-        status: 'NEEDS_INFO',
+        contentType: classification?.contentType ?? null,
+        customContentType: classification?.customContentType ?? null,
+        // NEW — "ещё не начали", покрывает и то, что раньше было NEEDS_INFO
+        // (см. MONTAGE_ATTENTION_EXEMPT_STATUSES, montage-model.ts).
+        status: 'NEW',
         // "Дата поступления" — момент, когда решение "монтаж нужен" было
         // сохранено, а не дата съёмки (ТЗ п.14: "дата, когда проект был
         // передан в монтаж"). Суммы клиента/монтажёра НЕ переносятся из

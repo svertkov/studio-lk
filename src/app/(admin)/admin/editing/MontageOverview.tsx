@@ -5,7 +5,10 @@ import MetricCard, { METRIC_GRID_CLASSNAME } from '@/components/ui/metric-card'
 import DonutChart from '@/components/ui/donut-chart'
 import type { MontageProjectDTO } from '@/lib/actions/montage'
 import type { MontageDashboardStats } from '@/lib/montage-model'
-import { MONTAGE_ATTENTION_LABELS, MONTAGE_ACTIVE_STATUSES, MONTAGE_DELIVERED_STATUSES, type MontageStatus } from '@/lib/montage-model'
+import {
+  MONTAGE_ATTENTION_LABELS, MONTAGE_ACTIVE_STATUSES, MONTAGE_DELIVERED_STATUSES,
+  MONTAGE_STATUS_ORDER, MONTAGE_STATUS_LABELS, type MontageStatus,
+} from '@/lib/montage-model'
 import type { MontageProjectsFilterPreset } from './MontageProjectsTable'
 
 function formatMoney(v: number) {
@@ -16,18 +19,24 @@ function formatDate(v: string) {
   return new Date(v).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })
 }
 
-// Упрощённая группировка статусов для кольцевой диаграммы (ТЗ п.13) — все 14
-// производственных статусов (см. MONTAGE_STATUS_ORDER) в одну диаграмму не
-// умещаются осмысленно, поэтому здесь ровно те 4 категории, которые просил
-// ТЗ ("новые/в работе/правки/сдано"), просрочка показана отдельно в блоке
-// "Требуют внимания" — она не статус, а вычисляемый признак (isMontageOverdue).
-const STATUS_BUCKETS: { label: string; color: string; statuses: MontageStatus[] }[] = [
-  { label: 'Новые', color: '#3b82f6', statuses: ['NEW', 'NEEDS_INFO', 'AWAITING_SOURCE', 'READY_FOR_ASSIGNMENT'] },
-  { label: 'В работе', color: '#eab308', statuses: ['ASSIGNED', 'IN_PROGRESS', 'IN_REVIEW'] },
-  { label: 'Правки', color: '#f97316', statuses: ['AWAITING_REVISIONS', 'REVISIONS'] },
-  { label: 'Сдано', color: '#22c55e', statuses: ['READY', 'DELIVERED'] },
-  { label: 'Прочее', color: '#71717a', statuses: ['ON_HOLD', 'CANCELLED', 'ARCHIVED'] },
-]
+// Кольцевая диаграмма статусов — после сокращения производственных статусов
+// до 5 понятных этапов (см. MONTAGE_STATUS_ORDER, montage-model.ts) группировка
+// в "корзины" больше не нужна: каждый сектор — ровно один реальный статус,
+// плюс CANCELLED отдельным сектором (терминальный, вне MONTAGE_STATUS_ORDER).
+// Лейблы — из MONTAGE_STATUS_LABELS (единый источник, тот же текст, что и на
+// плашке статуса в таблице/карточке, см. MontageStatusBadge.tsx), здесь
+// заводится только HEX-палитра для самого графика (DonutChart рисует SVG,
+// которому нужен конкретный цвет, а не Tailwind-класс) — по той же
+// цветовой смысловой схеме, что MONTAGE_STATUS_CONFIG.color.
+const STATUS_DONUT_COLORS: Record<MontageStatus, string> = {
+  NEW: '#60a5fa',
+  IN_PROGRESS: '#22d3ee',
+  IN_REVIEW: '#a78bfa',
+  REVISIONS: '#fbbf24',
+  DELIVERED: '#22c55e',
+  CANCELLED: '#f87171',
+}
+const DONUT_STATUSES: MontageStatus[] = [...MONTAGE_STATUS_ORDER, 'CANCELLED']
 
 function monthLabel(key: string): string {
   const [y, m] = key.split('-').map(Number)
@@ -63,8 +72,8 @@ export default function MontageOverview({ stats, projects, onGoToProjects }: Pro
   }))
   const maxMonthCount = Math.max(1, ...monthCounts.map(m => m.count))
 
-  const statusDonutData = STATUS_BUCKETS
-    .map(bucket => ({ label: bucket.label, color: bucket.color, value: projects.filter(p => bucket.statuses.includes(p.status)).length }))
+  const statusDonutData = DONUT_STATUSES
+    .map(s => ({ label: MONTAGE_STATUS_LABELS[s], color: STATUS_DONUT_COLORS[s], value: projects.filter(p => p.status === s).length }))
     .filter(d => d.value > 0)
 
   return (
