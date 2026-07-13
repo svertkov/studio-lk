@@ -1,10 +1,11 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { Search, ArrowUp, ArrowDown, ArrowUpDown, Cloud, Server, AlertTriangle } from 'lucide-react'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
 import GlowPill from '@/components/ui/glow-pill'
+import ToggleChip from '@/components/ui/toggle-chip'
 import type { MontageProjectDTO } from '@/lib/actions/montage'
 import type { EditorProfileListItemDTO } from '@/lib/actions/editors'
 import {
@@ -112,6 +113,25 @@ export type MontageProjectsFilterPreset =
   | { kind: 'attention' }
   | { kind: 'all' }
 
+// Персистентность тумблеров-фильтров между заходами на страницу (ТЗ:
+// "если состояние сохраняется — сохранить, если нет — добавить"). Тот же
+// приём, что уже используется для сворачивания Telegram-панели клиента
+// (см. ClientTelegramLayout: localStorage, без БД/cookie — этого достаточно,
+// сброс только вместе с данными браузера). Один ключ на все 4 флага —
+// не заводим 4 отдельные записи ради одной и той же логической группы.
+const TOGGLE_FILTERS_STORAGE_KEY = 'montage-toggle-filters-v1'
+
+interface PersistedToggleFilters {
+  activeOnly: boolean
+  overdueOnly: boolean
+  attentionOnly: boolean
+  hideArchived: boolean
+}
+
+function persistToggleFilters(next: PersistedToggleFilters) {
+  localStorage.setItem(TOGGLE_FILTERS_STORAGE_KEY, JSON.stringify(next))
+}
+
 function formatMoney(v: number | null) {
   if (v == null) return '—'
   return new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB', maximumFractionDigits: 0 }).format(v)
@@ -186,6 +206,48 @@ export default function MontageProjectsTable({ projects, editors, initialFilterP
   const [sortKey, setSortKey] = useState<SortKey>('date')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
 
+  // Восстановление сохранённых тумблеров — только когда таблица открыта
+  // "напрямую", без конкретного пресета с дашборда (клик по KPI-карточке —
+  // это осознанный временный срез, он не должен затираться прошлым выбором
+  // пользователя). Чтение отложено через setTimeout(…, 0): localStorage
+  // недоступен при SSR, а синхронный setState в теле эффекта запрещён
+  // react-hooks/set-state-in-effect (см. тот же приём в ClientTelegramLayout).
+  useEffect(() => {
+    if (initialFilterPreset) return
+    const timer = setTimeout(() => {
+      const raw = localStorage.getItem(TOGGLE_FILTERS_STORAGE_KEY)
+      if (!raw) return
+      try {
+        const saved = JSON.parse(raw) as Partial<PersistedToggleFilters>
+        if (typeof saved.activeOnly === 'boolean') setActiveOnly(saved.activeOnly)
+        if (typeof saved.overdueOnly === 'boolean') setOverdueOnly(saved.overdueOnly)
+        if (typeof saved.attentionOnly === 'boolean') setAttentionOnly(saved.attentionOnly)
+        if (typeof saved.hideArchived === 'boolean') setHideArchived(saved.hideArchived)
+      } catch {
+        // повреждённое значение в localStorage — молча остаёмся на дефолтах
+      }
+    }, 0)
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- один раз на монтаж, initialFilterPreset стабилен (см. комментарий у initialFiltersFromPreset)
+  }, [])
+
+  function handleActiveOnlyChange(next: boolean) {
+    setActiveOnly(next)
+    persistToggleFilters({ activeOnly: next, overdueOnly, attentionOnly, hideArchived })
+  }
+  function handleOverdueOnlyChange(next: boolean) {
+    setOverdueOnly(next)
+    persistToggleFilters({ activeOnly, overdueOnly: next, attentionOnly, hideArchived })
+  }
+  function handleAttentionOnlyChange(next: boolean) {
+    setAttentionOnly(next)
+    persistToggleFilters({ activeOnly, overdueOnly, attentionOnly: next, hideArchived })
+  }
+  function handleHideArchivedChange(next: boolean) {
+    setHideArchived(next)
+    persistToggleFilters({ activeOnly, overdueOnly, attentionOnly, hideArchived: next })
+  }
+
   function toggleSort(key: SortKey) {
     if (key === sortKey) { setSortDir(d => (d === 'asc' ? 'desc' : 'asc')); return }
     setSortKey(key)
@@ -256,22 +318,10 @@ export default function MontageProjectsTable({ projects, editors, initialFilterP
           <option value="ALL">Материалы: все</option>
           {MONTAGE_MATERIALS_STATE_ORDER.map(s => <option key={s} value={s}>{MONTAGE_MATERIALS_STATE_LABELS[s]}</option>)}
         </select>
-        <label className="flex items-center gap-1.5 text-xs text-zinc-400 cursor-pointer select-none">
-          <input type="checkbox" checked={activeOnly} onChange={e => setActiveOnly(e.target.checked)} className="accent-[#00c26b]" />
-          Только в работе
-        </label>
-        <label className="flex items-center gap-1.5 text-xs text-zinc-400 cursor-pointer select-none">
-          <input type="checkbox" checked={overdueOnly} onChange={e => setOverdueOnly(e.target.checked)} className="accent-[#00c26b]" />
-          Только просроченные
-        </label>
-        <label className="flex items-center gap-1.5 text-xs text-zinc-400 cursor-pointer select-none">
-          <input type="checkbox" checked={attentionOnly} onChange={e => setAttentionOnly(e.target.checked)} className="accent-[#00c26b]" />
-          Требуют внимания
-        </label>
-        <label className="flex items-center gap-1.5 text-xs text-zinc-400 cursor-pointer select-none">
-          <input type="checkbox" checked={hideArchived} onChange={e => setHideArchived(e.target.checked)} className="accent-[#00c26b]" />
-          Скрыть архивные
-        </label>
+        <ToggleChip checked={activeOnly} onChange={handleActiveOnlyChange}>Только в работе</ToggleChip>
+        <ToggleChip checked={overdueOnly} onChange={handleOverdueOnlyChange}>Только просроченные</ToggleChip>
+        <ToggleChip checked={attentionOnly} onChange={handleAttentionOnlyChange}>Требуют внимания</ToggleChip>
+        <ToggleChip checked={hideArchived} onChange={handleHideArchivedChange}>Скрыть архивные</ToggleChip>
       </div>
 
       <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
