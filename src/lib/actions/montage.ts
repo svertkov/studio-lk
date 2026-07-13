@@ -135,6 +135,11 @@ export interface MontageProjectDTO {
   // схему). UI показывает маленькую метку "!" рядом с именем клиента, пока
   // администратор не довяжет реального клиента вручную.
   hasNoClientLink: boolean
+  // Проект создан историческим импортом (importSource задан) — влияет на то,
+  // какие причины "Требует внимания" применяются (см. isHistoricalImport,
+  // montage-model.ts: старые записи не штрафуются за отсутствие исходников/
+  // NAS, которых старая Google-таблица никогда не фиксировала).
+  isHistoricalImport: boolean
 }
 
 function toDTO(row: MontageProjectWithRelations): MontageProjectDTO {
@@ -153,6 +158,7 @@ function toDTO(row: MontageProjectWithRelations): MontageProjectDTO {
   )
   const deadlineState = { deadlineDate: row.deadlineDate, status: row.status, deliveredAt: row.deliveredAt }
   const hasNoClientLink = !row.orderId && !row.clientId
+  const isHistoricalImport = !!row.importSource
 
   return {
     id: row.id,
@@ -206,9 +212,10 @@ function toDTO(row: MontageProjectWithRelations): MontageProjectDTO {
       status: row.status, editorId: row.editorId, deadlineDate: row.deadlineDate, deliveredAt: row.deliveredAt,
       effectiveSourceMaterialsUrl, mountedMaterialNasUrl: row.mountedMaterialNasUrl,
       clientAmount: row.clientAmount, clientPaymentStatus: row.clientPaymentStatus,
-      title: row.title, description: row.description, hasNoClientLink,
+      title: row.title, description: row.description, hasNoClientLink, isHistoricalImport,
     }),
     hasNoClientLink,
+    isHistoricalImport,
   }
 }
 

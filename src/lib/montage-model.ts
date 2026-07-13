@@ -244,6 +244,19 @@ export interface MontageAttentionInput {
   // администратор осознанно попросил завести без привязки при историческом
   // импорте (scripts/import-montage-projects), с меткой "!" на довязку позже.
   hasNoClientLink: boolean
+  // true — проект создан историческим импортом (MontageProject.importSource
+  // задан), а не через саму платформу. Старая Google-таблица никогда не
+  // фиксировала отдельную ссылку на исходники/финальный NAS почти для
+  // никаких проектов (см. отчёт dry-run: 17 из 76 с исходниками, 0 с NAS) —
+  // без этого флага ПОЧТИ ВСЕ 76 исторических проектов сразу попадали бы в
+  // «Требуют внимания» из-за NO_SOURCE/NO_NAS_AFTER_DELIVERY, что превращает
+  // список из "текущих проблем, требующих действия" в бесполезный "почти
+  // весь архив" — те же исторические работы уже давно сданы и закрыты, искать
+  // для них исходники/NAS задним числом нецелесообразно. Остальные причины
+  // (нет клиента, нет монтажёра, просрочка, неопределённая оплата, пустая
+  // карточка) по-прежнему применяются и к историческим записям — они остаются
+  // реально значимыми независимо от источника данных.
+  isHistoricalImport: boolean
 }
 
 const MONTAGE_ATTENTION_EXEMPT_STATUSES: MontageStatus[] = ['CANCELLED', 'ARCHIVED', 'NEW', 'NEEDS_INFO']
@@ -257,8 +270,10 @@ export function getMontageAttentionReasons(project: MontageAttentionInput, now: 
   if (isMontageOverdue({ deadlineDate: project.deadlineDate, status: project.status, deliveredAt: project.deliveredAt }, now)) {
     reasons.push('OVERDUE')
   }
-  if (!project.effectiveSourceMaterialsUrl && !MONTAGE_ATTENTION_EXEMPT_STATUSES.includes(project.status)) reasons.push('NO_SOURCE')
-  if (isMontageMissingNas({ status: project.status, mountedMaterialNasUrl: project.mountedMaterialNasUrl })) reasons.push('NO_NAS_AFTER_DELIVERY')
+  if (!project.isHistoricalImport) {
+    if (!project.effectiveSourceMaterialsUrl && !MONTAGE_ATTENTION_EXEMPT_STATUSES.includes(project.status)) reasons.push('NO_SOURCE')
+    if (isMontageMissingNas({ status: project.status, mountedMaterialNasUrl: project.mountedMaterialNasUrl })) reasons.push('NO_NAS_AFTER_DELIVERY')
+  }
   if (project.clientAmount != null && project.clientPaymentStatus === 'NOT_SPECIFIED') reasons.push('PAYMENT_UNDEFINED')
   if (!project.title && !project.description) reasons.push('INCOMPLETE_CARD')
 
@@ -310,6 +325,7 @@ export interface MontageStatsInput {
   title: string | null
   description: string | null
   hasNoClientLink: boolean
+  isHistoricalImport: boolean
 }
 
 export interface MontageDashboardStats {
@@ -370,7 +386,7 @@ export function computeMontageDashboardStats(projects: MontageStatsInput[], now:
       status: p.status, editorId: p.editorId, deadlineDate: p.deadlineDate, deliveredAt: p.deliveredAt,
       effectiveSourceMaterialsUrl: p.effectiveSourceMaterialsUrl, mountedMaterialNasUrl: p.mountedMaterialNasUrl,
       clientAmount: p.clientAmount, clientPaymentStatus: p.clientPaymentStatus, title: p.title, description: p.description,
-      hasNoClientLink: p.hasNoClientLink,
+      hasNoClientLink: p.hasNoClientLink, isHistoricalImport: p.isHistoricalImport,
     }, now)
     if (attention.length > 0) attentionCount += 1
   }

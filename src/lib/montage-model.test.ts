@@ -163,6 +163,7 @@ describe('getMontageAttentionReasons — единый источник для KP
       title: 'Монтаж подкаста',
       description: null,
       hasNoClientLink: false,
+      isHistoricalImport: false,
       ...overrides,
     }
   }
@@ -188,6 +189,32 @@ describe('getMontageAttentionReasons — единый источник для KP
   it('flags a project delivered without a NAS link', () => {
     const reasons = getMontageAttentionReasons(makeInput({ status: 'DELIVERED', deliveredAt: '2026-07-12', mountedMaterialNasUrl: null }), now)
     expect(reasons).toContain('NO_NAS_AFTER_DELIVERY')
+  })
+
+  it('does NOT flag missing source/NAS for historical-import projects — old sheet never tracked them', () => {
+    const reasons = getMontageAttentionReasons(makeInput({
+      status: 'DELIVERED', deliveredAt: '2026-07-12', mountedMaterialNasUrl: null,
+      effectiveSourceMaterialsUrl: null, isHistoricalImport: true,
+    }), now)
+    expect(reasons).not.toContain('NO_NAS_AFTER_DELIVERY')
+    expect(reasons).not.toContain('NO_SOURCE')
+  })
+
+  it('still flags missing source/NAS for a NEW (non-imported) project going through the platform', () => {
+    const reasons = getMontageAttentionReasons(makeInput({
+      status: 'DELIVERED', deliveredAt: '2026-07-12', mountedMaterialNasUrl: null,
+      effectiveSourceMaterialsUrl: null, isHistoricalImport: false,
+    }), now)
+    expect(reasons).toContain('NO_NAS_AFTER_DELIVERY')
+    expect(reasons).toContain('NO_SOURCE')
+  })
+
+  it('still flags other issues (no client, no editor) on historical-import projects', () => {
+    const reasons = getMontageAttentionReasons(makeInput({
+      isHistoricalImport: true, hasNoClientLink: true, editorId: null, status: 'ASSIGNED',
+    }), now)
+    expect(reasons).toContain('NO_CLIENT_LINK')
+    expect(reasons).toContain('NO_EDITOR')
   })
 
   it('flags undefined client payment status only when an amount is known', () => {
@@ -268,6 +295,7 @@ describe('computeMontageDashboardStats — единый источник KPI д�
       title: 'Монтаж подкаста',
       description: null,
       hasNoClientLink: false,
+      isHistoricalImport: false,
       ...overrides,
     }
   }
