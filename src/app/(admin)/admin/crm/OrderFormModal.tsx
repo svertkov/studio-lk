@@ -15,6 +15,7 @@ import { getOrderPromotion, getVisibleOrderComment, PROMOTION_PILL_LABEL, type O
 import { getOrderPaymentSummary } from '@/lib/payment-model'
 import type { ClientType, OrderStatus, OrderPaymentStatus, PaymentMethod } from '@prisma/client'
 import AddClientModal from '../clients/AddClientModal'
+import WorkDocumentsSection from '@/components/documents/WorkDocumentsSection'
 
 interface Props {
   order: OrderDTO | null
@@ -499,6 +500,13 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
                     ))}
                   </SelectField>
                 </Field>
+              </>
+            )}
+
+            {order?.id && (
+              <>
+                <p className={SECTION}>Документы</p>
+                <WorkDocumentsSection orderId={order.id} clientId={order.clientId} />
               </>
             )}
 

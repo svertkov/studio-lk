@@ -5,6 +5,7 @@ import { prisma } from '@/lib/prisma'
 import { auth } from '@/auth'
 import type { ClientSubscription, SubscriptionStatus, SubscriptionUsage, Prisma } from '@prisma/client'
 import { canAutoRecomputeStatus, displayRemainingHours } from '@/lib/subscription-model'
+import { writeAuditLog as writeAuditLogEntry } from '@/lib/audit'
 
 // ============================================================
 // АВТОРИЗАЦИЯ
@@ -20,20 +21,8 @@ async function requireStaffSession(): Promise<{ ok: true; userId: string | null 
   }
 }
 
-async function writeAuditLog(params: { userId: string | null; action: string; entityId: string; metadata?: Record<string, unknown> }) {
-  try {
-    await prisma.auditLog.create({
-      data: {
-        userId: params.userId,
-        action: params.action,
-        entityType: 'ClientSubscription',
-        entityId: params.entityId,
-        metadata: (params.metadata ?? {}) as Prisma.InputJsonValue,
-      },
-    })
-  } catch {
-    // Не блокируем основную операцию, если лог не записался
-  }
+function writeAuditLog(params: { userId: string | null; action: string; entityId: string; metadata?: Record<string, unknown> }) {
+  return writeAuditLogEntry({ ...params, entityType: 'ClientSubscription' })
 }
 
 // Ревалидация всех разделов, где отображается этот же абонемент — единая

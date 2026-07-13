@@ -1,6 +1,7 @@
 import Link from 'next/link'
-import { ChevronRight, Clapperboard } from 'lucide-react'
+import { ChevronRight, Clapperboard, Receipt } from 'lucide-react'
 import type { CombinedFinanceSummary } from '@/lib/finance-model'
+import type { DocumentsDashboardStats } from '@/lib/actions/documents'
 
 function formatMoney(v: number) {
   return new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB', maximumFractionDigits: 0 }).format(v)
@@ -12,12 +13,13 @@ function formatDate(v: string) {
 
 interface Props {
   combined: CombinedFinanceSummary
+  documentsStats: DocumentsDashboardStats | null
 }
 
 // Компактная разбивка "Съёмки / Монтаж" под основными KPI-карточками — не
 // дублирует таблицу проектов монтажа (она уже есть на /admin/editing),
 // только показывает вклад источника в уже посчитанные (combined) итоги.
-export default function MontageFinanceBreakdown({ combined }: Props) {
+export default function MontageFinanceBreakdown({ combined, documentsStats }: Props) {
   const rows = [
     { label: 'Выручка', shoots: combined.shootsRevenue, montage: combined.montageRevenue },
     { label: 'Расходы (факт)', shoots: combined.shootsActualExpenses, montage: combined.montageActualExpenses },
@@ -50,10 +52,23 @@ export default function MontageFinanceBreakdown({ combined }: Props) {
           Монтаж учитывается с {formatDate(combined.montageReportingSince)}
         </p>
       )}
-      <Link href="/admin/editing" className="flex items-center gap-1 text-[#00c26b] hover:underline text-xs mt-3 w-fit">
-        Подробнее по монтажу
-        <ChevronRight className="w-3 h-3" />
-      </Link>
+      {documentsStats && (
+        <p className="text-zinc-500 text-xs mt-2 flex items-center gap-1.5">
+          <Receipt className="w-3 h-3 flex-shrink-0" />
+          Номера счетов и актов — в реестре документов: {documentsStats.invoicesTotal} счетов, {documentsStats.actsTotal} актов
+          {documentsStats.invoicesUnpaid > 0 && `, ${documentsStats.invoicesUnpaid} не оплачено`}
+        </p>
+      )}
+      <div className="flex items-center gap-4 mt-3">
+        <Link href="/admin/editing" className="flex items-center gap-1 text-[#00c26b] hover:underline text-xs w-fit">
+          Подробнее по монтажу
+          <ChevronRight className="w-3 h-3" />
+        </Link>
+        <Link href="/admin/documents" className="flex items-center gap-1 text-[#00c26b] hover:underline text-xs w-fit">
+          Реестр документов
+          <ChevronRight className="w-3 h-3" />
+        </Link>
+      </div>
     </div>
   )
 }

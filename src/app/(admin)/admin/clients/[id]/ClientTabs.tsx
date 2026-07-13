@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import {
-  Film, DollarSign, FileText, Upload, Send, Calendar, Clock, Receipt,
+  Film, DollarSign, Send, Calendar, Clock, Receipt,
   ExternalLink, Wallet, Cloud, CloudOff, Server,
 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
@@ -38,6 +38,9 @@ import SubscriptionActionsMenu from '@/components/subscriptions/SubscriptionActi
 import SubscriptionDetailModal from '../../finance/subscriptions/SubscriptionDetailModal'
 import type { MontageProjectDTO } from '@/lib/actions/montage'
 import { computeMontageDashboardStats, montageDeadlineLabel, computeMontageProfit } from '@/lib/montage-model'
+import type { DocumentDTO } from '@/lib/actions/documents'
+import type { ClientContractState } from '@/lib/document-model'
+import ClientDocumentsTab from './ClientDocumentsTab'
 import MontageStatusBadge from '../../editing/MontageStatusBadge'
 
 const CHART_COLORS = ['#00c26b', '#3b82f6', '#f59e0b', '#a855f7', '#ef4444', '#14b8a6']
@@ -115,14 +118,6 @@ interface ClientContact {
   comment?: string | null
 }
 
-interface ClientDoc {
-  id: string
-  fileName: string
-  storageUrl: string
-  type?: string | null
-  createdAt: string | Date
-}
-
 interface PrismaClient {
   id: string
   name: string
@@ -142,9 +137,11 @@ interface PrismaClient {
   documentComment?: string | null
   notes?: string | null
   createdAt: string | Date
+  contractState: ClientContractState
+  contractStateComment?: string | null
+  contractPlannedDate?: string | Date | null
   clientNotes: ClientNote[]
   contacts: ClientContact[]
-  documents: ClientDoc[]
 }
 
 interface Props {
@@ -154,6 +151,7 @@ interface Props {
   shootsSummary: ShootsSummaryOutDTO
   financeOverview: FinanceOverviewOutDTO
   montageProjects: MontageProjectDTO[]
+  documents: DocumentDTO[]
 }
 
 const TABS = [
@@ -376,7 +374,7 @@ function groupHoursBy(rows: ShootRowDTO[], key: 'room' | 'format') {
     .sort((a, b) => b.value - a.value)
 }
 
-export default function ClientTabs({ client, subscriptions, shoots, shootsSummary, financeOverview, montageProjects }: Props) {
+export default function ClientTabs({ client, subscriptions, shoots, shootsSummary, financeOverview, montageProjects, documents }: Props) {
   const router = useRouter()
   const [activeTab, setActiveTab] = useState('overview')
   const [noteText, setNoteText] = useState('')
@@ -867,39 +865,16 @@ export default function ClientTabs({ client, subscriptions, shoots, shootsSummar
           )
         )}
 
-        {/* Документы */}
+        {/* Документы — реестр номеров/статусов (без файлов, см. AGENTS.md) */}
         {activeTab === 'documents' && (
-          <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6 space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="text-white font-semibold">Документы</h3>
-              <button className="flex items-center gap-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-sm px-3 py-2 rounded-lg transition-colors">
-                <Upload className="w-3.5 h-3.5" />
-                Добавить документ
-              </button>
-            </div>
-            {client.documents.length === 0 ? (
-              <div className="border border-dashed border-zinc-700 rounded-xl p-10 text-center">
-                <FileText className="w-10 h-10 text-zinc-600 mx-auto mb-3" />
-                <p className="text-zinc-400 text-sm">Документов пока нет</p>
-                <p className="text-zinc-600 text-xs mt-1">Договоры, счета, акты и приложения</p>
-              </div>
-            ) : (
-              <ul className="space-y-2">
-                {client.documents.map(doc => (
-                  <li key={doc.id} className="flex items-center gap-3 bg-zinc-800 rounded-lg px-4 py-3">
-                    <FileText className="w-4 h-4 text-zinc-400 flex-shrink-0" />
-                    <span className="text-zinc-200 text-sm flex-1">{doc.fileName}</span>
-                    {doc.storageUrl && (
-                      <a href={doc.storageUrl} target="_blank" rel="noopener noreferrer"
-                        className="text-[#00c26b] text-xs hover:underline">
-                        Открыть
-                      </a>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
+          <ClientDocumentsTab
+            clientId={client.id}
+            clientType={client.type}
+            contractState={client.contractState}
+            contractStateComment={client.contractStateComment ?? null}
+            contractPlannedDate={client.contractPlannedDate ? new Date(client.contractPlannedDate).toISOString() : null}
+            documents={documents}
+          />
         )}
 
         {/* Заметки */}

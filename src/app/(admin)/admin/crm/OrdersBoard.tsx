@@ -11,8 +11,16 @@ import {
 import type { CSSProperties } from 'react'
 import { updateOrderStatus, type OrderDTO } from '@/lib/actions/orders'
 import { ORDER_BOARD_COLUMNS, ORDER_STATUS_LABELS, getOrderStatusConfig, getOrderStatusVars, sortOrdersForColumn, type OrderStatus, type OrderStatusConfig } from '@/lib/order-model'
+import ToggleChip from '@/components/ui/toggle-chip'
 import OrderCard from './OrderCard'
 import OrderFormModal from './OrderFormModal'
+
+// Реестр документов (см. AGENTS.md) — компактные фильтры CRM. Не заводим
+// отдельную Kanban-колонку "Не оплачено": стадии доски описывают
+// производственный процесс (см. ТЗ разд.15), оплата/документы — независимое
+// измерение, поэтому это переключатели поверх уже отфильтрованной доски.
+const UNPAID_ORDER_PAYMENT_STATUSES = ['NOT_SPECIFIED', 'UNPAID', 'PARTIALLY_PAID']
+const NO_CONTRACT_STATES = ['NO_CONTRACT', 'PREPARING', 'UNSPECIFIED', null] as const
 
 interface Props {
   initialOrders: OrderDTO[]
@@ -35,6 +43,10 @@ export default function OrdersBoard({ initialOrders }: Props) {
   const [pendingStatus, setPendingStatus] = useState<Record<string, OrderStatus>>({})
   const [activeOrderId, setActiveOrderId] = useState<string | null>(null)
   const [dragError, setDragError] = useState<string | null>(null)
+  const [unpaidOnly, setUnpaidOnly] = useState(false)
+  const [noInvoiceOnly, setNoInvoiceOnly] = useState(false)
+  const [noActOnly, setNoActOnly] = useState(false)
+  const [noContractOnly, setNoContractOnly] = useState(false)
 
   // Порог в 8px до начала настоящего drag — иначе обычный клик по карточке
   // (открыть форму заказа) или по селекту статуса воспринимался бы как
@@ -48,13 +60,13 @@ export default function OrdersBoard({ initialOrders }: Props) {
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
-    if (!q) return orders
-    return orders.filter(o =>
-      (o.clientName ?? '').toLowerCase().includes(q) ||
-      (o.title ?? '').toLowerCase().includes(q) ||
-      (o.clientPhone ?? '').toLowerCase().includes(q),
-    )
-  }, [orders, search])
+    return orders
+      .filter(o => !q || (o.clientName ?? '').toLowerCase().includes(q) || (o.title ?? '').toLowerCase().includes(q) || (o.clientPhone ?? '').toLowerCase().includes(q))
+      .filter(o => !unpaidOnly || UNPAID_ORDER_PAYMENT_STATUSES.includes(o.paymentStatus))
+      .filter(o => !noInvoiceOnly || !o.invoiceDisplayNumber)
+      .filter(o => !noActOnly || !o.actDisplayNumber)
+      .filter(o => !noContractOnly || (NO_CONTRACT_STATES as readonly (string | null)[]).includes(o.clientContractState))
+  }, [orders, search, unpaidOnly, noInvoiceOnly, noActOnly, noContractOnly])
 
   // Группировка по колонке + сортировка внутри каждой колонки по своему
   // правилу (см. sortOrdersForColumn в order-model.ts) — пересчитывается
@@ -135,6 +147,14 @@ export default function OrdersBoard({ initialOrders }: Props) {
             Создать заказ
           </button>
         </div>
+      </div>
+
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-xs text-zinc-500 font-medium mr-1">Документы</span>
+        <ToggleChip checked={unpaidOnly} onChange={setUnpaidOnly}>Неоплаченные</ToggleChip>
+        <ToggleChip checked={noInvoiceOnly} onChange={setNoInvoiceOnly}>Без счёта</ToggleChip>
+        <ToggleChip checked={noActOnly} onChange={setNoActOnly}>Без акта</ToggleChip>
+        <ToggleChip checked={noContractOnly} onChange={setNoContractOnly}>Без договора</ToggleChip>
       </div>
 
       {orders.length === 0 ? (

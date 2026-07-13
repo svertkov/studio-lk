@@ -12,6 +12,7 @@ import { getClientSubscriptions } from '@/lib/actions/subscriptions'
 import { getClientShootsData, getClientFinanceOverview } from '@/lib/actions/client-shoots'
 import { getConversationForClient } from '@/lib/actions/telegram'
 import { getMontageProjectsForClient } from '@/lib/actions/montage'
+import { getDocumentsForClient } from '@/lib/actions/documents'
 import ClientTabs from './ClientTabs'
 import EditClientModal from './EditClientModal'
 import MergeClientModal from './MergeClientModal'
@@ -29,13 +30,14 @@ function formatHours(v: number) {
 export default async function ClientDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
 
-  const [result, subscriptionsResult, shootsResult, financeResult, telegramResult, montageResult] = await Promise.all([
+  const [result, subscriptionsResult, shootsResult, financeResult, telegramResult, montageResult, documentsResult] = await Promise.all([
     getClientById(id),
     getClientSubscriptions(id),
     getClientShootsData(id),
     getClientFinanceOverview(id),
     getConversationForClient(id),
     getMontageProjectsForClient(id),
+    getDocumentsForClient(id),
   ])
   if (!result.ok || !result.data) redirect('/admin/clients')
 
@@ -194,7 +196,7 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
             </div>
             <div className="bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3.5 flex flex-col justify-center gap-0.5 h-[72px]">
               <p className="text-zinc-500 text-[11px] uppercase tracking-wide">Документов</p>
-              <p className="text-white text-lg font-semibold">{client.documents.length}</p>
+              <p className="text-white text-lg font-semibold">{documentsResult.data.length}</p>
             </div>
             <div
               className="bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3.5 flex flex-col justify-center gap-0.5 h-[72px]"
@@ -215,6 +217,7 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
             shootsSummary={shootsResult.data.summary}
             financeOverview={finance}
             montageProjects={montageResult.data}
+            documents={documentsResult.data}
           />
       </ClientTelegramLayout>
     </div>

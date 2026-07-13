@@ -15,6 +15,7 @@ import type {
   TelegramConversation, TelegramMessage, TelegramMessageAttachment, TelegramSettings, Client, User,
   TelegramConversationStatus, TelegramConsentStatus, TelegramMessageDirection, TelegramMessageStatus, TelegramMessageType, TelegramSenderType,
 } from '@prisma/client'
+import { writeAuditLog as writeAuditLogEntry } from '@/lib/audit'
 
 // ============================================================
 // АВТОРИЗАЦИЯ — доступ к разделу "Telegram" только у Owner/Admin (как у
@@ -47,20 +48,8 @@ async function requireTelegramOwnerAccess(): Promise<{ ok: true; userId: string 
   return access
 }
 
-async function writeAuditLog(params: { userId: string | null; action: string; entityId: string; metadata?: Record<string, unknown> }) {
-  try {
-    await prisma.auditLog.create({
-      data: {
-        userId: params.userId,
-        action: params.action,
-        entityType: 'TelegramConversation',
-        entityId: params.entityId,
-        metadata: (params.metadata ?? {}) as object,
-      },
-    })
-  } catch {
-    // Не блокируем основную операцию, если лог не записался.
-  }
+function writeAuditLog(params: { userId: string | null; action: string; entityId: string; metadata?: Record<string, unknown> }) {
+  return writeAuditLogEntry({ ...params, entityType: 'TelegramConversation' })
 }
 
 // ============================================================

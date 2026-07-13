@@ -6,6 +6,7 @@ import { auth } from '@/auth'
 import { type ClientType, type ClientStatus, type ClientSource, Prisma } from '@prisma/client'
 import { computeVisitStats } from '@/lib/visit-stats'
 import { computeStatusFromVisitCount } from '@/lib/client-model'
+import { writeAuditLog as writeAuditLogEntry } from '@/lib/audit'
 
 // ============================================================
 // ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
@@ -20,25 +21,8 @@ async function getAuthUserId(): Promise<string | null> {
   }
 }
 
-async function writeAuditLog(params: {
-  userId: string | null
-  action: string
-  entityId: string
-  metadata?: Record<string, unknown>
-}) {
-  try {
-    await prisma.auditLog.create({
-      data: {
-        userId: params.userId,
-        action: params.action,
-        entityType: 'Client',
-        entityId: params.entityId,
-        metadata: (params.metadata ?? {}) as Prisma.InputJsonValue,
-      },
-    })
-  } catch {
-    // Не блокируем основную операцию если лог не записался
-  }
+function writeAuditLog(params: { userId: string | null; action: string; entityId: string; metadata?: Record<string, unknown> }) {
+  return writeAuditLogEntry({ ...params, entityType: 'Client' })
 }
 
 // ============================================================
@@ -140,7 +124,11 @@ export async function getClientById(id: string) {
           orderBy: { createdAt: 'desc' },
           take: 50,
         },
-        documents: { orderBy: { createdAt: 'desc' } },
+        // Документы клиента (договоры/счета/акты) теперь читаются отдельно
+        // через getDocumentsForClient (actions/documents.ts) — объединяют не
+        // только Document.clientId, но и счета/акты по заказам и монтаж-
+        // проектам клиента, поэтому здесь избыточны (см. AGENTS.md, "Реестр
+        // документов").
         // Визиты больше не включаются сюда — единая история "Съёмки"
         // (визиты + записи расписания, без дублей) считается отдельно
         // в getClientShootsData (src/lib/actions/client-shoots.ts).

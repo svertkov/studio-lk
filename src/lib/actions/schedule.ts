@@ -17,6 +17,7 @@ import { normalizePhone, normalizeEmail, normalizeTelegram } from '@/lib/import/
 import { ensureOrderForNewBooking, updateOrderStatus } from '@/lib/actions/orders'
 import { ensureMontageProjectForOrder } from '@/lib/actions/montage'
 import { ORDERS_AUTO_IMPORT_LAUNCH_DATE } from '@/lib/order-model'
+import { writeAuditLog as writeAuditLogEntry } from '@/lib/audit'
 
 // ============================================================
 // АВТОРИЗАЦИЯ
@@ -32,25 +33,8 @@ async function requireStaffSession(): Promise<{ ok: true; userId: string | null 
   }
 }
 
-async function writeAuditLog(params: {
-  userId: string | null
-  action: string
-  entityId: string
-  metadata?: Record<string, unknown>
-}) {
-  try {
-    await prisma.auditLog.create({
-      data: {
-        userId: params.userId,
-        action: params.action,
-        entityType: 'ScheduleEvent',
-        entityId: params.entityId,
-        metadata: (params.metadata ?? {}) as Prisma.InputJsonValue,
-      },
-    })
-  } catch {
-    // Не блокируем основную операцию если лог не записался
-  }
+function writeAuditLog(params: { userId: string | null; action: string; entityId: string; metadata?: Record<string, unknown> }) {
+  return writeAuditLogEntry({ ...params, entityType: 'ScheduleEvent' })
 }
 
 // ============================================================

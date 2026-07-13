@@ -24,6 +24,7 @@ import { getOrderPromotion, getVisibleOrderComment, PROMOTION_PILL_LABEL, type O
 import MaterialsStatusBadge from './MaterialsStatusBadge'
 import SubscriptionPaymentBlock, { type SubscriptionPaymentHandle } from './SubscriptionPaymentBlock'
 import AddClientModal from '../clients/AddClientModal'
+import WorkDocumentsSection from '@/components/documents/WorkDocumentsSection'
 
 // "08:00–09:00", либо с датой спереди, если гримёр уходит на предыдущий
 // календарный день ("9 мар., 23:00–09:00" — начало съёмки в 00:xx).
@@ -706,6 +707,13 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
               onChange={e => setMaterialsComment(e.target.value)} />
           </div>
           </>
+          )}
+
+          {annotation?.orderId && (
+            <>
+              <p className={SECTION}>Документы</p>
+              <WorkDocumentsSection orderId={annotation.orderId} clientId={annotation.clientId} />
+            </>
           )}
 
           {error && (

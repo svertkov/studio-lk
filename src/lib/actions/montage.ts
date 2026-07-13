@@ -6,7 +6,7 @@ import { auth } from '@/auth'
 import type {
   MontageProject, MontageStatus, MontageClientPaymentStatus, MontageEditorPaymentStatus, MontageDeadlineType,
   MontageContentType, MontageTurnaroundDayType,
-  Order, Client, EditorProfile,
+  Order, Client, EditorProfile, DocumentType, DocumentStatus,
 } from '@prisma/client'
 import {
   computeMontageProfit, computeMontageDeadline, isMontageOverdue, montageDeadlineLabel,
@@ -14,6 +14,7 @@ import {
   computeMontageDashboardStats, classifyMontageContentType, getMontageMaterialsState, MONTAGE_ARCHIVABLE_STATUSES,
   type MontageAttentionReason, type MontageDashboardStats, type MontageMaterialsState,
 } from '@/lib/montage-model'
+import { getDocumentDisplayNumber } from '@/lib/document-model'
 import { updateOrderStatus } from '@/lib/actions/orders'
 
 // ============================================================
@@ -59,10 +60,12 @@ type MontageOrder = Pick<Order, 'id' | 'title' | 'status' | 'clientId' | 'client
 type MontageClient = Pick<Client, 'id' | 'name' | 'companyName'>
 type MontageEditor = Pick<EditorProfile, 'id' | 'displayName'>
 
+type MontageProjectDocument = { type: DocumentType; number: number | null; suffix: string | null; status: DocumentStatus }
 type MontageProjectWithRelations = MontageProject & {
   order: MontageOrder | null
   client: MontageClient | null
   editor: MontageEditor | null
+  documents: MontageProjectDocument[]
 }
 
 const MONTAGE_INCLUDE = {
@@ -75,6 +78,10 @@ const MONTAGE_INCLUDE = {
   },
   client: { select: { id: true, name: true, companyName: true } },
   editor: { select: { id: true, displayName: true } },
+  // Реестр документов (см. AGENTS.md) — только счёт/акт этого проекта, для
+  // компактной колонки таблицы; договор клиента сюда не тянем (тот же
+  // принцип, что и у Order.documents в actions/orders.ts).
+  documents: { select: { type: true, number: true, suffix: true, status: true } },
 } as const
 
 export interface MontageProjectDTO {
@@ -169,6 +176,10 @@ export interface MontageProjectDTO {
   // montage-model.ts: старые записи не штрафуются за отсутствие исходников/
   // NAS, которых старая Google-таблица никогда не фиксировала).
   isHistoricalImport: boolean
+  // Реестр документов (см. AGENTS.md) — только счёт/акт ЭТОГО проекта (не
+  // договор клиента, см. комментарий у MONTAGE_INCLUDE.documents выше).
+  invoiceDisplayNumber: string | null
+  actDisplayNumber: string | null
 }
 
 function toDTO(row: MontageProjectWithRelations): MontageProjectDTO {
@@ -262,6 +273,14 @@ function toDTO(row: MontageProjectWithRelations): MontageProjectDTO {
     }),
     hasNoClientLink,
     isHistoricalImport,
+    invoiceDisplayNumber: (() => {
+      const invoice = row.documents.find(d => d.type === 'INVOICE' && d.status !== 'CANCELLED')
+      return invoice ? getDocumentDisplayNumber(invoice, row.documentPackageNumber) : null
+    })(),
+    actDisplayNumber: (() => {
+      const act = row.documents.find(d => d.type === 'ACT' && d.status !== 'CANCELLED')
+      return act ? getDocumentDisplayNumber(act, row.documentPackageNumber) : null
+    })(),
   }
 }
 

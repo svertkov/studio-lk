@@ -21,6 +21,7 @@ import {
   type MontageStatus, type MontageClientPaymentStatus, type MontageEditorPaymentStatus, type MontageDeadlineType,
   type MontageContentType, type MontageTurnaroundDayType, type MontageAttentionReason,
 } from '@/lib/montage-model'
+import WorkDocumentsSection from '@/components/documents/WorkDocumentsSection'
 
 // Те же геометрия/классы полей, что в OrderFormModal.tsx — единый визуальный
 // язык форм-карточек платформы (h-10, zinc-800 фон, зелёный focus-border).
@@ -902,6 +903,16 @@ export default function MontageProjectModal({ project, orders, editors, existing
                   <textarea value={clientComment} onChange={e => setClientComment(e.target.value)} rows={2} className={TEXTAREA} />
                 </Field>
               </div>
+
+              {isEdit && (
+                <>
+                  <p className={SECTION}>Документы</p>
+                  <WorkDocumentsSection
+                    montageProjectId={project!.id}
+                    clientId={project!.clientId ?? (project!.orderId ? (orders.find(o => o.id === project!.orderId)?.clientId ?? null) : null)}
+                  />
+                </>
+              )}
             </>
           )}
         </div>

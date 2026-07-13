@@ -55,10 +55,15 @@ type TriFilter = 'ANY' | 'YES' | 'NO'
 // самому длинному стандартному лейблу ("Завершено") на 1280px — вес забран у
 // "Длительности" (там всегда короткий текст вида "2 ч") и "Комментариев"
 // (стал легче: акция и кнопка теперь строго друг под другом, а не в ряд).
+// Документы (см. AGENTS.md, "Реестр документов") — новая компактная колонка
+// добавлена без нарушения принципа "сумма долей = 100%": вес забран у
+// Съёмки/Статуса/Материалов/Комментария (по 0.1-0.15fr с каждой), а не
+// добавлен сверху — иначе сетка снова рискует переполниться, ровно та же
+// причина, по которой минимумы у колонок вообще убрали (см. комментарий выше).
 const FULL_GRID_COLS =
-  'grid-cols-[minmax(0,1.05fr)_minmax(0,1.3fr)_minmax(0,1.35fr)_minmax(0,0.5fr)_minmax(0,1.1fr)_minmax(0,1.3fr)_minmax(0,1.2fr)_minmax(0,1.05fr)]'
+  'grid-cols-[minmax(0,1.05fr)_minmax(0,1.3fr)_minmax(0,1.3fr)_minmax(0,0.5fr)_minmax(0,1.1fr)_minmax(0,1.2fr)_minmax(0,1.1fr)_minmax(0,0.9fr)_minmax(0,0.9fr)]'
 const COMPACT_GRID_COLS =
-  'grid-cols-[minmax(0,1.2fr)_minmax(0,1.4fr)_minmax(0,1.45fr)_minmax(0,0.75fr)_minmax(0,1.15fr)_minmax(0,1fr)_minmax(0,1.35fr)]'
+  'grid-cols-[minmax(0,1.2fr)_minmax(0,1.4fr)_minmax(0,1.4fr)_minmax(0,0.75fr)_minmax(0,1.15fr)_minmax(0,0.9fr)_minmax(0,1.2fr)_minmax(0,0.9fr)]'
 
 function formatDate(iso: string) {
   try { return format(parseISO(iso), 'd MMM yyyy', { locale: ru }) } catch { return '—' }
@@ -125,6 +130,39 @@ function StatusBadge({ status }: { status: OrderStatus }) {
       <span className="w-1.5 h-1.5 rounded-full bg-[color:var(--status-color)] flex-shrink-0" />
       <span>{config.label}</span>
     </span>
+  )
+}
+
+const INVOICE_REQUIRED_FLOW_TYPES: string[] = ['INVOICE_ONLY', 'INVOICE_AND_ACT', 'CONTRACT_INVOICE_ACT']
+const ACT_REQUIRED_FLOW_TYPES: string[] = ['INVOICE_AND_ACT', 'CONTRACT_INVOICE_ACT']
+
+// Реестр документов (см. AGENTS.md) — компактная колонка вместо трёх широких
+// (ТЗ разд.16: "не добавлять три широкие отдельные колонки"). Номера читаются
+// из OrderDTO.invoiceDisplayNumber/actDisplayNumber (уже вычислены на сервере
+// через getDocumentDisplayNumber, здесь никакой отдельной логики нумерации).
+function DocumentsCell({ order }: { order: OrderDTO }) {
+  if (order.documentFlowType === 'NOT_REQUIRED' || order.documentFlowType === 'UNKNOWN') {
+    return <span className="text-zinc-600 text-xs">—</span>
+  }
+  const needsInvoice = INVOICE_REQUIRED_FLOW_TYPES.includes(order.documentFlowType)
+  const needsAct = ACT_REQUIRED_FLOW_TYPES.includes(order.documentFlowType)
+  const missingContract = order.documentFlowType === 'CONTRACT_INVOICE_ACT'
+    && order.clientContractState !== 'ACTIVE'
+
+  return (
+    <div className="flex flex-col items-start gap-0.5 min-w-0">
+      {missingContract && <span className="text-red-400 text-[11px] whitespace-nowrap">Без договора</span>}
+      {order.invoiceDisplayNumber ? (
+        <span className="text-zinc-300 text-[11px] truncate">Сч {order.invoiceDisplayNumber}</span>
+      ) : needsInvoice ? (
+        <span className="text-amber-400 text-[11px] whitespace-nowrap">Нет счёта</span>
+      ) : null}
+      {order.actDisplayNumber ? (
+        <span className="text-zinc-300 text-[11px] truncate">Акт {order.actDisplayNumber}</span>
+      ) : needsAct && order.status === 'COMPLETED' ? (
+        <span className="text-red-400 text-[11px] whitespace-nowrap">Нет акта</span>
+      ) : null}
+    </div>
   )
 }
 
@@ -255,6 +293,7 @@ function OrdersMonthSection({ group, tier, dense, sortKey, sortDir, onToggleSort
                   <SortBtn k="status" label="Статус" sortKey={sortKey} sortDir={sortDir} onToggle={onToggleSort} />
                 </div>
                 <div role="columnheader" className="min-w-0 px-2.5 py-2 text-zinc-400 text-[11px] uppercase tracking-wider">Материалы</div>
+                <div role="columnheader" className="min-w-0 px-2.5 py-2 text-zinc-400 text-[11px] uppercase tracking-wider">Документы</div>
                 {tier === 'full' && (
                   <div role="columnheader" className="min-w-0 px-2.5 py-2 text-zinc-400 text-[11px] uppercase tracking-wider">Комментарий</div>
                 )}
@@ -311,6 +350,7 @@ function OrdersMonthSection({ group, tier, dense, sortKey, sortDir, onToggleSort
                       </Cell>
                       <Cell><StatusBadge status={order.status} /></Cell>
                       <Cell onClick={e => e.stopPropagation()}><MaterialsCell order={order} /></Cell>
+                      <Cell><DocumentsCell order={order} /></Cell>
                       {tier === 'full' && <Cell><OrderCommentBadges order={order} dense={dense} /></Cell>}
                     </div>
                   )

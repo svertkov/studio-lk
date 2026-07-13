@@ -5,8 +5,10 @@ import { prisma } from '@/lib/prisma'
 import { auth } from '@/auth'
 import type {
   Order, Client, ScheduleEvent,
-  OrderStatus, OrderSource, OrderPaymentStatus, PaymentMethod, ClientType, OrderPromotionType,
+  OrderStatus, OrderSource, OrderPaymentStatus, PaymentMethod, ClientType, OrderPromotionType, DocumentFlowType,
+  DocumentType, DocumentStatus, ClientContractState,
 } from '@prisma/client'
+import { getDocumentDisplayNumber } from '@/lib/document-model'
 import { computeDurationMinutes, isOrderReadyForArchive, archiveReasonForStatus } from '@/lib/order-model'
 import { computeMaterialsStatus, computeYandexLinkExpiry } from '@/lib/schedule-model'
 import { parseEventTitle } from '@/lib/event-category'
@@ -47,7 +49,7 @@ function revalidateOrderPaths(clientId?: string | null): void {
 // СЕРИАЛИЗАЦИЯ
 // ============================================================
 
-type OrderClient = Pick<Client, 'name' | 'phone' | 'telegram' | 'email' | 'type' | 'companyName'>
+type OrderClient = Pick<Client, 'name' | 'phone' | 'telegram' | 'email' | 'type' | 'companyName' | 'contractState'>
 type OrderScheduleEvent = Pick<ScheduleEvent,
   'id' | 'camerasCount' | 'editingRequired' | 'yandexDiskUrl' | 'yandexDiskUrlExpiresAt' | 'nasBackupUrl' |
   'materialsComment' | 'notes' | 'makeupDurationMinutes' | 'promotionType' | 'estimatedPrice' | 'paymentMethod'> & {
@@ -56,10 +58,16 @@ type OrderScheduleEvent = Pick<ScheduleEvent,
       subscription: { packageHours: number; openingUsedHours: number; usages: { usedHours: number }[] }
     } | null
   }
-type OrderWithRelations = Order & { client: OrderClient | null; scheduleEvent: OrderScheduleEvent | null }
+type OrderDocument = { type: DocumentType; number: number | null; suffix: string | null; status: DocumentStatus }
+type OrderWithRelations = Order & { client: OrderClient | null; scheduleEvent: OrderScheduleEvent | null; documents: OrderDocument[] }
 
 const ORDER_INCLUDE = {
-  client: { select: { name: true, phone: true, telegram: true, email: true, type: true, companyName: true } },
+  client: { select: { name: true, phone: true, telegram: true, email: true, type: true, companyName: true, contractState: true } },
+  // Реестр документов (см. AGENTS.md, "Реестр документов") — только счёт/акт
+  // этого заказа для компактных плашек в CRM/списке заказов; договор
+  // клиента сюда не тянем (это отдельный, редко нужный на карточке заказа
+  // relation-переход через client, не стоит лишнего join на каждый заказ доски).
+  documents: { select: { type: true, number: true, suffix: true, status: true } },
   scheduleEvent: {
     select: {
       id: true, camerasCount: true, editingRequired: true,
@@ -146,6 +154,17 @@ export interface OrderDTO {
   isArchived: boolean
   archivedAt: string | null
   archiveReason: ArchiveReason | null
+  // Реестр документов (см. AGENTS.md, "Реестр документов") — какой состав
+  // договор/счёт/акт требуется этой работе. Читается WorkDocumentsSection.
+  documentFlowType: DocumentFlowType
+  // Компактная сводка для CRM/списка заказов — только счёт/акт ЭТОГО заказа
+  // (без договора клиента, см. комментарий у ORDER_INCLUDE: лишний join ради
+  // редко нужной плашки). null, если документа такого типа ещё нет.
+  invoiceDisplayNumber: string | null
+  actDisplayNumber: string | null
+  // Договорное состояние привязанного клиента (см. Client.contractState) —
+  // для фильтра CRM "Без договора"; null, если клиент не привязан.
+  clientContractState: ClientContractState | null
 }
 
 function toDTO(row: OrderWithRelations): OrderDTO {
@@ -163,6 +182,7 @@ function toDTO(row: OrderWithRelations): OrderDTO {
     clientTelegram: row.client?.telegram ?? row.clientTelegram,
     clientEmail: row.client?.email ?? row.clientEmail,
     clientType: row.client?.type ?? row.clientType,
+    clientContractState: row.client?.contractState ?? null,
     companyName: row.client?.companyName ?? row.companyName,
     serviceType: row.serviceType,
     room: row.room,
@@ -204,6 +224,15 @@ function toDTO(row: OrderWithRelations): OrderDTO {
     isArchived: row.isArchived,
     archivedAt: row.archivedAt ? row.archivedAt.toISOString() : null,
     archiveReason: row.archiveReason,
+    documentFlowType: row.documentFlowType,
+    invoiceDisplayNumber: (() => {
+      const invoice = row.documents.find(d => d.type === 'INVOICE' && d.status !== 'CANCELLED')
+      return invoice ? getDocumentDisplayNumber(invoice, row.documentPackageNumber) : null
+    })(),
+    actDisplayNumber: (() => {
+      const act = row.documents.find(d => d.type === 'ACT' && d.status !== 'CANCELLED')
+      return act ? getDocumentDisplayNumber(act, row.documentPackageNumber) : null
+    })(),
   }
 }
 

@@ -428,6 +428,17 @@ export default function MontageProjectsTable({ projects, editors, initialFilterP
                   <TableCell>
                     <p className="text-xs text-zinc-300">Клиент: {MONTAGE_CLIENT_PAYMENT_STATUS_LABELS[p.clientPaymentStatus]}</p>
                     <p className="text-xs text-zinc-500">Монтажёр: {MONTAGE_EDITOR_PAYMENT_STATUS_LABELS[p.editorPaymentStatus]}</p>
+                    {/* Реестр документов (см. AGENTS.md) — компактно рядом с
+                        оплатами, а не отдельным широким столбцом (ТЗ разд.17:
+                        "не создавать новый широкий столбец без анализа доступной
+                        ширины"), полная карточка — в модалке проекта. */}
+                    {(p.invoiceDisplayNumber || p.actDisplayNumber) && (
+                      <p className="text-xs text-zinc-600 mt-0.5">
+                        {p.invoiceDisplayNumber && `Сч ${p.invoiceDisplayNumber}`}
+                        {p.invoiceDisplayNumber && p.actDisplayNumber && ' · '}
+                        {p.actDisplayNumber && `Акт ${p.actDisplayNumber}`}
+                      </p>
+                    )}
                   </TableCell>
                   <TableCell onClick={e => e.stopPropagation()}>
                     <MontageMaterialsCell project={p} onOpenMaterials={() => onOpenProject(p, { focusMaterials: true })} />

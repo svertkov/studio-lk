@@ -3,6 +3,7 @@ import { CreditCard, ChevronRight, Info, Hourglass } from 'lucide-react'
 import { getFinanceSummary, getSubscriptionsSummary } from '@/lib/actions/finance'
 import { getExpensesSummary, getExpensesByCategory, getOutstandingLiabilities } from '@/lib/actions/expenses'
 import { getMontageDashboardStats } from '@/lib/actions/montage'
+import { getDocumentsDashboardStats } from '@/lib/actions/documents'
 import { computeCombinedFinanceSummary } from '@/lib/finance-model'
 import DonutChart from '@/components/ui/donut-chart'
 import FinanceStatCards from './FinanceStatCards'
@@ -40,13 +41,14 @@ function subscriptionWord(n: number) {
 }
 
 export default async function FinancePage() {
-  const [summaryResult, subsResult, expensesResult, expensesByCategoryResult, outstandingResult, montageResult] = await Promise.all([
+  const [summaryResult, subsResult, expensesResult, expensesByCategoryResult, outstandingResult, montageResult, documentsStatsResult] = await Promise.all([
     getFinanceSummary(),
     getSubscriptionsSummary(),
     getExpensesSummary(),
     getExpensesByCategory(),
     getOutstandingLiabilities(),
     getMontageDashboardStats(),
+    getDocumentsDashboardStats(),
   ])
   const stats = summaryResult.data
   const subs = subsResult.data
@@ -93,7 +95,7 @@ export default async function FinancePage() {
         remainingHoursHint={`осталось ${subs.remainingHoursTotal % 1 === 0 ? subs.remainingHoursTotal.toFixed(0) : subs.remainingHoursTotal.toFixed(1)} ч`}
       />
 
-      <MontageFinanceBreakdown combined={combined} />
+      <MontageFinanceBreakdown combined={combined} documentsStats={documentsStatsResult.ok ? documentsStatsResult.data : null} />
 
       <div className="flex items-start gap-2 text-zinc-600 text-xs px-1">
         <Info className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />

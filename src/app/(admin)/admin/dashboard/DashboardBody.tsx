@@ -14,6 +14,7 @@ import {
 import MetricCard from '@/components/ui/metric-card'
 import HoursStatCard from './HoursStatCard'
 import BookingIssuesBlock from './BookingIssuesBlock'
+import DocumentWarningsBlock from './DocumentWarningsBlock'
 
 interface CalendarEvent {
   id: string
@@ -119,6 +120,7 @@ export default function DashboardBody({ clientsTotal, monthStart, monthEnd, nowI
       </div>
 
       <BookingIssuesBlock />
+      <DocumentWarningsBlock />
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
         <MetricCard

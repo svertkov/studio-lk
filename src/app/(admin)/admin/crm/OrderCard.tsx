@@ -3,7 +3,7 @@
 import type { CSSProperties } from 'react'
 import { format, parseISO } from 'date-fns'
 import { ru } from 'date-fns/locale'
-import { CalendarClock, UserX, Film, CheckCircle2, Paperclip, Clock } from 'lucide-react'
+import { CalendarClock, UserX, Film, CheckCircle2, Paperclip, Clock, Receipt, ClipboardCheck } from 'lucide-react'
 import type { DraggableAttributes, DraggableSyntheticListeners } from '@dnd-kit/core'
 import type { OrderDTO } from '@/lib/actions/orders'
 import { ORDER_PAYMENT_STATUS_COLORS, ORDER_SOURCE_LABELS, getOrderStatusVars } from '@/lib/order-model'
@@ -77,8 +77,20 @@ export default function OrderCard({ order, onClick, dragAttributes, dragListener
           {payment.paymentType !== 'UNKNOWN' ? `${payment.displayPrimary} · ` : ''}{payment.displaySecondary}
         </span>
       </div>
-      {(order.source === 'GOOGLE_CALENDAR' || !order.clientId || order.editingRequired !== null || order.hasMaterials || hasMakeup || promotion) && (
+      {(order.source === 'GOOGLE_CALENDAR' || !order.clientId || order.editingRequired !== null || order.hasMaterials || hasMakeup || promotion || order.invoiceDisplayNumber || order.actDisplayNumber) && (
         <div className="flex flex-wrap items-center gap-1.5 pt-1">
+          {order.invoiceDisplayNumber && (
+            <span className="text-[11px] font-medium px-2 py-0.5 rounded-full border border-zinc-700 text-zinc-400 bg-zinc-800/40 flex items-center gap-1">
+              <Receipt className="w-3 h-3" />
+              Счёт {order.invoiceDisplayNumber}
+            </span>
+          )}
+          {order.actDisplayNumber && (
+            <span className="text-[11px] font-medium px-2 py-0.5 rounded-full border border-zinc-700 text-zinc-400 bg-zinc-800/40 flex items-center gap-1">
+              <ClipboardCheck className="w-3 h-3" />
+              Акт {order.actDisplayNumber}
+            </span>
+          )}
           {promotion && (
             <GlowPill color="green" title="Акция «−20% первый визит»">{PROMOTION_PILL_LABEL[promotion]}</GlowPill>
           )}
