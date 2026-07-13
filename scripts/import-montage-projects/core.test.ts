@@ -67,6 +67,19 @@ describe('splitExecutors — несколько исполнителей в од
   it('returns a single primary with no extras for a plain name', () => {
     expect(splitExecutors('Сергей Зубарев')).toEqual({ primary: 'Сергей Зубарев', extra: [] })
   })
+
+  it('splits on "+" — real sheet example: name + work-type annotation', () => {
+    // Реальная строка 76 исходной таблицы: "+" здесь не второй исполнитель,
+    // а пометка доп. вида работ, но splitExecutors всё равно обязана отделить
+    // её от имени, иначе normalizeEditorKey не сольёт этого монтажёра с его
+    // же профилем из других строк ("Иван Тесёлкин"/"Иван Теселкин").
+    expect(splitExecutors('Иван Теселкин + моушен')).toEqual({ primary: 'Иван Теселкин', extra: ['моушен'] })
+  })
+
+  it('handles three executors split by "/"', () => {
+    expect(splitExecutors('Никита Никитин / Никита Звук / Андрей Жилин'))
+      .toEqual({ primary: 'Никита Никитин', extra: ['Никита Звук', 'Андрей Жилин'] })
+  })
 })
 
 describe('resolveClientMatch — сопоставление заказчика из таблицы с базой клиентов', () => {
