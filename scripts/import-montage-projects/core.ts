@@ -180,7 +180,7 @@ export function buildFingerprint(fields: {
 // ПЛАН
 // ============================================================
 
-export type MontageImportAction = 'create' | 'skip_empty' | 'skip_client_unmatched' | 'skip_already_imported'
+export type MontageImportAction = 'create' | 'skip_empty' | 'skip_already_imported'
 
 export interface MontageImportRow {
   sheetRow: number
@@ -208,6 +208,13 @@ export interface MontageImportRow {
   clientPaymentStatus: MontageClientPaymentStatus
   editorPaymentStatus: MontageEditorPaymentStatus
   clientMatch: ClientMatch
+  // true, если clientMatch не дал уверенной связи (kind !== 'exact'/'contains')
+  // — проект всё равно создаётся (по явному решению владельца, 2026-07-13:
+  // "внеси их просто без привязки к клиенту... я потом выберу вручную"), но
+  // clientId остаётся null, а MontageProject.clientName хранит исходное имя
+  // из таблицы — UI помечает такие карточки значком "!" (см.
+  // getMontageAttentionReasons/'NO_CLIENT_LINK', montage-model.ts).
+  needsClientReview: boolean
   executorPrimaryRaw: string
   executorExtraRaw: string[]
   executorKey: string | null
@@ -291,23 +298,46 @@ export async function buildPlan(): Promise<MontageImportPlan> {
     const executorKey = executorPrimaryRaw ? normalizeEditorKey(executorPrimaryRaw) : null
 
     const fingerprint = buildFingerprint({ dateStr, clientRaw, title, executorRaw, clientAmountStr, deadlineStr })
+    const needsClientReview = clientMatch.kind === 'none' || clientMatch.kind === 'suggested'
 
-    let action: MontageImportAction
-    if (existingFingerprints.has(fingerprint)) action = 'skip_already_imported'
-    else if (clientMatch.kind === 'none' || clientMatch.kind === 'suggested') action = 'skip_client_unmatched'
-    else action = 'create'
-
+    // action проставляется ПОСЛЕ disambiguateFingerprints ниже — до этого
+    // момента fingerprint ещё может совпадать с другой строкой этого же
+    // прогона (см. комментарий у disambiguateFingerprints).
     rows.push({
       sheetRow, dateStr, clientRaw, statusRaw, title, sourceUrl, deadlineStr,
       clientAmountStr, editorAmountStr, profitStr, terms, revisions, executorRaw,
       sourceReceivedAt, deadlineDate, clientAmount, editorAmount,
       sheetStatedProfit, computedProfit, profitMismatch, status,
-      clientPaymentStatus, editorPaymentStatus, clientMatch,
-      executorPrimaryRaw, executorExtraRaw, executorKey, fingerprint, action,
+      clientPaymentStatus, editorPaymentStatus, clientMatch, needsClientReview,
+      executorPrimaryRaw, executorExtraRaw, executorKey, fingerprint, action: 'create',
     })
   })
 
+  disambiguateFingerprints(rows)
+  for (const r of rows) {
+    r.action = existingFingerprints.has(r.fingerprint) ? 'skip_already_imported' : 'create'
+  }
+
   return { totalRows: rows.length, rows, earliestDate, latestDate, distinctStatuses: [...distinctStatuses] }
+}
+
+// Две РЕАЛЬНО РАЗНЫЕ строки таблицы иногда дают одинаковый fingerprint —
+// например, несколько похожих проектов для одного клиента в один день с
+// одинаковой формулировкой названия (реальный случай, строки 51-62,
+// "СТЭП": несколько однотипных роликов одной датой/суммой/исполнителем).
+// ТЗ п.30 явно требует НЕ использовать только имя клиента для fingerprint,
+// но не запрещает добавить детерминированный, устойчивый между запусками
+// разрядник для настоящих коллизий: нумерация ПО ПОРЯДКУ появления строки в
+// таблице (sheetRow уже отсортирован по возрастанию — dataRows.forEach выше)
+// — при повторном запуске строки в том же порядке получат те же суффиксы,
+// поэтому идемпотентность (уже импортированные — не дублируются) не ломается.
+export function disambiguateFingerprints(rows: MontageImportRow[]): void {
+  const seen = new Map<string, number>()
+  for (const r of rows) {
+    const count = (seen.get(r.fingerprint) ?? 0) + 1
+    seen.set(r.fingerprint, count)
+    if (count > 1) r.fingerprint = `${r.fingerprint}#${count}`
+  }
 }
 
 // Уникальные исполнители среди строк, которые реально будут созданы —

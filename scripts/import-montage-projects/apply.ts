@@ -74,6 +74,11 @@ async function main() {
       const project = await prisma.montageProject.create({
         data: {
           clientId: r.clientMatch.clientId,
+          // Снэпшот "как в таблице" — источник отображения, пока clientId
+          // не проставлен вручную (см. схему, MontageProject.clientName и
+          // ТЗ владельца от 2026-07-13: заносить такие строки без привязки,
+          // с меткой "!" на дозаполнение).
+          clientName: r.clientRaw || null,
           title: r.title || null,
           status: r.status ?? 'NEW',
           editorId,

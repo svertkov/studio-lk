@@ -176,7 +176,12 @@ export default function MontageProjectModal({ project, orders, editors, existing
 
     const input: MontageProjectInput = {
       orderId: isEdit ? undefined : (linkMode === 'order' ? selectedOrderId : null),
-      clientId: isEdit ? undefined : (linkMode === 'standalone' ? selectedClientId : undefined),
+      // При редактировании самостоятельного проекта clientId можно менять
+      // (единственный способ довязать клиента к строкам исторического
+      // импорта, помеченным "!" — см. блок выбора клиента выше). Для
+      // проектов, привязанных к заказу (linkMode === 'order'), clientId не
+      // трогаем — источник правды там order.clientId, а не это поле.
+      clientId: linkMode === 'standalone' ? selectedClientId : undefined,
       title: title || undefined,
       description: description || undefined,
       contentType: contentType || undefined,
@@ -271,8 +276,14 @@ export default function MontageProjectModal({ project, orders, editors, existing
             </div>
           )}
 
-          {!isEdit && linkMode === 'standalone' && !selectedClientId && (
-            <div className="space-y-3">
+          {linkMode === 'standalone' && !selectedClientId && (
+            <div className="space-y-3 mb-4">
+              {isEdit && (
+                <p className="text-amber-300 text-xs flex items-center gap-1.5 bg-amber-950/20 border border-amber-600/40 rounded-lg px-3 py-2">
+                  <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+                  Клиент не привязан{project?.clientName ? ` — в исходных данных: "${project.clientName}"` : ''}. Найдите и выберите клиента ниже.
+                </p>
+              )}
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
                 <input value={clientSearch} onChange={e => searchClients(e.target.value)} placeholder="Поиск клиента по имени, компании, телефону..." className={`${INPUT} pl-9`} />
@@ -292,11 +303,13 @@ export default function MontageProjectModal({ project, orders, editors, existing
                 {clientSearch.trim() && clientMatches.length === 0 && <p className="text-zinc-500 text-sm text-center py-6">Клиенты не найдены</p>}
                 {!clientSearch.trim() && <p className="text-zinc-500 text-xs text-center py-4">Начните вводить имя или компанию клиента</p>}
               </div>
-              <button type="button" onClick={() => setLinkMode(null)} className="text-zinc-500 hover:text-zinc-300 text-xs">← Назад</button>
+              {!isEdit && (
+                <button type="button" onClick={() => setLinkMode(null)} className="text-zinc-500 hover:text-zinc-300 text-xs">← Назад</button>
+              )}
             </div>
           )}
 
-          {!isEdit && linkMode === 'standalone' && selectedClientId && (
+          {linkMode === 'standalone' && selectedClientId && (
             <div className="mb-4 flex items-center justify-between gap-3 bg-zinc-800/60 border border-zinc-700 rounded-lg px-3 py-2.5">
               <p className="text-zinc-200 text-sm truncate">{selectedClientLabel}</p>
               <button type="button" onClick={() => { setSelectedClientId(null); setSelectedClientLabel(null) }} className="text-zinc-500 hover:text-zinc-300 text-xs flex-shrink-0">Изменить</button>

@@ -16,7 +16,7 @@ async function main() {
   const plan = await buildPlan()
   const create = plan.rows.filter(r => r.action === 'create')
   const alreadyImported = plan.rows.filter(r => r.action === 'skip_already_imported')
-  const unmatchedClient = plan.rows.filter(r => r.action === 'skip_client_unmatched')
+  const needsClientReview = create.filter(r => r.needsClientReview)
 
   const delivered = create.filter(r => r.status === 'DELIVERED')
   const inProgress = create.filter(r => r.status === 'IN_PROGRESS')
@@ -48,13 +48,13 @@ async function main() {
   console.log(`  · "Сдан" (DELIVERED):                       ${delivered.length}`)
   console.log(`  · "В работе" (IN_PROGRESS):                 ${inProgress.length}`)
   console.log(`  · нераспознанный статус (не создастся):     ${unknownStatus.length}`)
+  console.log(`  · из них БЕЗ привязки к клиенту (метка "!"): ${needsClientReview.length} — созданы с сырым именем из таблицы, администратор довяжет клиента вручную`)
   console.log(`Уже импортировано ранее (пропускается):       ${alreadyImported.length}`)
-  console.log(`Пропущено — клиент не сопоставлен уверенно:   ${unmatchedClient.length}`)
   console.log(`Дублей проектов:                              0 (структурно исключены — importExternalId уникален)`)
   console.log()
   console.log(`Исполнителей найдено (сырых написаний):       ${rawExecutorCount}`)
   console.log(`Уникальных монтажёров после нормализации:     ${editors.length}`)
-  console.log(`Строк с доп. исполнителем в ячейке (/, ,):    ${withExtraExecutors.length}`)
+  console.log(`Строк с доп. исполнителем в ячейке (/, ,, +): ${withExtraExecutors.length}`)
   console.log()
   console.log(`Со ссылкой на исходники:                      ${withSourceUrl.length} из ${create.length}`)
   console.log(`С дедлайном (срок сдачи):                     ${withDeadline.length} из ${create.length}`)
@@ -81,17 +81,18 @@ async function main() {
     console.log(`  статус:        ${r.statusRaw}`)
     console.log(`  сумма клиента: ${fmtMoney(r.clientAmount)} · сумма подрядчика: ${fmtMoney(r.editorAmount)}`)
     console.log(`  исполнитель:   ${r.executorPrimaryRaw || '—'}`)
-    console.log(`  клиент в базе: ${r.clientMatch.clientName ?? '(не сопоставлен)'} (${r.clientMatch.kind})`)
+    console.log(`  клиент в базе: ${r.clientMatch.clientName ?? '(не сопоставлен, создастся без привязки)'} (${r.clientMatch.kind})`)
     console.log()
   }
 
-  if (unmatchedClient.length > 0) {
+  if (needsClientReview.length > 0) {
     console.log('-'.repeat(72))
-    console.log(`Клиент НЕ сопоставлен уверенно (${unmatchedClient.length}) — НЕ будут импортированы автоматически:`)
+    console.log(`БЕЗ ПРИВЯЗКИ К КЛИЕНТУ (${needsClientReview.length}) — создаются с меткой "!", клиент довязывается вручную позже:`)
     console.log('-'.repeat(72))
-    for (const r of unmatchedClient) {
-      const suggestion = r.clientMatch.suggestion ? ` → возможно "${r.clientMatch.suggestion.name}" (не применено, слишком неуверенно)` : ' (совпадений не найдено вовсе)'
+    for (const r of needsClientReview) {
+      const suggestion = r.clientMatch.suggestion ? ` · похоже на "${r.clientMatch.suggestion.name}" (не применено автоматически, слишком неуверенно)` : ' · совпадений в базе не найдено вовсе'
       console.log(`Строка ${r.sheetRow} · ${fmtDate(r.sourceReceivedAt)} · заказчик в таблице: "${r.clientRaw}"${suggestion}`)
+      console.log(`  проект: ${r.title} · сумма клиента: ${fmtMoney(r.clientAmount)}`)
     }
     console.log()
   }
@@ -127,7 +128,7 @@ async function main() {
   console.log('Примеры "будет создано" (первые 5):')
   console.log('-'.repeat(72))
   for (const r of create.slice(0, 5)) {
-    console.log(`Строка ${r.sheetRow} · ${r.clientMatch.clientName} · ${r.title}`)
+    console.log(`Строка ${r.sheetRow} · ${r.clientMatch.clientName ?? `${r.clientRaw} (!)`} · ${r.title}`)
     console.log(`  дата поступления: ${fmtDate(r.sourceReceivedAt)} · дедлайн: ${fmtDate(r.deadlineDate)}`)
     console.log(`  статус: ${r.status} · оплата клиента: ${r.clientPaymentStatus} · оплата монтажёру: ${r.editorPaymentStatus}`)
     console.log(`  клиент: ${fmtMoney(r.clientAmount)} · монтажёр: ${fmtMoney(r.editorAmount)} · прибыль: ${fmtMoney(r.computedProfit)}`)
@@ -136,8 +137,8 @@ async function main() {
   }
 
   console.log('='.repeat(72))
-  console.log(`Итого при apply: создастся проектов ${create.length}, монтажёров ${editors.length}`)
-  console.log(`Конфликтов/пропусков: клиент не сопоставлен ${unmatchedClient.length}, нераспознанный статус ${unknownStatus.length}, уже импортировано ${alreadyImported.length}`)
+  console.log(`Итого при apply: создастся проектов ${create.length} (из них без привязки к клиенту ${needsClientReview.length}), монтажёров ${editors.length}`)
+  console.log(`Пропусков: нераспознанный статус ${unknownStatus.length}, уже импортировано ${alreadyImported.length}`)
   console.log('='.repeat(72))
 }
 

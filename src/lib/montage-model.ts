@@ -214,7 +214,7 @@ export function isMontageMissingNas(project: { status: MontageStatus; mountedMat
 // ============================================================
 
 export type MontageAttentionReason =
-  | 'NO_EDITOR' | 'OVERDUE' | 'NO_SOURCE' | 'NO_NAS_AFTER_DELIVERY' | 'PAYMENT_UNDEFINED' | 'INCOMPLETE_CARD'
+  | 'NO_EDITOR' | 'OVERDUE' | 'NO_SOURCE' | 'NO_NAS_AFTER_DELIVERY' | 'PAYMENT_UNDEFINED' | 'INCOMPLETE_CARD' | 'NO_CLIENT_LINK'
 
 export const MONTAGE_ATTENTION_LABELS: Record<MontageAttentionReason, string> = {
   NO_EDITOR:              'Без монтажёра',
@@ -223,6 +223,7 @@ export const MONTAGE_ATTENTION_LABELS: Record<MontageAttentionReason, string> = 
   NO_NAS_AFTER_DELIVERY:   'Нет NAS после сдачи',
   PAYMENT_UNDEFINED:       'Оплата не определена',
   INCOMPLETE_CARD:         'Незаполненная карточка',
+  NO_CLIENT_LINK:          'Клиент не привязан',
 }
 
 export interface MontageAttentionInput {
@@ -238,6 +239,11 @@ export interface MontageAttentionInput {
   clientPaymentStatus: MontageClientPaymentStatus
   title: string | null
   description: string | null
+  // true, если у проекта нет НИ заказа, НИ реального Client (только сырое имя
+  // из импорта, см. MontageProject.clientName в схеме) — строки, которые
+  // администратор осознанно попросил завести без привязки при историческом
+  // импорте (scripts/import-montage-projects), с меткой "!" на довязку позже.
+  hasNoClientLink: boolean
 }
 
 const MONTAGE_ATTENTION_EXEMPT_STATUSES: MontageStatus[] = ['CANCELLED', 'ARCHIVED', 'NEW', 'NEEDS_INFO']
@@ -246,6 +252,7 @@ export function getMontageAttentionReasons(project: MontageAttentionInput, now: 
   if (project.status === 'CANCELLED' || project.status === 'ARCHIVED') return []
   const reasons: MontageAttentionReason[] = []
 
+  if (project.hasNoClientLink) reasons.push('NO_CLIENT_LINK')
   if (!project.editorId && !MONTAGE_ATTENTION_EXEMPT_STATUSES.includes(project.status)) reasons.push('NO_EDITOR')
   if (isMontageOverdue({ deadlineDate: project.deadlineDate, status: project.status, deliveredAt: project.deliveredAt }, now)) {
     reasons.push('OVERDUE')
@@ -302,6 +309,7 @@ export interface MontageStatsInput {
   mountedMaterialNasUrl: string | null
   title: string | null
   description: string | null
+  hasNoClientLink: boolean
 }
 
 export interface MontageDashboardStats {
@@ -362,6 +370,7 @@ export function computeMontageDashboardStats(projects: MontageStatsInput[], now:
       status: p.status, editorId: p.editorId, deadlineDate: p.deadlineDate, deliveredAt: p.deliveredAt,
       effectiveSourceMaterialsUrl: p.effectiveSourceMaterialsUrl, mountedMaterialNasUrl: p.mountedMaterialNasUrl,
       clientAmount: p.clientAmount, clientPaymentStatus: p.clientPaymentStatus, title: p.title, description: p.description,
+      hasNoClientLink: p.hasNoClientLink,
     }, now)
     if (attention.length > 0) attentionCount += 1
   }

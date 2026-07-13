@@ -162,6 +162,7 @@ describe('getMontageAttentionReasons — единый источник для KP
       clientPaymentStatus: 'PAID',
       title: 'Монтаж подкаста',
       description: null,
+      hasNoClientLink: false,
       ...overrides,
     }
   }
@@ -196,6 +197,14 @@ describe('getMontageAttentionReasons — единый источник для KP
 
   it('flags an incomplete card with neither title nor description', () => {
     expect(getMontageAttentionReasons(makeInput({ title: null, description: null }), now)).toContain('INCOMPLETE_CARD')
+  })
+
+  it('flags a project with no client link at all (unmatched import row)', () => {
+    expect(getMontageAttentionReasons(makeInput({ hasNoClientLink: true }), now)).toContain('NO_CLIENT_LINK')
+  })
+
+  it('does not flag a normally-linked project', () => {
+    expect(getMontageAttentionReasons(makeInput({ hasNoClientLink: false }), now)).not.toContain('NO_CLIENT_LINK')
   })
 
   it('never flags CANCELLED or ARCHIVED projects, no matter what is missing', () => {
@@ -258,6 +267,7 @@ describe('computeMontageDashboardStats — единый источник KPI д�
       mountedMaterialNasUrl: 'https://nas',
       title: 'Монтаж подкаста',
       description: null,
+      hasNoClientLink: false,
       ...overrides,
     }
   }

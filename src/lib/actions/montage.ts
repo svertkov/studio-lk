@@ -131,16 +131,28 @@ export interface MontageProjectDTO {
   isOverdue: boolean
   deadlineLabel: string | null
   attentionReasons: MontageAttentionReason[]
+  // Ни заказа, ни реального Client — только сырое clientName из импорта (см.
+  // схему). UI показывает маленькую метку "!" рядом с именем клиента, пока
+  // администратор не довяжет реального клиента вручную.
+  hasNoClientLink: boolean
 }
 
 function toDTO(row: MontageProjectWithRelations): MontageProjectDTO {
-  const clientName = row.order ? (row.order.client?.name ?? row.order.clientName) : (row.client?.name ?? null)
+  // clientName — как у Order.clientName: снэпшот "как в источнике", источник
+  // правды только пока нет реальной связи (ни order, ни client). Нужен для
+  // строк исторического импорта, где клиента не удалось сопоставить уверенно
+  // (см. схему, комментарий у MontageProject.clientName) — администратор
+  // довязывает клиента вручную позже, до этого видит исходное имя из таблицы.
+  const clientName = row.order
+    ? (row.order.client?.name ?? row.order.clientName)
+    : (row.client?.name ?? row.clientName)
   const companyName = row.order ? (row.order.client?.companyName ?? row.order.companyName) : (row.client?.companyName ?? null)
   const effectiveSourceMaterialsUrl = getMontageSourceMaterialsUrl(
     { sourceMaterialsUrl: row.sourceMaterialsUrl },
     row.order?.scheduleEvent?.yandexDiskUrl ?? null,
   )
   const deadlineState = { deadlineDate: row.deadlineDate, status: row.status, deliveredAt: row.deliveredAt }
+  const hasNoClientLink = !row.orderId && !row.clientId
 
   return {
     id: row.id,
@@ -194,8 +206,9 @@ function toDTO(row: MontageProjectWithRelations): MontageProjectDTO {
       status: row.status, editorId: row.editorId, deadlineDate: row.deadlineDate, deliveredAt: row.deliveredAt,
       effectiveSourceMaterialsUrl, mountedMaterialNasUrl: row.mountedMaterialNasUrl,
       clientAmount: row.clientAmount, clientPaymentStatus: row.clientPaymentStatus,
-      title: row.title, description: row.description,
+      title: row.title, description: row.description, hasNoClientLink,
     }),
+    hasNoClientLink,
   }
 }
 

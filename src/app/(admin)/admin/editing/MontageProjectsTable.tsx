@@ -202,7 +202,14 @@ export default function MontageProjectsTable({ projects, editors, initialFilterP
                     <p className="text-zinc-200 text-sm">{formatDate(p.sourceReceivedAt)}</p>
                   </TableCell>
                   <TableCell>
-                    <p className="text-zinc-200 text-sm truncate max-w-[160px]">{p.clientName ?? '—'}</p>
+                    <p className="flex items-center gap-1.5 text-zinc-200 text-sm truncate max-w-[160px]">
+                      <span className="truncate">{p.clientName ?? '—'}</span>
+                      {p.hasNoClientLink && (
+                        <span title="Клиент не привязан — данные из импорта, довяжите клиента вручную" className="flex-shrink-0 flex items-center justify-center w-3.5 h-3.5 rounded-full bg-amber-500/20 text-amber-400 text-[10px] font-bold">
+                          !
+                        </span>
+                      )}
+                    </p>
                     {p.companyName && <p className="text-zinc-500 text-xs truncate max-w-[160px]">{p.companyName}</p>}
                   </TableCell>
                   <TableCell>
