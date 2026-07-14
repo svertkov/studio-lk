@@ -47,6 +47,11 @@ export interface ShootRow {
   // активна/истекла состояние без повторного вычисления даты истечения.
   yandexDiskUrlExpiresAt: Date | null
   nasBackupUrl: string | null
+  // См. ScheduleEvent.yandexLinkRequired/nasLinkRequired — исторические визиты
+  // (source: 'visit', без связанного ScheduleEvent) не имеют этого понятия,
+  // всегда true (то же значение по умолчанию, что и у самого поля).
+  yandexLinkRequired: boolean
+  nasLinkRequired: boolean
   comment: string | null
   isCancelled: boolean
   isFuture: boolean
@@ -85,6 +90,8 @@ export interface ShootEventInput {
   yandexDiskUrl: string | null
   yandexDiskUrlExpiresAt: Date | null
   nasBackupUrl: string | null
+  yandexLinkRequired: boolean
+  nasLinkRequired: boolean
   notes: string | null
   makeupDurationMinutes: number | null
   subscriptionUsedHours: number | null
@@ -183,6 +190,8 @@ export function mergeShoots(
       yandexDiskUrl: e.yandexDiskUrl,
       yandexDiskUrlExpiresAt: e.yandexDiskUrlExpiresAt,
       nasBackupUrl: e.nasBackupUrl,
+      yandexLinkRequired: e.yandexLinkRequired,
+      nasLinkRequired: e.nasLinkRequired,
       comment: e.notes,
       isCancelled,
       isFuture,
@@ -233,6 +242,8 @@ export function mergeShoots(
         yandexDiskUrl: null,
         yandexDiskUrlExpiresAt: null,
         nasBackupUrl: null,
+        yandexLinkRequired: true,
+        nasLinkRequired: true,
         comment: v.comment,
         isCancelled: false,
         isFuture: false,

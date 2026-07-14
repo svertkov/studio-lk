@@ -343,6 +343,8 @@ model User {
   editorProfile                 EditorProfile?
   documentsCreated              Document[]             @relation("DocumentCreatedBy")
   documentsUpdated              Document[]             @relation("DocumentUpdatedBy")
+  scheduleEventYandexNotRequiredConfirmations ScheduleEvent[] @relation("ScheduleEventYandexNotRequiredConfirmedBy")
+  scheduleEventNasNotRequiredConfirmations    ScheduleEvent[] @relation("ScheduleEventNasNotRequiredConfirmedBy")
 
   @@map("cms_user")
 }
@@ -687,6 +689,17 @@ model ScheduleEvent {
   // computeMaterialsStatus/getMaterialsDisplay/getBookingAttentionInfo).
   yandexLinkRequired       Boolean                  @default(true) @map("yandex_link_required")
   nasLinkRequired          Boolean                  @default(true) @map("nas_link_required")
+  // Контекст подтверждения исключения — живёт рядом с самим флагом, не
+  // отдельной таблицей (тот же приём, что Document.createdById/updatedById).
+  // Заполняется только в момент true→false через ConfirmableStatusToggle;
+  // при обратном переходе false→true (снова обязательна) — обнуляется, это
+  // относится к конкретному эпизоду исключения, не к полю вообще.
+  yandexNotRequiredConfirmedAt   DateTime? @map("yandex_not_required_confirmed_at")
+  yandexNotRequiredConfirmedById String?   @map("yandex_not_required_confirmed_by_id")
+  yandexNotRequiredReason        String?   @map("yandex_not_required_reason")
+  nasNotRequiredConfirmedAt      DateTime? @map("nas_not_required_confirmed_at")
+  nasNotRequiredConfirmedById    String?   @map("nas_not_required_confirmed_by_id")
+  nasNotRequiredReason           String?   @map("nas_not_required_reason")
   // Нужен ли монтаж после съёмки — null, пока администратор не решил (карточка
   // ещё не сохранялась с выбором); true/false после решения. Управляет
   // автопереводом связанного заказа в «Монтаж»/«Завершено», см. upsertScheduleEvent.
@@ -704,6 +717,8 @@ model ScheduleEvent {
   client            Client?            @relation(fields: [clientId], references: [id])
   order             Order?             @relation(fields: [orderId], references: [id])
   subscriptionUsage SubscriptionUsage?
+  yandexNotRequiredConfirmedBy User? @relation("ScheduleEventYandexNotRequiredConfirmedBy", fields: [yandexNotRequiredConfirmedById], references: [id])
+  nasNotRequiredConfirmedBy    User? @relation("ScheduleEventNasNotRequiredConfirmedBy", fields: [nasNotRequiredConfirmedById], references: [id])
 
   @@index([clientId])
   @@index([clientConfirmationStatus])

@@ -13,17 +13,18 @@ import { computeDurationMinutes, isOrderReadyForArchive, archiveReasonForStatus 
 import { computeMaterialsStatus, computeYandexLinkExpiry } from '@/lib/schedule-model'
 import { parseEventTitle } from '@/lib/event-category'
 import { ensureMontageProjectForOrder } from '@/lib/actions/montage'
+import { writeAuditLog, resolveValidUserId } from '@/lib/audit'
 import type { ArchiveReason } from '@prisma/client'
 
 // ============================================================
 // АВТОРИЗАЦИЯ
 // ============================================================
 
-async function requireStaffSession(): Promise<{ ok: true } | { ok: false; error: string }> {
+async function requireStaffSession(): Promise<{ ok: true; userId: string | null } | { ok: false; error: string }> {
   try {
     const session = await auth()
     if (!session?.user) return { ok: false, error: 'Требуется авторизация' }
-    return { ok: true }
+    return { ok: true, userId: session.user.id ?? null }
   } catch {
     return { ok: false, error: 'Требуется авторизация' }
   }
@@ -53,11 +54,14 @@ type OrderClient = Pick<Client, 'name' | 'phone' | 'telegram' | 'email' | 'type'
 type OrderScheduleEvent = Pick<ScheduleEvent,
   'id' | 'camerasCount' | 'editingRequired' | 'yandexDiskUrl' | 'yandexDiskUrlExpiresAt' | 'nasBackupUrl' |
   'materialsComment' | 'notes' | 'makeupDurationMinutes' | 'promotionType' | 'estimatedPrice' | 'paymentMethod' |
-  'yandexLinkRequired' | 'nasLinkRequired'> & {
+  'yandexLinkRequired' | 'nasLinkRequired' |
+  'yandexNotRequiredConfirmedAt' | 'yandexNotRequiredReason' | 'nasNotRequiredConfirmedAt' | 'nasNotRequiredReason'> & {
     subscriptionUsage: {
       usedHours: number
       subscription: { packageHours: number; openingUsedHours: number; usages: { usedHours: number }[] }
     } | null
+    yandexNotRequiredConfirmedBy: { name: string | null; email: string } | null
+    nasNotRequiredConfirmedBy: { name: string | null; email: string } | null
   }
 type OrderDocument = {
   type: DocumentType; number: number | null; suffix: string | null; status: DocumentStatus
@@ -77,6 +81,10 @@ const ORDER_INCLUDE = {
       id: true, camerasCount: true, editingRequired: true,
       yandexDiskUrl: true, yandexDiskUrlExpiresAt: true, nasBackupUrl: true, materialsComment: true,
       yandexLinkRequired: true, nasLinkRequired: true,
+      yandexNotRequiredConfirmedAt: true, yandexNotRequiredReason: true,
+      nasNotRequiredConfirmedAt: true, nasNotRequiredReason: true,
+      yandexNotRequiredConfirmedBy: { select: { name: true, email: true } },
+      nasNotRequiredConfirmedBy: { select: { name: true, email: true } },
       notes: true, makeupDurationMinutes: true, promotionType: true,
       // Реальные стоимость/способ оплаты студийной записи — заполняются через
       // основную карточку записи (EventCardModal, дашборд/расписание/карточка
@@ -152,6 +160,12 @@ export interface OrderDTO {
   // поведение "ссылка обязательна" по умолчанию).
   yandexLinkRequired: boolean
   nasLinkRequired: boolean
+  yandexNotRequiredConfirmedAt: string | null
+  yandexNotRequiredConfirmedByName: string | null
+  yandexNotRequiredReason: string | null
+  nasNotRequiredConfirmedAt: string | null
+  nasNotRequiredConfirmedByName: string | null
+  nasNotRequiredReason: string | null
   materialsComment: string | null
   // Время на гримёра — источник правды на связанной ScheduleEvent (её
   // редактируют через основную карточку записи), у заявок без записи всегда null.
@@ -233,6 +247,16 @@ function toDTO(row: OrderWithRelations): OrderDTO {
     nasBackupUrl: row.scheduleEvent?.nasBackupUrl ?? null,
     yandexLinkRequired: row.scheduleEvent?.yandexLinkRequired ?? true,
     nasLinkRequired: row.scheduleEvent?.nasLinkRequired ?? true,
+    yandexNotRequiredConfirmedAt: row.scheduleEvent?.yandexNotRequiredConfirmedAt
+      ? row.scheduleEvent.yandexNotRequiredConfirmedAt.toISOString() : null,
+    yandexNotRequiredConfirmedByName: row.scheduleEvent?.yandexNotRequiredConfirmedBy?.name
+      ?? row.scheduleEvent?.yandexNotRequiredConfirmedBy?.email ?? null,
+    yandexNotRequiredReason: row.scheduleEvent?.yandexNotRequiredReason ?? null,
+    nasNotRequiredConfirmedAt: row.scheduleEvent?.nasNotRequiredConfirmedAt
+      ? row.scheduleEvent.nasNotRequiredConfirmedAt.toISOString() : null,
+    nasNotRequiredConfirmedByName: row.scheduleEvent?.nasNotRequiredConfirmedBy?.name
+      ?? row.scheduleEvent?.nasNotRequiredConfirmedBy?.email ?? null,
+    nasNotRequiredReason: row.scheduleEvent?.nasNotRequiredReason ?? null,
     materialsComment: row.scheduleEvent?.materialsComment ?? null,
     makeupDurationMinutes: row.scheduleEvent?.makeupDurationMinutes ?? null,
     createdAt: row.createdAt.toISOString(),
@@ -447,6 +471,8 @@ export interface OrderInput {
   // См. OrderDTO.yandexLinkRequired/nasLinkRequired.
   yandexLinkRequired?: boolean
   nasLinkRequired?: boolean
+  yandexNotRequiredReason?: string | null
+  nasNotRequiredReason?: string | null
 }
 
 export async function createOrder(
@@ -564,6 +590,10 @@ export async function updateOrder(
     // Проект монтажа — тоже пишется отдельным клиентом (см. actions/montage.ts),
     // та же причина отложить вызов до после коммита, что и у autoTransitionStatus.
     let shouldEnsureMontageProject = false
+    // Аудит бизнес-исключения (ConfirmableStatusToggle) — фиксируется после
+    // коммита транзакции, та же причина отложить, что и выше.
+    let yandexLinkRequiredChange: { before: boolean; after: boolean; reason: string | null } | null = null
+    let nasLinkRequiredChange: { before: boolean; after: boolean; reason: string | null } | null = null
 
     const order = await prisma.$transaction(async tx => {
       const updated = await tx.order.update({
@@ -627,6 +657,44 @@ export async function updateOrder(
           })
           const yandexDiskUrlExpiresAt = yandexDiskUrlAddedAt ? computeYandexLinkExpiry(yandexDiskUrlAddedAt) : null
 
+          // Контекст подтверждения исключения — тот же приём, что
+          // upsertScheduleEvent (src/lib/actions/schedule.ts): заполняется
+          // только на реальном переходе true→false, обнуляется на возврате.
+          const validUserId = await resolveValidUserId(tx, authResult.userId)
+          const wasYandexNotRequired = se.yandexLinkRequired === false
+          const wasNasNotRequired = se.nasLinkRequired === false
+
+          const yandexNotRequiredConfirmedAt = nextYandexLinkRequired
+            ? null
+            : wasYandexNotRequired ? (se.yandexNotRequiredConfirmedAt ?? new Date()) : new Date()
+          const yandexNotRequiredConfirmedById = nextYandexLinkRequired
+            ? null
+            : wasYandexNotRequired ? se.yandexNotRequiredConfirmedById : validUserId
+          const yandexNotRequiredReason = nextYandexLinkRequired
+            ? null
+            : wasYandexNotRequired
+              ? (input.yandexNotRequiredReason !== undefined ? (input.yandexNotRequiredReason?.trim() || null) : se.yandexNotRequiredReason)
+              : (input.yandexNotRequiredReason?.trim() || null)
+
+          const nasNotRequiredConfirmedAt = nextNasLinkRequired
+            ? null
+            : wasNasNotRequired ? (se.nasNotRequiredConfirmedAt ?? new Date()) : new Date()
+          const nasNotRequiredConfirmedById = nextNasLinkRequired
+            ? null
+            : wasNasNotRequired ? se.nasNotRequiredConfirmedById : validUserId
+          const nasNotRequiredReason = nextNasLinkRequired
+            ? null
+            : wasNasNotRequired
+              ? (input.nasNotRequiredReason !== undefined ? (input.nasNotRequiredReason?.trim() || null) : se.nasNotRequiredReason)
+              : (input.nasNotRequiredReason?.trim() || null)
+
+          if (se.yandexLinkRequired !== nextYandexLinkRequired) {
+            yandexLinkRequiredChange = { before: se.yandexLinkRequired, after: nextYandexLinkRequired, reason: yandexNotRequiredReason }
+          }
+          if (se.nasLinkRequired !== nextNasLinkRequired) {
+            nasLinkRequiredChange = { before: se.nasLinkRequired, after: nextNasLinkRequired, reason: nasNotRequiredReason }
+          }
+
           await tx.scheduleEvent.update({
             where: { id: se.id },
             data: {
@@ -647,6 +715,12 @@ export async function updateOrder(
               materialsStatus,
               yandexLinkRequired: nextYandexLinkRequired,
               nasLinkRequired: nextNasLinkRequired,
+              yandexNotRequiredConfirmedAt,
+              yandexNotRequiredConfirmedById,
+              yandexNotRequiredReason,
+              nasNotRequiredConfirmedAt,
+              nasNotRequiredConfirmedById,
+              nasNotRequiredReason,
               ...(input.materialsComment !== undefined && { materialsComment: input.materialsComment?.trim() || null }),
               ...(input.editingRequired !== undefined && { editingRequired: input.editingRequired }),
               ...(input.makeupDurationMinutes !== undefined && { makeupDurationMinutes: input.makeupDurationMinutes }),
@@ -707,6 +781,18 @@ export async function updateOrder(
     }
     if (shouldEnsureMontageProject) {
       await ensureMontageProjectForOrder(id)
+    }
+    if (yandexLinkRequiredChange && order.scheduleEvent) {
+      await writeAuditLog({
+        userId: authResult.userId, action: 'SCHEDULE_EVENT_YANDEX_LINK_REQUIRED_CHANGED',
+        entityType: 'ScheduleEvent', entityId: order.scheduleEvent.id, metadata: yandexLinkRequiredChange,
+      })
+    }
+    if (nasLinkRequiredChange && order.scheduleEvent) {
+      await writeAuditLog({
+        userId: authResult.userId, action: 'SCHEDULE_EVENT_NAS_LINK_REQUIRED_CHANGED',
+        entityType: 'ScheduleEvent', entityId: order.scheduleEvent.id, metadata: nasLinkRequiredChange,
+      })
     }
 
     revalidateOrderPaths(order.clientId)

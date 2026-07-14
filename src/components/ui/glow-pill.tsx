@@ -60,6 +60,9 @@ interface ButtonProps extends Props {
   onClick?: (e: MouseEvent) => void
   disabled?: boolean
   ariaLabel: string
+  // Для капсул-переключателей (см. ConfirmableStatusToggle) — отражает
+  // текущее состояние для скринридеров, не влияет на визуал.
+  ariaPressed?: boolean
 }
 
 const BASE = 'inline-flex items-center rounded-lg border font-medium whitespace-nowrap transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-current'
@@ -98,6 +101,7 @@ export default function GlowPill(props: StaticProps | LinkProps | ButtonProps) {
         onClick={props.onClick}
         title={title}
         aria-label={props.ariaLabel}
+        aria-pressed={props.ariaPressed}
         className={`${classes} ${props.disabled ? 'cursor-not-allowed' : 'cursor-pointer hover:brightness-125'}`}
       >
         {content}

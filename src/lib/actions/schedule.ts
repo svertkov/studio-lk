@@ -17,7 +17,7 @@ import { normalizePhone, normalizeEmail, normalizeTelegram } from '@/lib/import/
 import { ensureOrderForNewBooking, updateOrderStatus } from '@/lib/actions/orders'
 import { ensureMontageProjectForOrder } from '@/lib/actions/montage'
 import { ORDERS_AUTO_IMPORT_LAUNCH_DATE } from '@/lib/order-model'
-import { writeAuditLog as writeAuditLogEntry } from '@/lib/audit'
+import { writeAuditLog as writeAuditLogEntry, resolveValidUserId } from '@/lib/audit'
 
 // ============================================================
 // АВТОРИЗАЦИЯ
@@ -49,12 +49,16 @@ type ScheduleEventWithClient = ScheduleEvent & {
   client: { name: string } | null
   subscriptionUsage: SubscriptionUsageWithSubscription | null
   order: { status: string } | null
+  yandexNotRequiredConfirmedBy: { name: string | null; email: string } | null
+  nasNotRequiredConfirmedBy: { name: string | null; email: string } | null
 }
 
 const SCHEDULE_EVENT_INCLUDE = {
   client: { select: { name: true } },
   subscriptionUsage: { include: { subscription: { include: { usages: true } } } },
   order: { select: { status: true } },
+  yandexNotRequiredConfirmedBy: { select: { name: true, email: true } },
+  nasNotRequiredConfirmedBy: { select: { name: true, email: true } },
 } as const
 
 function toDTO(row: ScheduleEventWithClient): ScheduleEventDTO {
@@ -86,6 +90,12 @@ function toDTO(row: ScheduleEventWithClient): ScheduleEventDTO {
     materialsStatus: row.materialsStatus,
     yandexLinkRequired: row.yandexLinkRequired,
     nasLinkRequired: row.nasLinkRequired,
+    yandexNotRequiredConfirmedAt: row.yandexNotRequiredConfirmedAt ? row.yandexNotRequiredConfirmedAt.toISOString() : null,
+    yandexNotRequiredConfirmedByName: row.yandexNotRequiredConfirmedBy?.name ?? row.yandexNotRequiredConfirmedBy?.email ?? null,
+    yandexNotRequiredReason: row.yandexNotRequiredReason,
+    nasNotRequiredConfirmedAt: row.nasNotRequiredConfirmedAt ? row.nasNotRequiredConfirmedAt.toISOString() : null,
+    nasNotRequiredConfirmedByName: row.nasNotRequiredConfirmedBy?.name ?? row.nasNotRequiredConfirmedBy?.email ?? null,
+    nasNotRequiredReason: row.nasNotRequiredReason,
     editingRequired: row.editingRequired,
     clientConfirmationStatus: row.clientConfirmationStatus,
     eventType: row.eventType,
@@ -164,6 +174,11 @@ export interface UpsertScheduleEventInput {
   // См. ScheduleEvent.yandexLinkRequired/nasLinkRequired.
   yandexLinkRequired?: boolean
   nasLinkRequired?: boolean
+  // Причина/комментарий из ConfirmableStatusToggle — учитывается только когда
+  // соответствующий *LinkRequired реально переходит true→false в этом же
+  // вызове (см. upsertScheduleEvent).
+  yandexNotRequiredReason?: string | null
+  nasNotRequiredReason?: string | null
   editingRequired?: boolean | null
   clientConfirmationStatus?: ClientConfirmationStatus
   eventType?: EventType
@@ -212,6 +227,39 @@ export async function upsertScheduleEvent(
       nasLinkRequired: nextNasLinkRequired,
     })
     const yandexDiskUrlExpiresAt = yandexDiskUrlAddedAt ? computeYandexLinkExpiry(yandexDiskUrlAddedAt) : null
+
+    // Контекст подтверждения исключения (см. ConfirmableStatusToggle,
+    // prisma/schema.prisma) — заполняется только на реальном переходе
+    // true→false, обнуляется на возврате false→true. Не трогаем метаданные,
+    // если флаг просто пересохраняется в уже установленном состоянии false
+    // (например, обновили другое поле формы, не трогая эту капсулу).
+    const validUserId = await resolveValidUserId(prisma, authResult.userId)
+    const wasYandexNotRequired = existing?.yandexLinkRequired === false
+    const wasNasNotRequired = existing?.nasLinkRequired === false
+
+    const yandexNotRequiredConfirmedAt = nextYandexLinkRequired
+      ? null
+      : wasYandexNotRequired ? (existing!.yandexNotRequiredConfirmedAt ?? new Date()) : new Date()
+    const yandexNotRequiredConfirmedById = nextYandexLinkRequired
+      ? null
+      : wasYandexNotRequired ? (existing!.yandexNotRequiredConfirmedById ?? null) : validUserId
+    const yandexNotRequiredReason = nextYandexLinkRequired
+      ? null
+      : wasYandexNotRequired
+        ? (input.yandexNotRequiredReason !== undefined ? (input.yandexNotRequiredReason?.trim() || null) : existing!.yandexNotRequiredReason)
+        : (input.yandexNotRequiredReason?.trim() || null)
+
+    const nasNotRequiredConfirmedAt = nextNasLinkRequired
+      ? null
+      : wasNasNotRequired ? (existing!.nasNotRequiredConfirmedAt ?? new Date()) : new Date()
+    const nasNotRequiredConfirmedById = nextNasLinkRequired
+      ? null
+      : wasNasNotRequired ? (existing!.nasNotRequiredConfirmedById ?? null) : validUserId
+    const nasNotRequiredReason = nextNasLinkRequired
+      ? null
+      : wasNasNotRequired
+        ? (input.nasNotRequiredReason !== undefined ? (input.nasNotRequiredReason?.trim() || null) : existing!.nasNotRequiredReason)
+        : (input.nasNotRequiredReason?.trim() || null)
 
     const effectiveEventType = input.eventType ?? classifyEventType(input.title ?? '')
 
@@ -264,6 +312,12 @@ export async function upsertScheduleEvent(
         materialsStatus,
         yandexLinkRequired: nextYandexLinkRequired,
         nasLinkRequired: nextNasLinkRequired,
+        yandexNotRequiredConfirmedAt,
+        yandexNotRequiredConfirmedById,
+        yandexNotRequiredReason,
+        nasNotRequiredConfirmedAt,
+        nasNotRequiredConfirmedById,
+        nasNotRequiredReason,
         editingRequired: input.editingRequired ?? null,
         clientConfirmationStatus: input.clientConfirmationStatus ?? 'NOT_REQUIRED',
         eventType: effectiveEventType,
@@ -294,6 +348,12 @@ export async function upsertScheduleEvent(
         materialsStatus,
         yandexLinkRequired: nextYandexLinkRequired,
         nasLinkRequired: nextNasLinkRequired,
+        yandexNotRequiredConfirmedAt,
+        yandexNotRequiredConfirmedById,
+        yandexNotRequiredReason,
+        nasNotRequiredConfirmedAt,
+        nasNotRequiredConfirmedById,
+        nasNotRequiredReason,
         ...(input.editingRequired !== undefined && { editingRequired: input.editingRequired }),
         ...(input.clientConfirmationStatus !== undefined && { clientConfirmationStatus: input.clientConfirmationStatus }),
         ...(input.eventType !== undefined && { eventType: input.eventType }),
@@ -325,6 +385,21 @@ export async function upsertScheduleEvent(
     // продвинут дальше "Записан в студию".
     if (row.orderId && input.editingRequired === true && existing?.editingRequired !== true) {
       await ensureMontageProjectForOrder(row.orderId)
+    }
+
+    // Значимое бизнес-исключение (ConfirmableStatusToggle) — фиксируем в
+    // audit log, только когда значение реально изменилось (не на каждый save).
+    if (existing && existing.yandexLinkRequired !== nextYandexLinkRequired) {
+      await writeAuditLog({
+        userId: authResult.userId, action: 'SCHEDULE_EVENT_YANDEX_LINK_REQUIRED_CHANGED', entityId: row.id,
+        metadata: { before: existing.yandexLinkRequired, after: nextYandexLinkRequired, reason: yandexNotRequiredReason },
+      })
+    }
+    if (existing && existing.nasLinkRequired !== nextNasLinkRequired) {
+      await writeAuditLog({
+        userId: authResult.userId, action: 'SCHEDULE_EVENT_NAS_LINK_REQUIRED_CHANGED', entityId: row.id,
+        metadata: { before: existing.nasLinkRequired, after: nextNasLinkRequired, reason: nasNotRequiredReason },
+      })
     }
 
     revalidatePath('/admin/schedule')

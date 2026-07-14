@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { format, parseISO } from 'date-fns'
 import { ru } from 'date-fns/locale'
-import { Copy, Check, ExternalLink, AlertTriangle, UserPlus } from 'lucide-react'
+import { Copy, Check, ExternalLink, AlertTriangle, UserPlus, HardDrive } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import GlowPill from '@/components/ui/glow-pill'
 import { upsertScheduleEvent, findSimilarClientsForEvent, confirmScheduleClient, type SimilarClientMatch } from '@/lib/actions/schedule'
@@ -22,7 +22,7 @@ import { PAYMENT_METHOD_LABELS, ONE_TIME_PAYMENT_METHODS, type PaymentMethod } f
 import { ROOM_DICTIONARY, FORMAT_DICTIONARY } from '@/lib/import/normalize'
 import { getOrderPromotion, getVisibleOrderComment, PROMOTION_PILL_LABEL, type OrderPromotionType } from '@/lib/promotion-model'
 import MaterialsStatusBadge from './MaterialsStatusBadge'
-import RequiredLinkToggle from '@/components/materials/RequiredLinkToggle'
+import ConfirmableStatusToggle from '@/components/ui/confirmable-status-toggle'
 import SubscriptionPaymentBlock, { type SubscriptionPaymentHandle } from './SubscriptionPaymentBlock'
 import AddClientModal from '../clients/AddClientModal'
 import WorkDocumentsSection from '@/components/documents/WorkDocumentsSection'
@@ -88,6 +88,8 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
   const [materialsComment, setMaterialsComment] = useState(annotation?.materialsComment ?? '')
   const [yandexLinkRequired, setYandexLinkRequired] = useState(annotation?.yandexLinkRequired ?? true)
   const [nasLinkRequired, setNasLinkRequired] = useState(annotation?.nasLinkRequired ?? true)
+  const [yandexNotRequiredReason, setYandexNotRequiredReason] = useState<string | null>(annotation?.yandexNotRequiredReason ?? null)
+  const [nasNotRequiredReason, setNasNotRequiredReason] = useState<string | null>(annotation?.nasNotRequiredReason ?? null)
   const [editingRequired, setEditingRequired] = useState<boolean | null>(annotation?.editingRequired ?? null)
   const [clientNameRaw, setClientNameRaw] = useState(annotation?.clientNameRaw ?? '')
   const [contactRaw, setContactRaw] = useState(annotation?.contactRaw ?? '')
@@ -258,6 +260,8 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
         materialsComment,
         yandexLinkRequired,
         nasLinkRequired,
+        yandexNotRequiredReason,
+        nasNotRequiredReason,
         editingRequired,
         clientNameRaw,
         contactRaw,
@@ -656,8 +660,13 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
           <div>
             <label className={LABEL}>Ссылка на Яндекс.Диск</label>
             <div className="flex items-center gap-2">
-              <input className={INPUT} placeholder="https://disk.yandex.ru/..." value={yandexDiskUrl}
-                onChange={e => setYandexDiskUrl(e.target.value)} />
+              <input
+                className={`${INPUT} ${!yandexLinkRequired ? 'border-red-800/60 bg-red-950/20 text-red-200/80' : ''}`}
+                placeholder={yandexLinkRequired ? 'https://disk.yandex.ru/...' : 'Материалы на Яндекс.Диске не предусмотрены'}
+                value={yandexDiskUrl}
+                readOnly={!yandexLinkRequired}
+                onChange={e => setYandexDiskUrl(e.target.value)}
+              />
               {annotation?.yandexDiskUrl && (
                 <>
                   <button type="button" onClick={() => copyLink(annotation.yandexDiskUrl!, 'yandex')}
@@ -671,38 +680,63 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
                 </>
               )}
             </div>
-            <div className="flex items-center justify-between mt-1.5">
-              <p className="text-zinc-500 text-xs">
-                {yandexAddedAt && `Добавлена: ${format(yandexAddedAt, 'd MMM yyyy', { locale: ru })}`}
-                {yandexExpiresAt && ` · Истекает: ${format(yandexExpiresAt, 'd MMM yyyy', { locale: ru })}`}
+            {!yandexLinkRequired && yandexUrlTrimmedLive && (
+              <p className="text-amber-400/80 text-xs mt-1.5">
+                В поле уже указана ссылка. Она будет сохранена, но перестанет считаться обязательной.
               </p>
-              {/* Живая подсказка по формату — считается от того, что СЕЙЧАС
-                  введено в поле, а не от того, что уже сохранено (раньше
-                  здесь был YANDEX_LINK_STATUS_LABELS[yandexLinkStatus],
-                  который отражал только сохранённое значение и не менялся,
-                  пока набираешь новую ссылку). Только подсказка, никогда не
-                  блокирует "Сохранить" — если ссылка не похожа на
-                  Яндекс.Диск, это просто предупреждение, а не запрет. */}
-              <span className={`text-xs ${
-                yandexUrlTrimmedLive
-                  ? (looksLikeYandexLink ? 'text-[#00c26b]' : 'text-amber-400')
-                  : (yandexLinkRequired ? 'text-zinc-500' : 'text-zinc-500 bg-zinc-800 rounded-full px-2 py-0.5')
-              }`}>
-                {yandexUrlTrimmedLive
-                  ? (looksLikeYandexLink ? 'Ссылка указана' : 'Не похоже на ссылку Яндекс.Диска — сохранить всё равно можно')
-                  : (yandexLinkRequired ? 'Ссылка не указана' : 'Не требуется')}
-              </span>
-            </div>
+            )}
+            {yandexLinkRequired && (
+              <div className="flex items-center justify-between mt-1.5">
+                <p className="text-zinc-500 text-xs">
+                  {yandexAddedAt && `Добавлена: ${format(yandexAddedAt, 'd MMM yyyy', { locale: ru })}`}
+                  {yandexExpiresAt && ` · Истекает: ${format(yandexExpiresAt, 'd MMM yyyy', { locale: ru })}`}
+                </p>
+                {/* Живая подсказка по формату — считается от того, что СЕЙЧАС
+                    введено в поле, а не от того, что уже сохранено. Только
+                    подсказка, никогда не блокирует "Сохранить". */}
+                <span className={`text-xs ${
+                  !yandexUrlTrimmedLive ? 'text-zinc-500' : looksLikeYandexLink ? 'text-[#00c26b]' : 'text-amber-400'
+                }`}>
+                  {!yandexUrlTrimmedLive
+                    ? 'Ссылка не указана'
+                    : looksLikeYandexLink
+                      ? 'Ссылка указана'
+                      : 'Не похоже на ссылку Яндекс.Диска — сохранить всё равно можно'}
+                </span>
+              </div>
+            )}
+            {!yandexLinkRequired && (
+              <p className="text-zinc-500 text-xs mt-1.5">
+                {annotation?.yandexNotRequiredConfirmedByName && annotation?.yandexNotRequiredConfirmedAt
+                  ? `Подтверждено: ${annotation.yandexNotRequiredConfirmedByName}, ${format(parseISO(annotation.yandexNotRequiredConfirmedAt), 'd MMM yyyy, HH:mm', { locale: ru })}`
+                  : 'Подтверждено администратором'}
+              </p>
+            )}
             <div className="mt-1.5">
-              <RequiredLinkToggle checked={!yandexLinkRequired} onChange={next => setYandexLinkRequired(!next)} />
+              <ConfirmableStatusToggle
+                active={!yandexLinkRequired}
+                onConfirm={reason => { setYandexLinkRequired(false); setYandexNotRequiredReason(reason) }}
+                onDeactivate={() => { setYandexLinkRequired(true); setYandexNotRequiredReason(null) }}
+                normalLabel="Яндекс.Диск обязателен"
+                exceptionLabel="Ссылка не требуется"
+                dialogTitle="Сохранить заказ без ссылки на Яндекс.Диск?"
+                dialogBody="После подтверждения система перестанет требовать ссылку на Яндекс.Диск для этого заказа. Клиентская ссылка на материалы может отсутствовать. Убедитесь, что это соответствует договорённости и материалы переданы или будут переданы другим способом."
+                escalatedNotice={!nasLinkRequired ? 'После этого у заказа не останется ни одной обязательной ссылки на материалы.' : undefined}
+                size="sm"
+              />
             </div>
           </div>
 
           <div>
             <label className={LABEL}>Ссылка на бэкап / NAS</label>
             <div className="flex items-center gap-2">
-              <input className={INPUT} placeholder="\\\\nas\\... или https://..." value={nasBackupUrl}
-                onChange={e => setNasBackupUrl(e.target.value)} />
+              <input
+                className={`${INPUT} ${!nasLinkRequired ? 'border-red-800/60 bg-red-950/20 text-red-200/80' : ''}`}
+                placeholder={nasLinkRequired ? '\\\\nas\\... или https://...' : 'Бэкап материалов на NAS отсутствует'}
+                value={nasBackupUrl}
+                readOnly={!nasLinkRequired}
+                onChange={e => setNasBackupUrl(e.target.value)}
+              />
               {annotation?.nasBackupUrl && (
                 <button type="button" onClick={() => copyLink(annotation.nasBackupUrl!, 'nas')}
                   className="flex-shrink-0 w-9 h-9 flex items-center justify-center rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300" title="Скопировать ссылку">
@@ -710,13 +744,35 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
                 </button>
               )}
             </div>
-            <div className="flex items-center justify-end mt-1.5">
-              <span className={`text-xs ${hasNasNow ? 'text-zinc-400' : nasLinkRequired ? 'text-zinc-400' : 'text-zinc-500 bg-zinc-800 rounded-full px-2 py-0.5'}`}>
-                {hasNasNow ? 'Бэкап указан' : nasLinkRequired ? 'Нет NAS-бэкапа' : 'Не требуется'}
-              </span>
-            </div>
+            {!nasLinkRequired && nasBackupUrl.trim() && (
+              <p className="text-amber-400/80 text-xs mt-1.5">
+                В поле уже указана ссылка. Она будет сохранена, но перестанет считаться обязательной.
+              </p>
+            )}
+            {nasLinkRequired && (
+              <div className="flex items-center justify-end mt-1.5">
+                <span className="text-xs text-zinc-400">{hasNasNow ? 'Бэкап указан' : 'Нет NAS-бэкапа'}</span>
+              </div>
+            )}
+            {!nasLinkRequired && (
+              <p className="text-zinc-500 text-xs mt-1.5">
+                {annotation?.nasNotRequiredConfirmedByName && annotation?.nasNotRequiredConfirmedAt
+                  ? `Подтверждено: ${annotation.nasNotRequiredConfirmedByName}, ${format(parseISO(annotation.nasNotRequiredConfirmedAt), 'd MMM yyyy, HH:mm', { locale: ru })}`
+                  : 'Подтверждено администратором'}
+              </p>
+            )}
             <div className="mt-1.5">
-              <RequiredLinkToggle checked={!nasLinkRequired} onChange={next => setNasLinkRequired(!next)} />
+              <ConfirmableStatusToggle
+                active={!nasLinkRequired}
+                onConfirm={reason => { setNasLinkRequired(false); setNasNotRequiredReason(reason) }}
+                onDeactivate={() => { setNasLinkRequired(true); setNasNotRequiredReason(null) }}
+                normalLabel="Бэкап на NAS требуется"
+                exceptionLabel="NAS не требуется"
+                dialogTitle="Сохранить заказ без бэкапа на NAS?"
+                dialogBody="После подтверждения система перестанет требовать NAS-ссылку для этого заказа. В платформе не будет подтверждения наличия долгосрочного бэкапа материалов. Убедитесь, что хранение действительно не требуется или организовано другим способом."
+                escalatedNotice={!yandexLinkRequired ? 'После этого у заказа не останется ни одной обязательной ссылки на материалы.' : undefined}
+                size="sm"
+              />
             </div>
           </div>
 

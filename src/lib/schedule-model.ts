@@ -369,6 +369,15 @@ export interface ScheduleEventDTO {
   // См. MaterialsStatusInput.yandexLinkRequired/nasLinkRequired.
   yandexLinkRequired: boolean
   nasLinkRequired: boolean
+  // Контекст подтверждения исключения — уже резолвлен для отображения
+  // (имя/email, не сырой userId), см. ConfirmableStatusToggle. null, пока
+  // поле обязательно (или исключение сброшено обратно).
+  yandexNotRequiredConfirmedAt: string | null
+  yandexNotRequiredConfirmedByName: string | null
+  yandexNotRequiredReason: string | null
+  nasNotRequiredConfirmedAt: string | null
+  nasNotRequiredConfirmedByName: string | null
+  nasNotRequiredReason: string | null
   editingRequired: boolean | null
   clientConfirmationStatus: ClientConfirmationStatus
   subscriptionUsage: ScheduleEventSubscriptionInfo | null

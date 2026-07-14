@@ -4,7 +4,7 @@ import { revalidatePath } from 'next/cache'
 import { prisma } from '@/lib/prisma'
 import { auth } from '@/auth'
 import { Prisma, type DocumentType, type DocumentStatus, type InvoicePurpose, type ClientContractState, type DocumentFlowType, type MontageDocumentMode, type ClientType } from '@prisma/client'
-import { writeAuditLog } from '@/lib/audit'
+import { writeAuditLog, resolveValidUserId } from '@/lib/audit'
 import { getDocumentDisplayNumber, getWorkDocumentAttentionReasons, getClientContractAttentionReasons, getDocumentPaymentState, type DocumentAttentionReason } from '@/lib/document-model'
 
 // ============================================================
@@ -21,19 +21,6 @@ async function requireStaffSession(): Promise<{ ok: true; userId: string | null 
   } catch {
     return { ok: false, error: 'Требуется авторизация' }
   }
-}
-
-// Document.createdById/updatedById — настоящий foreign key (в отличие от
-// AuditLog.userId, тот же FK, но запись аудита обёрнута в try/catch и молча
-// проглатывает несовпадение). Сессия может пережить удаление/замену
-// пользователя (протухший JWT) — тогда session.user.id не совпадёт ни с
-// одной строкой User, и создание документа упадёт с P2003 без этой проверки.
-// Не блокируем создание документа из-за качества данных сессии — только не
-// проставляем автора, если он не подтверждён.
-async function resolveValidUserId(client: Prisma.TransactionClient | typeof prisma, userId: string | null): Promise<string | null> {
-  if (!userId) return null
-  const exists = await client.user.findUnique({ where: { id: userId }, select: { id: true } })
-  return exists ? userId : null
 }
 
 // Реестр документов затрагивает клиента, заказ/монтаж, CRM, финансы и

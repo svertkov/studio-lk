@@ -1,6 +1,21 @@
 import { prisma } from '@/lib/prisma'
 import type { Prisma } from '@prisma/client'
 
+// Сессия может пережить удаление/замену пользователя (протухший JWT) — тогда
+// session.user.id не совпадёт ни с одной строкой User, и запись FK-поля
+// (createdById/confirmedById и т.п.) упадёт с P2003 без этой проверки. Не
+// блокируем саму операцию из-за качества данных сессии — только не
+// проставляем автора, если он не подтверждён. Раньше была локальная копия
+// только в documents.ts — теперь общий helper (AGENTS.md, правило 4).
+export async function resolveValidUserId(
+  client: Prisma.TransactionClient | typeof prisma,
+  userId: string | null
+): Promise<string | null> {
+  if (!userId) return null
+  const exists = await client.user.findUnique({ where: { id: userId }, select: { id: true } })
+  return exists ? userId : null
+}
+
 // Единая запись в AuditLog — раньше copy-paste в clients.ts/schedule.ts/
 // telegram.ts/subscriptions.ts/client-import.ts (одинаковый try/catch, разный
 // только entityType). Документы — первое место, где снова понадобился этот
