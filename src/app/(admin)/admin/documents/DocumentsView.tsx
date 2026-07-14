@@ -1,31 +1,34 @@
 'use client'
 
 import { useState } from 'react'
-import { LayoutDashboard, ScrollText, Receipt, ClipboardCheck, UserX, AlertTriangle } from 'lucide-react'
-import type { DocumentsDashboardStats, ContractRowDTO, WorkDocumentRowDTO, ClientWithoutContractRowDTO, DocumentAttentionRowDTO } from '@/lib/actions/documents'
+import { LayoutDashboard, ScrollText, Layers, Receipt, ClipboardCheck, UserX, AlertTriangle } from 'lucide-react'
+import type { DocumentsDashboardStats, ContractRowDTO, AppendixRowDTO, WorkDocumentRowDTO, ClientWithoutContractRowDTO, DocumentAttentionRowDTO } from '@/lib/actions/documents'
 import DocumentsOverview from './DocumentsOverview'
 import ContractsTable from './ContractsTable'
+import AppendicesTable from './AppendicesTable'
 import WorkDocumentsTable from './WorkDocumentsTable'
 import ClientsWithoutContractTable from './ClientsWithoutContractTable'
 import DocumentAttentionList from './DocumentAttentionList'
 
-type Tab = 'overview' | 'contracts' | 'invoices' | 'acts' | 'no-contract' | 'attention'
+type Tab = 'overview' | 'contracts' | 'appendices' | 'invoices' | 'acts' | 'no-contract' | 'attention'
 
 interface Props {
   stats: DocumentsDashboardStats | null
   contracts: ContractRowDTO[]
+  appendices: AppendixRowDTO[]
   invoices: WorkDocumentRowDTO[]
   acts: WorkDocumentRowDTO[]
   clientsWithoutContract: ClientWithoutContractRowDTO[]
   attention: DocumentAttentionRowDTO[]
 }
 
-export default function DocumentsView({ stats, contracts, invoices, acts, clientsWithoutContract, attention }: Props) {
+export default function DocumentsView({ stats, contracts, appendices, invoices, acts, clientsWithoutContract, attention }: Props) {
   const [tab, setTab] = useState<Tab>('overview')
 
   const TABS: { key: Tab; label: string; icon: React.ElementType; count?: number }[] = [
     { key: 'overview', label: 'Обзор', icon: LayoutDashboard },
     { key: 'contracts', label: 'Договоры', icon: ScrollText, count: contracts.length },
+    { key: 'appendices', label: 'Приложения', icon: Layers, count: appendices.length },
     { key: 'invoices', label: 'Счета', icon: Receipt, count: invoices.length },
     { key: 'acts', label: 'Акты', icon: ClipboardCheck, count: acts.length },
     { key: 'no-contract', label: 'Клиенты без договора', icon: UserX, count: clientsWithoutContract.length },
@@ -65,6 +68,7 @@ export default function DocumentsView({ stats, contracts, invoices, acts, client
         />
       )}
       {tab === 'contracts' && <ContractsTable contracts={contracts} />}
+      {tab === 'appendices' && <AppendicesTable appendices={appendices} />}
       {tab === 'invoices' && <WorkDocumentsTable rows={invoices} kind="INVOICE" />}
       {tab === 'acts' && <WorkDocumentsTable rows={acts} kind="ACT" />}
       {tab === 'no-contract' && <ClientsWithoutContractTable clients={clientsWithoutContract} />}

@@ -152,6 +152,9 @@ function DocumentsCell({ order }: { order: OrderDTO }) {
   return (
     <div className="flex flex-col items-start gap-0.5 min-w-0">
       {missingContract && <span className="text-red-400 text-[11px] whitespace-nowrap">Без договора</span>}
+      {order.appendixDisplayNumber && (
+        <span className="text-zinc-300 text-[11px] truncate">Прил {order.appendixDisplayNumber}</span>
+      )}
       {order.invoiceDisplayNumber ? (
         <span className="text-zinc-300 text-[11px] truncate">Сч {order.invoiceDisplayNumber}</span>
       ) : needsInvoice ? (

@@ -432,8 +432,10 @@ export default function MontageProjectsTable({ projects, editors, initialFilterP
                         оплатами, а не отдельным широким столбцом (ТЗ разд.17:
                         "не создавать новый широкий столбец без анализа доступной
                         ширины"), полная карточка — в модалке проекта. */}
-                    {(p.invoiceDisplayNumber || p.actDisplayNumber) && (
+                    {(p.appendixDisplayNumber || p.invoiceDisplayNumber || p.actDisplayNumber) && (
                       <p className="text-xs text-zinc-600 mt-0.5">
+                        {p.appendixDisplayNumber && `Прил ${p.appendixDisplayNumber}`}
+                        {p.appendixDisplayNumber && (p.invoiceDisplayNumber || p.actDisplayNumber) && ' · '}
                         {p.invoiceDisplayNumber && `Сч ${p.invoiceDisplayNumber}`}
                         {p.invoiceDisplayNumber && p.actDisplayNumber && ' · '}
                         {p.actDisplayNumber && `Акт ${p.actDisplayNumber}`}

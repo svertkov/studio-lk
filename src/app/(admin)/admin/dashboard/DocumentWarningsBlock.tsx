@@ -35,6 +35,7 @@ export default function DocumentWarningsBlock() {
   if (stats.completedWorksWithoutAct > 0) lines.push(`${stats.completedWorksWithoutAct} завершённых работ без акта`)
   if (stats.clientsWithoutContract > 0) lines.push(`${stats.clientsWithoutContract} клиентов без указанного статуса договора`)
   if (stats.ordersWithoutInvoice > 0) lines.push(`${stats.ordersWithoutInvoice} заказов без номера счёта`)
+  if (stats.appendixAmountMismatches > 0) lines.push(`${stats.appendixAmountMismatches} расхождений суммы приложения со стоимостью`)
 
   if (lines.length === 0) return null
 

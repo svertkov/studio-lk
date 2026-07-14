@@ -1,11 +1,11 @@
 'use client'
 
-import { AlertTriangle, Receipt, ScrollText, ClipboardCheck, UserX, FileWarning } from 'lucide-react'
+import { AlertTriangle, Receipt, ScrollText, Layers, ClipboardCheck, UserX, FileWarning } from 'lucide-react'
 import MetricCard, { METRIC_GRID_CLASSNAME } from '@/components/ui/metric-card'
 import type { DocumentsDashboardStats, DocumentAttentionRowDTO } from '@/lib/actions/documents'
 import { DOCUMENT_ATTENTION_LABELS } from '@/lib/document-model'
 
-type Tab = 'overview' | 'contracts' | 'invoices' | 'acts' | 'no-contract' | 'attention'
+type Tab = 'overview' | 'contracts' | 'appendices' | 'invoices' | 'acts' | 'no-contract' | 'attention'
 
 interface Props {
   stats: DocumentsDashboardStats | null
@@ -43,6 +43,7 @@ export default function DocumentsOverview({ stats, attention, onGoToTab }: Props
 
       <div className={METRIC_GRID_CLASSNAME}>
         <MetricCard icon={ScrollText} label="Договоры" value={String(stats.contractsTotal)} subtitle={`${stats.contractsActive} действующих`} onClick={() => onGoToTab('contracts')} />
+        <MetricCard icon={Layers} label="Приложения" value={String(stats.appendicesTotal)} subtitle="всего в реестре" onClick={() => onGoToTab('appendices')} />
         <MetricCard icon={Receipt} label="Счета" value={String(stats.invoicesTotal)} subtitle="всего в реестре" onClick={() => onGoToTab('invoices')} />
         <MetricCard icon={ClipboardCheck} label="Акты" value={String(stats.actsTotal)} subtitle="всего в реестре" onClick={() => onGoToTab('acts')} />
         <MetricCard icon={FileWarning} label="Заказы без счёта" value={String(stats.ordersWithoutInvoice)} subtitle="счёт требуется, но отсутствует" onClick={() => onGoToTab('attention')} />

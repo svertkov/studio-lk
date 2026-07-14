@@ -59,6 +59,15 @@ export default function MontageFinanceBreakdown({ combined, documentsStats }: Pr
           {documentsStats.invoicesUnpaid > 0 && `, ${documentsStats.invoicesUnpaid} не оплачено`}
         </p>
       )}
+      {/* Только сверка/предупреждение — источник финансовой истины не меняется
+          (см. AGENTS.md, "Реестр документов"): сумма приложения расходится с
+          итоговой стоимостью работы, ничего не пересчитывается автоматически. */}
+      {documentsStats && documentsStats.appendixAmountMismatches > 0 && (
+        <p className="text-amber-400/80 text-xs mt-1.5 flex items-center gap-1.5">
+          <Receipt className="w-3 h-3 flex-shrink-0" />
+          {documentsStats.appendixAmountMismatches} {documentsStats.appendixAmountMismatches === 1 ? 'работа' : 'работы'}: сумма приложения не совпадает со стоимостью
+        </p>
+      )}
       <div className="flex items-center gap-4 mt-3">
         <Link href="/admin/editing" className="flex items-center gap-1 text-[#00c26b] hover:underline text-xs w-fit">
           Подробнее по монтажу

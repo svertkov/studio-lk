@@ -1,7 +1,8 @@
 'use client'
 
+import { useState } from 'react'
 import Link from 'next/link'
-import { FileText, ScrollText, Receipt, ClipboardCheck } from 'lucide-react'
+import { FileText, ScrollText, Receipt, ClipboardCheck, Layers } from 'lucide-react'
 import GlowPill from '@/components/ui/glow-pill'
 import ClientContractModal from './ClientContractModal'
 import type { DocumentDTO } from '@/lib/actions/documents'
@@ -42,10 +43,20 @@ interface Props {
 export default function ClientDocumentsTab({
   clientId, clientType, contractState, contractStateComment, contractPlannedDate, documents,
 }: Props) {
+  const [expandedAppendices, setExpandedAppendices] = useState<Set<string>>(new Set())
   const contracts = documents.filter(d => d.type === 'CONTRACT')
+  const appendices = documents.filter(d => d.type === 'APPENDIX')
   const invoices = documents.filter(d => d.type === 'INVOICE')
   const acts = documents.filter(d => d.type === 'ACT')
   const hasActiveContractDocument = contracts.some(c => c.status === 'ACTIVE')
+
+  function toggleAppendix(id: string) {
+    setExpandedAppendices(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+  }
 
   const unpaidInvoices = invoices.filter(inv => {
     const state = getDocumentPaymentState(inv.orderPaymentStatus, inv.montagePaymentStatus)
@@ -89,10 +100,14 @@ export default function ClientDocumentsTab({
       </div>
 
       {/* Быстрые показатели — ТЗ разд.6/19 */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
         <div className="bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3">
           <p className="text-zinc-500 text-[11px] uppercase tracking-wide">Договоров</p>
           <p className="text-white text-lg font-semibold">{contracts.length}</p>
+        </div>
+        <div className="bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3">
+          <p className="text-zinc-500 text-[11px] uppercase tracking-wide">Приложений</p>
+          <p className="text-white text-lg font-semibold">{appendices.length}</p>
         </div>
         <div className="bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3">
           <p className="text-zinc-500 text-[11px] uppercase tracking-wide">Счетов</p>
@@ -106,6 +121,58 @@ export default function ClientDocumentsTab({
           <p className="text-zinc-500 text-[11px] uppercase tracking-wide">Задолженность</p>
           <p className={`text-lg font-semibold ${totalDebt > 0 ? 'text-red-400' : 'text-white'}`}>{formatMoney(totalDebt || null)}</p>
         </div>
+      </div>
+
+      {/* Приложения к договору */}
+      <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
+        <div className="px-5 py-3 border-b border-zinc-800 flex items-center gap-2">
+          <Layers className="w-4 h-4 text-zinc-500" />
+          <h3 className="text-white font-semibold text-sm">Приложения</h3>
+        </div>
+        {appendices.length === 0 ? (
+          <p className="text-zinc-500 text-sm text-center py-6">Приложений пока нет</p>
+        ) : (
+          <div className="divide-y divide-zinc-800/60">
+            {appendices.map(app => {
+              const contract = contracts.find(c => c.id === app.contractId)
+              const href = workHref(app)
+              const expanded = expandedAppendices.has(app.id)
+              const isLong = !!app.serviceDescription && app.serviceDescription.length > 140
+              const row = (
+                <div className="flex items-start justify-between gap-3 px-5 py-3">
+                  <div className="min-w-0">
+                    <p className="text-zinc-200 text-sm">
+                      {app.displayNumber}
+                      {contract && <span className="text-zinc-500"> · Договор {contract.displayNumber}</span>}
+                    </p>
+                    <p className="text-zinc-500 text-xs mt-0.5 truncate">{formatDate(app.issueDate)} · {app.workTitle ?? '—'}</p>
+                    {app.serviceDescription && (
+                      <div className="mt-1">
+                        <p className={`text-zinc-400 text-xs leading-snug whitespace-pre-wrap break-words ${!expanded && isLong ? 'line-clamp-2' : ''}`}>
+                          {app.serviceDescription}
+                        </p>
+                        {isLong && (
+                          <button
+                            type="button"
+                            onClick={e => { e.preventDefault(); toggleAppendix(app.id) }}
+                            className="text-[#00c26b] text-xs hover:underline mt-0.5"
+                          >
+                            {expanded ? 'Свернуть' : 'Показать полностью'}
+                          </button>
+                        )}
+                      </div>
+                    )}
+                    {app.comment && <p className="text-zinc-600 text-xs mt-1">{app.comment}</p>}
+                  </div>
+                  <p className="text-white text-sm flex-shrink-0">{formatMoney(app.amount)}</p>
+                </div>
+              )
+              return href ? (
+                <Link key={app.id} href={href} className="block hover:bg-zinc-800/40 transition-colors">{row}</Link>
+              ) : <div key={app.id}>{row}</div>
+            })}
+          </div>
+        )}
       </div>
 
       {/* Счета */}
@@ -172,7 +239,7 @@ export default function ClientDocumentsTab({
         )}
       </div>
 
-      {contracts.length === 0 && invoices.length === 0 && acts.length === 0 && (
+      {contracts.length === 0 && appendices.length === 0 && invoices.length === 0 && acts.length === 0 && (
         <div className="border border-dashed border-zinc-700 rounded-xl p-10 text-center">
           <FileText className="w-10 h-10 text-zinc-600 mx-auto mb-3" />
           <p className="text-zinc-400 text-sm">Документов пока нет</p>

@@ -95,6 +95,16 @@ async function ensureDocumentPackageNumber(
   return next
 }
 
+// Номер приложения — сквозной В РАМКАХ ОДНОГО ДОГОВОРА (не через
+// DocumentCounter, тот обслуживает только платформенные сквозные номера:
+// договор, комплект работы). Простой count+1 достаточен — конкуренция за
+// один и тот же договор практически невозможна (один администратор),
+// @@unique([contractId, number]) ловит гипотетическую гонку через P2002.
+async function getNextAppendixNumber(tx: Prisma.TransactionClient, contractId: string): Promise<number> {
+  const count = await tx.document.count({ where: { type: 'APPENDIX', contractId } })
+  return count + 1
+}
+
 // Суффикс "1"/"2" при нескольких счетах одной работы — не хранится
 // заранее, а назначается по факту создания ВТОРОГО счёта, задним числом
 // подтягивая суффикс "1" первому (см. AGENTS.md, "Реестр документов": один
@@ -134,6 +144,7 @@ export interface DocumentDTO {
   amount: number | null
   dueDate: string | null
   comment: string | null
+  serviceDescription: string | null
   clientId: string | null
   orderId: string | null
   montageProjectId: string | null
@@ -177,6 +188,7 @@ function toDocumentDTO(row: DocumentRow): DocumentDTO {
     amount: row.amount,
     dueDate: row.dueDate ? row.dueDate.toISOString() : null,
     comment: row.comment,
+    serviceDescription: row.serviceDescription,
     clientId: row.clientId,
     orderId: row.orderId,
     montageProjectId: row.montageProjectId,
@@ -207,6 +219,7 @@ export interface CreateDocumentInput {
   amount?: number | null
   dueDate?: string | null
   comment?: string | null
+  serviceDescription?: string | null
   isHistorical?: boolean
   historicalNumber?: number | null
 }
@@ -220,8 +233,13 @@ export async function createDocument(input: CreateDocumentInput): Promise<
   if (input.type === 'CONTRACT' && !input.clientId) {
     return { ok: false, error: 'Укажите клиента для договора' }
   }
-  if (input.type !== 'CONTRACT' && !input.orderId && !input.montageProjectId) {
-    return { ok: false, error: 'Укажите заказ или проект монтажа' }
+  if (input.type === 'APPENDIX' && !input.contractId) {
+    return { ok: false, error: 'Укажите договор для приложения' }
+  }
+  if (input.type === 'INVOICE' || input.type === 'ACT') {
+    if (!input.orderId && !input.montageProjectId) {
+      return { ok: false, error: 'Укажите заказ или проект монтажа' }
+    }
   }
 
   try {
@@ -236,6 +254,8 @@ export async function createDocument(input: CreateDocumentInput): Promise<
         } else {
           number = await getNextCounterValue(tx, 'contract_number')
         }
+      } else if (input.type === 'APPENDIX') {
+        number = await getNextAppendixNumber(tx, input.contractId as string)
       } else {
         const work = input.orderId ? { orderId: input.orderId } : { montageProjectId: input.montageProjectId as string }
         await ensureDocumentPackageNumber(tx, work)
@@ -244,7 +264,7 @@ export async function createDocument(input: CreateDocumentInput): Promise<
         }
       }
 
-      const defaultStatus: DocumentStatus = input.type === 'CONTRACT' ? 'ACTIVE' : input.type === 'INVOICE' ? 'DRAFT' : 'NOT_PREPARED'
+      const defaultStatus: DocumentStatus = input.type === 'CONTRACT' || input.type === 'APPENDIX' ? 'ACTIVE' : input.type === 'INVOICE' ? 'DRAFT' : 'NOT_PREPARED'
       const validUserId = await resolveValidUserId(tx, authResult.userId)
 
       const doc = await tx.document.create({
@@ -259,6 +279,7 @@ export async function createDocument(input: CreateDocumentInput): Promise<
           amount: input.amount ?? null,
           dueDate: input.dueDate ? new Date(input.dueDate) : null,
           comment: input.comment?.trim() || null,
+          serviceDescription: input.serviceDescription?.trim() || null,
           clientId: input.type === 'CONTRACT' ? input.clientId : null,
           orderId: input.orderId ?? null,
           montageProjectId: input.montageProjectId ?? null,
@@ -303,6 +324,7 @@ export interface UpdateDocumentInput {
   amount?: number | null
   dueDate?: string | null
   comment?: string | null
+  serviceDescription?: string | null
 }
 
 export async function updateDocument(input: UpdateDocumentInput): Promise<
@@ -325,6 +347,7 @@ export async function updateDocument(input: UpdateDocumentInput): Promise<
         amount: input.amount,
         dueDate: input.dueDate === undefined ? undefined : input.dueDate ? new Date(input.dueDate) : null,
         comment: input.comment === undefined ? undefined : (input.comment?.trim() || null),
+        serviceDescription: input.serviceDescription === undefined ? undefined : (input.serviceDescription?.trim() || null),
         updatedById: validUserId,
       },
       include: DOCUMENT_INCLUDE,
@@ -434,6 +457,10 @@ export async function getDocumentsForClient(clientId: string): Promise<{ ok: tru
       where: {
         OR: [
           { type: 'CONTRACT', clientId },
+          // Приложение может быть привязано только к договору (без orderId/
+          // montageProjectId) — без этой ветки оно не попало бы ни в одну из
+          // остальных и было бы невидимо в карточке клиента.
+          { type: 'APPENDIX', contract: { clientId } },
           { order: { clientId } },
           { montageProject: { OR: [{ clientId }, { order: { clientId } }] } },
         ],
@@ -458,6 +485,7 @@ export interface ContractRowDTO {
   clientName: string
   clientType: string
   ordersCount: number
+  appendicesCount: number
   invoicesCount: number
   actsCount: number
 }
@@ -472,7 +500,8 @@ export async function getContractsList(): Promise<{ ok: true; data: ContractRowD
       orderBy: { number: 'desc' },
     })
     const data: ContractRowDTO[] = await Promise.all(rows.map(async r => {
-      const [invoicesCount, actsCount] = await Promise.all([
+      const [appendicesCount, invoicesCount, actsCount] = await Promise.all([
+        prisma.document.count({ where: { contractId: r.id, type: 'APPENDIX' } }),
         prisma.document.count({ where: { contractId: r.id, type: 'INVOICE' } }),
         prisma.document.count({ where: { contractId: r.id, type: 'ACT' } }),
       ])
@@ -486,6 +515,7 @@ export async function getContractsList(): Promise<{ ok: true; data: ContractRowD
         clientName: r.client?.name ?? '—',
         clientType: r.client?.type ?? 'INDIVIDUAL',
         ordersCount: r.client?.orders.length ?? 0,
+        appendicesCount,
         invoicesCount,
         actsCount,
       }
@@ -538,12 +568,14 @@ export interface DocumentsDashboardStats {
   contractsTotal: number
   contractsActive: number
   clientsWithoutContract: number
+  appendicesTotal: number
   invoicesTotal: number
   invoicesUnpaid: number
   actsTotal: number
   ordersWithoutInvoice: number
   completedWorksWithoutAct: number
   attentionCount: number
+  appendixAmountMismatches: number
 }
 
 export async function getDocumentsDashboardStats(): Promise<{ ok: true; data: DocumentsDashboardStats } | { ok: false; data: null; error: string }> {
@@ -551,19 +583,20 @@ export async function getDocumentsDashboardStats(): Promise<{ ok: true; data: Do
   if (!authResult.ok) return { ok: false, data: null, error: authResult.error }
 
   try {
-    const [contractsTotal, contractsActive, clientsWithoutContract, invoices, acts, orders, montageProjects] = await Promise.all([
+    const [contractsTotal, contractsActive, clientsWithoutContract, appendicesTotal, invoices, acts, orders, montageProjects] = await Promise.all([
       prisma.document.count({ where: { type: 'CONTRACT' } }),
       prisma.client.count({ where: { deletedAt: null, contractState: 'ACTIVE' } }),
       prisma.client.count({ where: { deletedAt: null, contractState: { not: 'ACTIVE' } } }),
+      prisma.document.count({ where: { type: 'APPENDIX' } }),
       prisma.document.findMany({ where: { type: 'INVOICE' }, select: { orderId: true, montageProjectId: true, order: { select: { paymentStatus: true } }, montageProject: { select: { clientPaymentStatus: true } } } }),
       prisma.document.count({ where: { type: 'ACT' } }),
       prisma.order.findMany({
         where: { isArchived: false, status: { notIn: ['CANCELLED'] } },
-        select: { id: true, status: true, documentFlowType: true, documents: { select: { type: true } } },
+        select: { id: true, status: true, documentFlowType: true, preliminaryAmount: true, documents: { select: { type: true, amount: true } } },
       }),
       prisma.montageProject.findMany({
         where: { isArchived: false, status: { not: 'CANCELLED' } },
-        select: { id: true, status: true, documentMode: true, documents: { select: { type: true } } },
+        select: { id: true, status: true, documentMode: true, clientAmount: true, documents: { select: { type: true, amount: true } } },
       }),
     ])
 
@@ -575,6 +608,10 @@ export async function getDocumentsDashboardStats(): Promise<{ ok: true; data: Do
     let ordersWithoutInvoice = 0
     let completedWorksWithoutAct = 0
     let attentionCount = 0
+    // Только предупреждение для сверки (см. AGENTS.md) — источник финансовой
+    // истины остаётся Order.preliminaryAmount/MontageProject.clientAmount,
+    // ничего не пересчитывается и не перезаписывается автоматически.
+    let appendixAmountMismatches = 0
 
     for (const o of orders) {
       const hasInvoice = o.documents.some(d => d.type === 'INVOICE')
@@ -589,6 +626,10 @@ export async function getDocumentsDashboardStats(): Promise<{ ok: true; data: Do
         hasInvoice, hasAct, paymentState: 'UNKNOWN',
       })
       if (reasons.length > 0) attentionCount += 1
+      const appendix = o.documents.find(d => d.type === 'APPENDIX' && d.amount != null)
+      if (appendix && o.preliminaryAmount != null && Math.abs(appendix.amount! - o.preliminaryAmount) > 0.01) {
+        appendixAmountMismatches += 1
+      }
     }
     for (const m of montageProjects) {
       const hasInvoice = m.documents.some(d => d.type === 'INVOICE')
@@ -600,6 +641,10 @@ export async function getDocumentsDashboardStats(): Promise<{ ok: true; data: Do
       })
       if (reasons.length > 0) attentionCount += 1
       if (m.documentMode === 'SEPARATE' && m.status === 'DELIVERED' && !hasAct) completedWorksWithoutAct += 1
+      const appendix = m.documents.find(d => d.type === 'APPENDIX' && d.amount != null)
+      if (appendix && m.clientAmount != null && Math.abs(appendix.amount! - m.clientAmount) > 0.01) {
+        appendixAmountMismatches += 1
+      }
     }
 
     // Клиенты-юрлица без указанного статуса договора тоже считаются в общем attentionCount
@@ -614,9 +659,10 @@ export async function getDocumentsDashboardStats(): Promise<{ ok: true; data: Do
     return {
       ok: true,
       data: {
-        contractsTotal, contractsActive, clientsWithoutContract,
+        contractsTotal, contractsActive, clientsWithoutContract, appendicesTotal,
         invoicesTotal: invoices.length, invoicesUnpaid,
         actsTotal: acts, ordersWithoutInvoice, completedWorksWithoutAct, attentionCount,
+        appendixAmountMismatches,
       },
     }
   } catch (e) {
@@ -636,6 +682,10 @@ export interface ClientContractSummary {
   contractState: ClientContractState
   contractStateComment: string | null
   activeContractDisplayNumber: string | null
+  // Реальный id действующего договора — нужен, чтобы WorkDocumentsSection мог
+  // создать приложение с правильным contractId (display-номер для этого не
+  // годится, это уже отформатированная строка "№18").
+  activeContractId: string | null
   clientType: ClientType
 }
 
@@ -683,6 +733,7 @@ export async function getClientContractSummary(clientId: string): Promise<
         contractState: client?.contractState ?? 'UNSPECIFIED',
         contractStateComment: client?.contractStateComment ?? null,
         activeContractDisplayNumber: activeContract ? getDocumentDisplayNumber(activeContract, null) : null,
+        activeContractId: activeContract?.id ?? null,
         clientType: client?.type ?? 'INDIVIDUAL',
       },
     }
@@ -794,6 +845,71 @@ export async function getActsList(): Promise<{ ok: true; data: WorkDocumentRowDT
   } catch (e) {
     console.error('[getActsList]', e)
     return { ok: false, data: [], error: 'Не удалось загрузить акты' }
+  }
+}
+
+// ============================================================
+// ПРИЛОЖЕНИЯ К ДОГОВОРУ — единый список для раздела "Документы" (таб
+// "Приложения"). Клиент читается через contract.client (у самого APPENDIX
+// clientId не проставляется — единый источник, не копия, см. AGENTS.md).
+// Поиск/фильтры — на фронте (AppendicesTable.tsx), весь массив приходит сразу,
+// тот же паттерн, что ClientsSection.tsx при текущем объёме данных.
+// ============================================================
+
+export interface AppendixRowDTO {
+  id: string
+  displayNumber: string
+  issueDate: string
+  amount: number | null
+  serviceDescription: string | null
+  comment: string | null
+  contractId: string
+  contractDisplayNumber: string
+  clientId: string
+  clientName: string
+  orderId: string | null
+  orderTitle: string | null
+  montageProjectId: string | null
+  montageTitle: string | null
+  isArchived: boolean
+}
+
+export async function getAppendicesList(): Promise<{ ok: true; data: AppendixRowDTO[] } | { ok: false; data: AppendixRowDTO[]; error: string }> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, data: [], error: authResult.error }
+  try {
+    const rows = await prisma.document.findMany({
+      where: { type: 'APPENDIX' },
+      orderBy: { issueDate: 'desc' },
+      include: {
+        contract: { include: { client: { select: { id: true, name: true } } } },
+        order: { select: { title: true } },
+        montageProject: { select: { title: true } },
+      },
+    })
+    const data: AppendixRowDTO[] = rows
+      .filter(r => r.contract)
+      .map(r => ({
+        id: r.id,
+        displayNumber: getDocumentDisplayNumber(r, null),
+        issueDate: r.issueDate.toISOString(),
+        amount: r.amount,
+        serviceDescription: r.serviceDescription,
+        comment: r.comment,
+        contractId: r.contract!.id,
+        contractDisplayNumber: getDocumentDisplayNumber(r.contract!, null),
+        clientId: r.contract!.client?.id ?? '',
+        clientName: r.contract!.client?.name ?? '—',
+        orderId: r.orderId,
+        orderTitle: r.order?.title ?? null,
+        montageProjectId: r.montageProjectId,
+        montageTitle: r.montageProject?.title ?? null,
+        isArchived: r.status === 'ARCHIVED',
+      }))
+    return { ok: true, data }
+  } catch (e) {
+    console.error('[getAppendicesList]', e)
+    return { ok: false, data: [], error: 'Не удалось загрузить приложения' }
   }
 }
 

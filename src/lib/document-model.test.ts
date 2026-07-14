@@ -26,6 +26,15 @@ describe('getDocumentDisplayNumber', () => {
   it('returns a placeholder when the work has no package number assigned', () => {
     expect(getDocumentDisplayNumber({ type: 'INVOICE', number: null, suffix: null }, null)).toBe('Без номера')
   })
+
+  it('formats an appendix by its own per-contract number, ignoring workPackageNumber', () => {
+    expect(getDocumentDisplayNumber({ type: 'APPENDIX', number: 1, suffix: null }, 127)).toBe('№1')
+    expect(getDocumentDisplayNumber({ type: 'APPENDIX', number: 3, suffix: null }, null)).toBe('№3')
+  })
+
+  it('returns a placeholder for an appendix with no number yet', () => {
+    expect(getDocumentDisplayNumber({ type: 'APPENDIX', number: null, suffix: null }, null)).toBe('Без номера')
+  })
 })
 
 describe('suggestDocumentFlowType — только предложение для формы создания, не автоматический вывод постфактум', () => {

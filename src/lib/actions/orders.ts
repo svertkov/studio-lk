@@ -58,7 +58,10 @@ type OrderScheduleEvent = Pick<ScheduleEvent,
       subscription: { packageHours: number; openingUsedHours: number; usages: { usedHours: number }[] }
     } | null
   }
-type OrderDocument = { type: DocumentType; number: number | null; suffix: string | null; status: DocumentStatus }
+type OrderDocument = {
+  type: DocumentType; number: number | null; suffix: string | null; status: DocumentStatus
+  amount: number | null; issueDate: Date; serviceDescription: string | null
+}
 type OrderWithRelations = Order & { client: OrderClient | null; scheduleEvent: OrderScheduleEvent | null; documents: OrderDocument[] }
 
 const ORDER_INCLUDE = {
@@ -67,7 +70,7 @@ const ORDER_INCLUDE = {
   // этого заказа для компактных плашек в CRM/списке заказов; договор
   // клиента сюда не тянем (это отдельный, редко нужный на карточке заказа
   // relation-переход через client, не стоит лишнего join на каждый заказ доски).
-  documents: { select: { type: true, number: true, suffix: true, status: true } },
+  documents: { select: { type: true, number: true, suffix: true, status: true, amount: true, issueDate: true, serviceDescription: true } },
   scheduleEvent: {
     select: {
       id: true, camerasCount: true, editingRequired: true,
@@ -162,6 +165,13 @@ export interface OrderDTO {
   // редко нужной плашки). null, если документа такого типа ещё нет.
   invoiceDisplayNumber: string | null
   actDisplayNumber: string | null
+  // Приложение к договору, привязанное НАПРЯМУЮ к этой работе (orderId) — не
+  // любое приложение договора клиента, только то, что явно связано с этим
+  // заказом (см. AGENTS.md, "Реестр документов").
+  appendixDisplayNumber: string | null
+  appendixServiceDescription: string | null
+  appendixAmount: number | null
+  appendixIssueDate: string | null
   // Договорное состояние привязанного клиента (см. Client.contractState) —
   // для фильтра CRM "Без договора"; null, если клиент не привязан.
   clientContractState: ClientContractState | null
@@ -233,6 +243,13 @@ function toDTO(row: OrderWithRelations): OrderDTO {
       const act = row.documents.find(d => d.type === 'ACT' && d.status !== 'CANCELLED')
       return act ? getDocumentDisplayNumber(act, row.documentPackageNumber) : null
     })(),
+    appendixDisplayNumber: (() => {
+      const appendix = row.documents.find(d => d.type === 'APPENDIX' && d.status !== 'CANCELLED')
+      return appendix ? getDocumentDisplayNumber(appendix, null) : null
+    })(),
+    appendixServiceDescription: row.documents.find(d => d.type === 'APPENDIX')?.serviceDescription ?? null,
+    appendixAmount: row.documents.find(d => d.type === 'APPENDIX')?.amount ?? null,
+    appendixIssueDate: row.documents.find(d => d.type === 'APPENDIX')?.issueDate.toISOString() ?? null,
   }
 }
 

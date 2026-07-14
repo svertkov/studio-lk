@@ -523,6 +523,7 @@ model AuditLog {
 
 enum DocumentType {
   CONTRACT
+  APPENDIX // приложение к договору — номер сквозной в рамках одного договора (contractId+number), не через DocumentCounter
   INVOICE
   ACT
 }
@@ -588,6 +589,12 @@ model Document {
   amount    Float?          @map("amount")
   dueDate   DateTime?       @map("due_date")
   comment   String?
+  // Официальная формулировка услуги из документа (ручной ввод, копия текста
+  // из настоящего договора/приложения/счёта/акта) — APPENDIX/INVOICE/ACT.
+  // Тексты разных документов НЕ обязаны совпадать и не синхронизируются между
+  // собой: UI предлагает одноразовое копирование при создании (см.
+  // WorkDocumentsSection.tsx), после чего значения независимы.
+  serviceDescription String? @map("service_description")
 
   clientId         String? @map("client_id") // обязателен для CONTRACT
   orderId          String? @map("order_id") // INVOICE/ACT к съёмке
@@ -609,6 +616,10 @@ model Document {
   updatedBy      User?           @relation("DocumentUpdatedBy", fields: [updatedById], references: [id])
 
   @@unique([type, number])
+  // Номер приложения уникален в рамках одного договора (CONTRACT никогда не
+  // ссылается сам на себя через contractId, INVOICE/ACT не используют поле
+  // number вообще — коллизий с @@unique([type, number]) договора нет).
+  @@unique([contractId, number])
   @@index([clientId])
   @@index([orderId])
   @@index([montageProjectId])

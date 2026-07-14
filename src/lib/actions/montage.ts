@@ -60,7 +60,7 @@ type MontageOrder = Pick<Order, 'id' | 'title' | 'status' | 'clientId' | 'client
 type MontageClient = Pick<Client, 'id' | 'name' | 'companyName'>
 type MontageEditor = Pick<EditorProfile, 'id' | 'displayName'>
 
-type MontageProjectDocument = { type: DocumentType; number: number | null; suffix: string | null; status: DocumentStatus }
+type MontageProjectDocument = { type: DocumentType; number: number | null; suffix: string | null; status: DocumentStatus; amount: number | null }
 type MontageProjectWithRelations = MontageProject & {
   order: MontageOrder | null
   client: MontageClient | null
@@ -81,7 +81,7 @@ const MONTAGE_INCLUDE = {
   // Реестр документов (см. AGENTS.md) — только счёт/акт этого проекта, для
   // компактной колонки таблицы; договор клиента сюда не тянем (тот же
   // принцип, что и у Order.documents в actions/orders.ts).
-  documents: { select: { type: true, number: true, suffix: true, status: true } },
+  documents: { select: { type: true, number: true, suffix: true, status: true, amount: true } },
 } as const
 
 export interface MontageProjectDTO {
@@ -180,6 +180,7 @@ export interface MontageProjectDTO {
   // договор клиента, см. комментарий у MONTAGE_INCLUDE.documents выше).
   invoiceDisplayNumber: string | null
   actDisplayNumber: string | null
+  appendixDisplayNumber: string | null
 }
 
 function toDTO(row: MontageProjectWithRelations): MontageProjectDTO {
@@ -280,6 +281,10 @@ function toDTO(row: MontageProjectWithRelations): MontageProjectDTO {
     actDisplayNumber: (() => {
       const act = row.documents.find(d => d.type === 'ACT' && d.status !== 'CANCELLED')
       return act ? getDocumentDisplayNumber(act, row.documentPackageNumber) : null
+    })(),
+    appendixDisplayNumber: (() => {
+      const appendix = row.documents.find(d => d.type === 'APPENDIX' && d.status !== 'CANCELLED')
+      return appendix ? getDocumentDisplayNumber(appendix, null) : null
     })(),
   }
 }

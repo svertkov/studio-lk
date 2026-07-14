@@ -1,13 +1,14 @@
 import {
-  getDocumentsDashboardStats, getContractsList, getInvoicesList, getActsList,
+  getDocumentsDashboardStats, getContractsList, getAppendicesList, getInvoicesList, getActsList,
   getClientsWithoutContract, getDocumentAttentionList,
 } from '@/lib/actions/documents'
 import DocumentsView from './DocumentsView'
 
 export default async function DocumentsPage() {
-  const [statsResult, contractsResult, invoicesResult, actsResult, clientsResult, attentionResult] = await Promise.all([
+  const [statsResult, contractsResult, appendicesResult, invoicesResult, actsResult, clientsResult, attentionResult] = await Promise.all([
     getDocumentsDashboardStats(),
     getContractsList(),
+    getAppendicesList(),
     getInvoicesList(),
     getActsList(),
     getClientsWithoutContract(),
@@ -23,6 +24,7 @@ export default async function DocumentsPage() {
       <DocumentsView
         stats={statsResult.ok ? statsResult.data : null}
         contracts={contractsResult.data}
+        appendices={appendicesResult.data}
         invoices={invoicesResult.data}
         acts={actsResult.data}
         clientsWithoutContract={clientsResult.data}

@@ -14,6 +14,7 @@ export type { DocumentType, DocumentStatus, InvoicePurpose, ClientContractState,
 
 export const DOCUMENT_TYPE_LABELS: Record<DocumentType, string> = {
   CONTRACT: 'Договор',
+  APPENDIX: 'Приложение',
   INVOICE: 'Счёт',
   ACT: 'Акт',
 }
@@ -22,6 +23,7 @@ export const DOCUMENT_TYPE_LABELS: Record<DocumentType, string> = {
 // для конкретного дропдауна сужается здесь же, а не отдельным enum на тип.
 export const DOCUMENT_STATUS_OPTIONS_BY_TYPE: Record<DocumentType, DocumentStatus[]> = {
   CONTRACT: ['ACTIVE', 'ARCHIVED', 'CANCELLED'],
+  APPENDIX: ['ACTIVE', 'ARCHIVED', 'CANCELLED'],
   INVOICE: ['DRAFT', 'ISSUED', 'CANCELLED'],
   ACT: ['NOT_PREPARED', 'PREPARED', 'DELIVERED', 'SIGNED', 'NEEDS_CORRECTION', 'ARCHIVED', 'CANCELLED'],
 }
@@ -104,7 +106,10 @@ export interface DocumentNumberInput {
 }
 
 export function getDocumentDisplayNumber(document: DocumentNumberInput, workPackageNumber: number | null): string {
-  if (document.type === 'CONTRACT') {
+  // CONTRACT — сквозной номер платформы; APPENDIX — сквозной номер В РАМКАХ
+  // СВОЕГО ДОГОВОРА (contractId+number, см. getNextAppendixNumber). Оба
+  // хранятся напрямую в document.number, не собираются из workPackageNumber.
+  if (document.type === 'CONTRACT' || document.type === 'APPENDIX') {
     return document.number != null ? `№${document.number}` : 'Без номера'
   }
   if (workPackageNumber == null) return 'Без номера'

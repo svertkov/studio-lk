@@ -3,7 +3,7 @@
 import type { CSSProperties } from 'react'
 import { format, parseISO } from 'date-fns'
 import { ru } from 'date-fns/locale'
-import { CalendarClock, UserX, Film, CheckCircle2, Paperclip, Clock, Receipt, ClipboardCheck } from 'lucide-react'
+import { CalendarClock, UserX, Film, CheckCircle2, Paperclip, Clock, Receipt, ClipboardCheck, Layers } from 'lucide-react'
 import type { DraggableAttributes, DraggableSyntheticListeners } from '@dnd-kit/core'
 import type { OrderDTO } from '@/lib/actions/orders'
 import { ORDER_PAYMENT_STATUS_COLORS, ORDER_SOURCE_LABELS, getOrderStatusVars } from '@/lib/order-model'
@@ -77,8 +77,21 @@ export default function OrderCard({ order, onClick, dragAttributes, dragListener
           {payment.paymentType !== 'UNKNOWN' ? `${payment.displayPrimary} · ` : ''}{payment.displaySecondary}
         </span>
       </div>
-      {(order.source === 'GOOGLE_CALENDAR' || !order.clientId || order.editingRequired !== null || order.hasMaterials || hasMakeup || promotion || order.invoiceDisplayNumber || order.actDisplayNumber) && (
+      {(order.source === 'GOOGLE_CALENDAR' || !order.clientId || order.editingRequired !== null || order.hasMaterials || hasMakeup || promotion || order.invoiceDisplayNumber || order.actDisplayNumber || order.appendixDisplayNumber) && (
         <div className="flex flex-wrap items-center gap-1.5 pt-1">
+          {order.appendixDisplayNumber && (
+            <span
+              className="text-[11px] font-medium px-2 py-0.5 rounded-full border border-zinc-700 text-zinc-400 bg-zinc-800/40 flex items-center gap-1"
+              title={[
+                order.appendixServiceDescription,
+                order.appendixAmount != null ? new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB', maximumFractionDigits: 0 }).format(order.appendixAmount) : null,
+                order.appendixIssueDate ? format(parseISO(order.appendixIssueDate), 'd MMMM yyyy', { locale: ru }) : null,
+              ].filter(Boolean).join(' · ') || undefined}
+            >
+              <Layers className="w-3 h-3" />
+              Прил. {order.appendixDisplayNumber}
+            </span>
+          )}
           {order.invoiceDisplayNumber && (
             <span className="text-[11px] font-medium px-2 py-0.5 rounded-full border border-zinc-700 text-zinc-400 bg-zinc-800/40 flex items-center gap-1">
               <Receipt className="w-3 h-3" />

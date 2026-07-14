@@ -39,6 +39,7 @@ export default function ContractsTable({ contracts }: Props) {
             <TableHead className="text-zinc-400">Тип</TableHead>
             <TableHead className="text-zinc-400">Статус</TableHead>
             <TableHead className="text-zinc-400">Заказов</TableHead>
+            <TableHead className="text-zinc-400">Приложений</TableHead>
             <TableHead className="text-zinc-400">Счетов</TableHead>
             <TableHead className="text-zinc-400">Актов</TableHead>
             <TableHead className="text-zinc-400">Комментарий</TableHead>
@@ -57,6 +58,7 @@ export default function ContractsTable({ contracts }: Props) {
               <TableCell className="text-zinc-400 text-xs">{CLIENT_TYPE_LABELS[c.clientType as keyof typeof CLIENT_TYPE_LABELS] ?? c.clientType}</TableCell>
               <TableCell><GlowPill size="sm" color={c.status === 'ACTIVE' ? 'green' : 'zinc'}>{DOCUMENT_STATUS_LABELS[c.status]}</GlowPill></TableCell>
               <TableCell className="text-zinc-300 text-sm">{c.ordersCount}</TableCell>
+              <TableCell className="text-zinc-300 text-sm">{c.appendicesCount}</TableCell>
               <TableCell className="text-zinc-300 text-sm">{c.invoicesCount}</TableCell>
               <TableCell className="text-zinc-300 text-sm">{c.actsCount}</TableCell>
               <TableCell className="text-zinc-500 text-xs truncate max-w-[200px]">{c.comment ?? '—'}</TableCell>
