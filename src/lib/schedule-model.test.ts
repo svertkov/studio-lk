@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest'
 import {
   normalizeMakeupDurationMinutes, computeMakeupInterval, MAKEUP_DURATION_MAX_MINUTES,
   formatDurationMinutes, formatMakeupBadgeLabel,
+  computeMaterialsStatus, getMaterialsDisplay, getBookingAttentionInfo,
+  type ScheduleEventVM, type ScheduleEventDTO,
 } from './schedule-model'
 
 describe('normalizeMakeupDurationMinutes — гримёр, ввод длительности', () => {
@@ -111,3 +113,110 @@ describe('formatDurationMinutes / formatMakeupBadgeLabel — единый helper
 // (и покрывался тестами прямо здесь) — теперь акция хранится структурированно
 // (OrderPromotionType) и вся логика её определения/очистки живёт в
 // src/lib/promotion-model.ts, см. promotion-model.test.ts.
+
+describe('computeMaterialsStatus — с учётом yandexLinkRequired/nasLinkRequired', () => {
+  it('behaves exactly as before when both links stay required (default)', () => {
+    expect(computeMaterialsStatus({ yandexDiskUrl: null, yandexDiskUrlAddedAt: null, nasBackupUrl: null })).toBe('NO_LINKS')
+    expect(computeMaterialsStatus({ yandexDiskUrl: null, yandexDiskUrlAddedAt: null, nasBackupUrl: 'nas://x' })).toBe('BACKUP_EXISTS')
+    expect(computeMaterialsStatus({ yandexDiskUrl: 'https://disk.yandex.ru/x', yandexDiskUrlAddedAt: new Date(), nasBackupUrl: null })).toBe('YANDEX_ACTIVE')
+  })
+
+  it('an empty but explicitly not-required link no longer counts as missing', () => {
+    expect(computeMaterialsStatus({
+      yandexDiskUrl: null, yandexDiskUrlAddedAt: null, nasBackupUrl: null,
+      yandexLinkRequired: false, nasLinkRequired: false,
+    })).toBe('YANDEX_ACTIVE')
+  })
+
+  it('yandex not required, NAS still required and missing — raw status reads YANDEX_ACTIVE, but getMaterialsDisplay still flags the missing NAS (the required flag only matters at display time here, see next describe block)', () => {
+    expect(computeMaterialsStatus({
+      yandexDiskUrl: null, yandexDiskUrlAddedAt: null, nasBackupUrl: null,
+      yandexLinkRequired: false, nasLinkRequired: true,
+    })).toBe('YANDEX_ACTIVE')
+  })
+
+  it('NAS not required, yandex present — active regardless of NAS', () => {
+    expect(computeMaterialsStatus({
+      yandexDiskUrl: 'https://disk.yandex.ru/x', yandexDiskUrlAddedAt: new Date(), nasBackupUrl: null,
+      nasLinkRequired: false,
+    })).toBe('YANDEX_ACTIVE')
+  })
+
+  it('yandex required and missing, NAS not required — BACKUP_EXISTS (yandex is the real, still-flagged gap)', () => {
+    expect(computeMaterialsStatus({
+      yandexDiskUrl: null, yandexDiskUrlAddedAt: null, nasBackupUrl: null,
+      nasLinkRequired: false,
+    })).toBe('BACKUP_EXISTS')
+  })
+})
+
+describe('getMaterialsDisplay — не показывает предупреждение для необязательных полей', () => {
+  it('YANDEX_ACTIVE with no NAS and NAS required stays a warning (unchanged)', () => {
+    expect(getMaterialsDisplay({ materialsStatus: 'YANDEX_ACTIVE', nasBackupUrl: null })).toEqual({ label: 'Нет бэкапа на NAS', severity: 'warning' })
+  })
+
+  it('YANDEX_ACTIVE with no NAS but NAS marked not required is a success, not a warning', () => {
+    expect(getMaterialsDisplay({ materialsStatus: 'YANDEX_ACTIVE', nasBackupUrl: null, nasLinkRequired: false }))
+      .toEqual({ label: 'Материалы сохранены', severity: 'success' })
+  })
+})
+
+function buildPastBookingVm(overrides: Partial<ScheduleEventDTO> = {}): ScheduleEventVM {
+  const annotation: ScheduleEventDTO = {
+    id: 'evt1', calendarEventId: 'cal1', title: 'Съёмка', description: '',
+    startAt: null, endAt: null, clientId: null, clientName: null, clientNameRaw: null,
+    contactRaw: null, companyRaw: null, room: null, format: null, camerasCount: null,
+    estimatedPrice: 15000, paymentMethod: 'CARD', notes: null, promotionType: null,
+    yandexDiskUrl: null, yandexDiskUrlAddedAt: null, yandexDiskUrlExpiresAt: null,
+    nasBackupUrl: null, materialsComment: null, materialsStatus: 'NO_LINKS',
+    yandexLinkRequired: true, nasLinkRequired: true,
+    editingRequired: null, clientConfirmationStatus: 'NOT_REQUIRED', subscriptionUsage: null,
+    eventType: 'STUDIO_BOOKING', makeupDurationMinutes: null, orderId: null, isCancelled: false,
+    ...overrides,
+  }
+  return {
+    calendarEvent: {
+      id: 'cal1', title: 'Съёмка', start: '2026-07-10T10:00:00Z', end: '2026-07-10T12:00:00Z',
+      allDay: false, description: '', location: '', calendar: 'studio', color: '#000',
+    },
+    annotation,
+  }
+}
+
+describe('getBookingAttentionInfo — прошедшая студийная запись с необязательными ссылками', () => {
+  const now = new Date('2026-07-12T00:00:00Z')
+
+  it('missing yandex + missing NAS + no payment info is still critical by default (unchanged)', () => {
+    const info = getBookingAttentionInfo(buildPastBookingVm({ estimatedPrice: null, paymentMethod: null }), now)
+    expect(info.isComplete).toBe(false)
+    expect(info.severity).toBe('critical')
+  })
+
+  it('both links marked not required — no longer flagged for materials, only for payment if that is also missing', () => {
+    const info = getBookingAttentionInfo(buildPastBookingVm({ yandexLinkRequired: false, nasLinkRequired: false }), now)
+    expect(info.missingFields).not.toContain('yandexDiskUrl')
+    expect(info.missingFields).not.toContain('nasBackupUrl')
+    expect(info.badges).not.toContain('Нет материалов')
+  })
+
+  it('fully complete once materials are marked not required and payment is filled in', () => {
+    const info = getBookingAttentionInfo(buildPastBookingVm({
+      yandexLinkRequired: false, nasLinkRequired: false, estimatedPrice: 15000, paymentMethod: 'CARD',
+    }), now)
+    expect(info).toEqual({ isComplete: true, severity: 'complete', missingFields: [], badges: [] })
+  })
+
+  it('yandex not required but NAS still required and missing — warning, not critical, with an accurate badge', () => {
+    const info = getBookingAttentionInfo(buildPastBookingVm({ yandexLinkRequired: false, nasLinkRequired: true }), now)
+    expect(info.severity).toBe('warning')
+    expect(info.badges).toContain('Нет бэкапа на NAS')
+    expect(info.badges).not.toContain('Нет материалов')
+  })
+
+  it('turning the flag back off makes an empty link a problem again', () => {
+    const stillOff = getBookingAttentionInfo(buildPastBookingVm({ yandexLinkRequired: false, nasLinkRequired: false }), now)
+    const turnedBackOn = getBookingAttentionInfo(buildPastBookingVm({ yandexLinkRequired: true, nasLinkRequired: false }), now)
+    expect(stillOff.missingFields).not.toContain('yandexDiskUrl')
+    expect(turnedBackOn.missingFields).toContain('yandexDiskUrl')
+  })
+})

@@ -179,7 +179,8 @@ function MaterialsCell({ order }: { order: OrderDTO }) {
   })
 
   if (!state.yandex && !state.nas) {
-    return <span className="text-zinc-600 text-xs">Нет материалов</span>
+    const notRequired = order.yandexLinkRequired === false && order.nasLinkRequired === false
+    return <span className="text-zinc-600 text-xs">{notRequired ? 'Не требуется' : 'Нет материалов'}</span>
   }
 
   // flex-col — ВСЕГДА вертикально, порядок фиксирован (Яндекс.Диск, затем

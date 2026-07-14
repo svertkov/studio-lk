@@ -60,6 +60,11 @@ export interface MaterialsStatusInput {
   yandexDiskUrl: string | null | undefined
   yandexDiskUrlAddedAt: Date | null | undefined
   nasBackupUrl: string | null | undefined
+  // Осознанное решение администратора "эта ссылка не требуется" (см.
+  // RequiredLinkToggle) — по умолчанию true (прежнее поведение: ссылка
+  // обязательна), см. ScheduleEvent.yandexLinkRequired/nasLinkRequired.
+  yandexLinkRequired?: boolean
+  nasLinkRequired?: boolean
 }
 
 export function computeYandexLinkExpiry(addedAt: Date): Date {
@@ -72,20 +77,27 @@ function isYandexExpired(addedAt: Date, now: Date): boolean {
 
 // Единственный источник правды для materials_status — вызывается на сервере
 // при каждом сохранении события (upsertScheduleEvent), клиенту не доверяем.
+//
+// "OK" вместо "has": поле считается удовлетворённым, если ссылка реально
+// заполнена ИЛИ администратор явно отметил её необязательной — дальше вся
+// функция работает с этим единственным понятием, отдельного значения enum
+// для "не требуется" не заводим (см. AGENTS.md — не плодить копии одной и
+// той же проверки).
 export function computeMaterialsStatus(input: MaterialsStatusInput, now: Date = new Date()): MaterialsStatus {
-  const hasYandex = !!input.yandexDiskUrl
-  const hasNas = !!input.nasBackupUrl
+  const yandexOk = !!input.yandexDiskUrl || input.yandexLinkRequired === false
+  const nasOk = !!input.nasBackupUrl || input.nasLinkRequired === false
 
-  if (!hasYandex && !hasNas) return 'NO_LINKS'
-  if (!hasYandex && hasNas) return 'BACKUP_EXISTS'
+  if (!yandexOk && !nasOk) return 'NO_LINKS'
+  if (!yandexOk && nasOk) return 'BACKUP_EXISTS'
 
   const expired = input.yandexDiskUrlAddedAt ? isYandexExpired(input.yandexDiskUrlAddedAt, now) : false
   if (!expired) return 'YANDEX_ACTIVE'
-  return hasNas ? 'YANDEX_EXPIRED' : 'NEEDS_ATTENTION'
+  return nasOk ? 'YANDEX_EXPIRED' : 'NEEDS_ATTENTION'
 }
 
 // Нужен ли значок "нет вообще никаких ссылок на материалы" в календаре
 export function needsNoLinksWarning(input: MaterialsStatusInput): boolean {
+  if (input.yandexLinkRequired === false && input.nasLinkRequired === false) return false
   return !input.yandexDiskUrl && !input.nasBackupUrl
 }
 
@@ -119,6 +131,11 @@ export interface MaterialsDisplay {
 export function getMaterialsDisplay(input: {
   materialsStatus: MaterialsStatus
   nasBackupUrl?: string | null
+  // См. MaterialsStatusInput.nasLinkRequired — нужен только для ветки
+  // YANDEX_ACTIVE ниже: BACKUP_EXISTS/NO_LINKS по построению уже означают,
+  // что соответствующее поле ДЕЙСТВИТЕЛЬНО обязательно и пусто (см.
+  // computeMaterialsStatus), доп. проверка там не нужна.
+  nasLinkRequired?: boolean
 }): MaterialsDisplay {
   switch (input.materialsStatus) {
     case 'NO_LINKS':        return { label: 'Нет материалов', severity: 'danger' }
@@ -128,7 +145,7 @@ export function getMaterialsDisplay(input: {
     // ссылка на Яндекс.Диск устарела (её можно перевыпустить или удалить).
     case 'YANDEX_EXPIRED':  return { label: 'Ссылка истекла', severity: 'warning' }
     case 'YANDEX_ACTIVE':
-      return input.nasBackupUrl
+      return (input.nasBackupUrl || input.nasLinkRequired === false)
         ? { label: 'Материалы сохранены', severity: 'success' }
         // Яндекс.Диск по-прежнему не блокирует сохранение/переход заказа (решение
         // от 2026-07-06 не отменяется), но само по себе отсутствие NAS-бэкапа
@@ -270,8 +287,12 @@ export function getBookingAttentionInfo(vm: ScheduleEventVM, now: Date = new Dat
   if (!canCheckBookingIssues(vm, now)) return COMPLETE_ATTENTION
 
   const a = vm.annotation
-  const hasYandex = !!a?.yandexDiskUrl
-  const hasNas = !!a?.nasBackupUrl
+  // "Ok" вместо "has" — поле не считается недостающим, если администратор
+  // явно отметил его необязательным (см. computeMaterialsStatus, тот же
+  // принцип). Дальше по функции используются только hasYandex/hasNas —
+  // читаются как "с этим полем всё в порядке", а не "ссылка реально есть".
+  const hasYandex = !!a?.yandexDiskUrl || a?.yandexLinkRequired === false
+  const hasNas = !!a?.nasBackupUrl || a?.nasLinkRequired === false
   const hasSubscription = !!a?.subscriptionUsage
   const hasPrice = a?.estimatedPrice != null
   const hasPaymentMethod = !!a?.paymentMethod
@@ -345,6 +366,9 @@ export interface ScheduleEventDTO {
   nasBackupUrl: string | null
   materialsComment: string | null
   materialsStatus: MaterialsStatus
+  // См. MaterialsStatusInput.yandexLinkRequired/nasLinkRequired.
+  yandexLinkRequired: boolean
+  nasLinkRequired: boolean
   editingRequired: boolean | null
   clientConfirmationStatus: ClientConfirmationStatus
   subscriptionUsage: ScheduleEventSubscriptionInfo | null
@@ -387,6 +411,7 @@ export function getVmMaterialsDisplay(vm: ScheduleEventVM): MaterialsDisplay {
   return getMaterialsDisplay({
     materialsStatus: vm.annotation?.materialsStatus ?? 'NO_LINKS',
     nasBackupUrl: vm.annotation?.nasBackupUrl,
+    nasLinkRequired: vm.annotation?.nasLinkRequired,
   })
 }
 

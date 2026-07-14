@@ -16,6 +16,7 @@ import { getOrderPaymentSummary } from '@/lib/payment-model'
 import type { ClientType, OrderStatus, OrderPaymentStatus, PaymentMethod } from '@prisma/client'
 import AddClientModal from '../clients/AddClientModal'
 import WorkDocumentsSection from '@/components/documents/WorkDocumentsSection'
+import RequiredLinkToggle from '@/components/materials/RequiredLinkToggle'
 
 interface Props {
   order: OrderDTO | null
@@ -140,6 +141,8 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
   const [yandexDiskUrl, setYandexDiskUrl] = useState(order?.yandexDiskUrl ?? '')
   const [nasBackupUrl, setNasBackupUrl] = useState(order?.nasBackupUrl ?? '')
   const [materialsComment, setMaterialsComment] = useState(order?.materialsComment ?? '')
+  const [yandexLinkRequired, setYandexLinkRequired] = useState(order?.yandexLinkRequired ?? true)
+  const [nasLinkRequired, setNasLinkRequired] = useState(order?.nasLinkRequired ?? true)
 
   const [date, setDate] = useState(startSplit.date)
   const [startTime, setStartTime] = useState(startSplit.time)
@@ -224,6 +227,8 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
         yandexDiskUrl: yandexDiskUrl.trim(),
         nasBackupUrl: nasBackupUrl.trim(),
         materialsComment: materialsComment.trim(),
+        yandexLinkRequired,
+        nasLinkRequired,
       } : {}),
     }
 
@@ -452,11 +457,17 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
                   <Label>Яндекс.Диск</Label>
                   <input className={INPUT} placeholder="https://disk.yandex.ru/..." value={yandexDiskUrl}
                     onChange={e => setYandexDiskUrl(e.target.value)} />
+                  <div className="mt-1.5">
+                    <RequiredLinkToggle checked={!yandexLinkRequired} onChange={next => setYandexLinkRequired(!next)} />
+                  </div>
                 </Field>
                 <Field>
                   <Label>NAS</Label>
                   <input className={INPUT} placeholder="Ссылка на резервную копию" value={nasBackupUrl}
                     onChange={e => setNasBackupUrl(e.target.value)} />
+                  <div className="mt-1.5">
+                    <RequiredLinkToggle checked={!nasLinkRequired} onChange={next => setNasLinkRequired(!next)} />
+                  </div>
                 </Field>
                 <Field>
                   <Label>Комментарий к материалам</Label>

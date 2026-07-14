@@ -108,6 +108,7 @@ export default function WeekView({ weekDays, events, onSelectEvent }: Props) {
                               <MaterialsStatusBadge
                                 status={vm.annotation?.materialsStatus ?? 'NO_LINKS'}
                                 nasBackupUrl={vm.annotation?.nasBackupUrl}
+                                nasLinkRequired={vm.annotation?.nasLinkRequired}
                               />
                             )}
                           </span>

@@ -678,6 +678,15 @@ model ScheduleEvent {
   nasBackupUrl             String?                  @map("nas_backup_url")
   materialsComment         String?                  @map("materials_comment")
   materialsStatus          MaterialsStatus          @default(NO_LINKS) @map("materials_status")
+  // Независимые флаги "эта ссылка не требуется для данного заказа" —
+  // осознанное решение администратора (см. RequiredLinkToggle, требует
+  // подтверждения при первом включении). @default(true) сохраняет прежнее
+  // поведение для всех существующих записей — ничего не "разблокируется"
+  // само по себе. Используются вместо !!yandexDiskUrl/!!nasBackupUrl везде,
+  // где сегодня отсутствие ссылки считается ошибкой (см. schedule-model.ts:
+  // computeMaterialsStatus/getMaterialsDisplay/getBookingAttentionInfo).
+  yandexLinkRequired       Boolean                  @default(true) @map("yandex_link_required")
+  nasLinkRequired          Boolean                  @default(true) @map("nas_link_required")
   // Нужен ли монтаж после съёмки — null, пока администратор не решил (карточка
   // ещё не сохранялась с выбором); true/false после решения. Управляет
   // автопереводом связанного заказа в «Монтаж»/«Завершено», см. upsertScheduleEvent.

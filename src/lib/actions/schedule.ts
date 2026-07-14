@@ -84,6 +84,8 @@ function toDTO(row: ScheduleEventWithClient): ScheduleEventDTO {
     nasBackupUrl: row.nasBackupUrl,
     materialsComment: row.materialsComment,
     materialsStatus: row.materialsStatus,
+    yandexLinkRequired: row.yandexLinkRequired,
+    nasLinkRequired: row.nasLinkRequired,
     editingRequired: row.editingRequired,
     clientConfirmationStatus: row.clientConfirmationStatus,
     eventType: row.eventType,
@@ -159,6 +161,9 @@ export interface UpsertScheduleEventInput {
   yandexDiskUrl?: string | null
   nasBackupUrl?: string | null
   materialsComment?: string
+  // См. ScheduleEvent.yandexLinkRequired/nasLinkRequired.
+  yandexLinkRequired?: boolean
+  nasLinkRequired?: boolean
   editingRequired?: boolean | null
   clientConfirmationStatus?: ClientConfirmationStatus
   eventType?: EventType
@@ -192,10 +197,19 @@ export async function upsertScheduleEvent(
       ? (existing?.nasBackupUrl ?? null)
       : (input.nasBackupUrl?.trim() || null)
 
+    const nextYandexLinkRequired = input.yandexLinkRequired === undefined
+      ? (existing?.yandexLinkRequired ?? true)
+      : input.yandexLinkRequired
+    const nextNasLinkRequired = input.nasLinkRequired === undefined
+      ? (existing?.nasLinkRequired ?? true)
+      : input.nasLinkRequired
+
     const materialsStatus = computeMaterialsStatus({
       yandexDiskUrl: nextYandexUrl,
       yandexDiskUrlAddedAt,
       nasBackupUrl: nextNasUrl,
+      yandexLinkRequired: nextYandexLinkRequired,
+      nasLinkRequired: nextNasLinkRequired,
     })
     const yandexDiskUrlExpiresAt = yandexDiskUrlAddedAt ? computeYandexLinkExpiry(yandexDiskUrlAddedAt) : null
 
@@ -248,6 +262,8 @@ export async function upsertScheduleEvent(
         nasBackupUrl: nextNasUrl,
         materialsComment: input.materialsComment?.trim() || null,
         materialsStatus,
+        yandexLinkRequired: nextYandexLinkRequired,
+        nasLinkRequired: nextNasLinkRequired,
         editingRequired: input.editingRequired ?? null,
         clientConfirmationStatus: input.clientConfirmationStatus ?? 'NOT_REQUIRED',
         eventType: effectiveEventType,
@@ -276,6 +292,8 @@ export async function upsertScheduleEvent(
         nasBackupUrl: nextNasUrl,
         ...(input.materialsComment !== undefined && { materialsComment: input.materialsComment?.trim() || null }),
         materialsStatus,
+        yandexLinkRequired: nextYandexLinkRequired,
+        nasLinkRequired: nextNasLinkRequired,
         ...(input.editingRequired !== undefined && { editingRequired: input.editingRequired }),
         ...(input.clientConfirmationStatus !== undefined && { clientConfirmationStatus: input.clientConfirmationStatus }),
         ...(input.eventType !== undefined && { eventType: input.eventType }),

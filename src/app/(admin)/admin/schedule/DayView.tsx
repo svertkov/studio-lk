@@ -92,7 +92,7 @@ export default function DayView({ day, events, onSelectEvent }: Props) {
                         </span>
                       )}
                       {shouldShowMaterialsBadge(vm) && (
-                        <MaterialsStatusBadge status={materialsStatus} nasBackupUrl={a?.nasBackupUrl} showLabel />
+                        <MaterialsStatusBadge status={materialsStatus} nasBackupUrl={a?.nasBackupUrl} nasLinkRequired={a?.nasLinkRequired} showLabel />
                       )}
                     </>
                   ) : (

@@ -52,7 +52,8 @@ function revalidateOrderPaths(clientId?: string | null): void {
 type OrderClient = Pick<Client, 'name' | 'phone' | 'telegram' | 'email' | 'type' | 'companyName' | 'contractState'>
 type OrderScheduleEvent = Pick<ScheduleEvent,
   'id' | 'camerasCount' | 'editingRequired' | 'yandexDiskUrl' | 'yandexDiskUrlExpiresAt' | 'nasBackupUrl' |
-  'materialsComment' | 'notes' | 'makeupDurationMinutes' | 'promotionType' | 'estimatedPrice' | 'paymentMethod'> & {
+  'materialsComment' | 'notes' | 'makeupDurationMinutes' | 'promotionType' | 'estimatedPrice' | 'paymentMethod' |
+  'yandexLinkRequired' | 'nasLinkRequired'> & {
     subscriptionUsage: {
       usedHours: number
       subscription: { packageHours: number; openingUsedHours: number; usages: { usedHours: number }[] }
@@ -75,6 +76,7 @@ const ORDER_INCLUDE = {
     select: {
       id: true, camerasCount: true, editingRequired: true,
       yandexDiskUrl: true, yandexDiskUrlExpiresAt: true, nasBackupUrl: true, materialsComment: true,
+      yandexLinkRequired: true, nasLinkRequired: true,
       notes: true, makeupDurationMinutes: true, promotionType: true,
       // Реальные стоимость/способ оплаты студийной записи — заполняются через
       // основную карточку записи (EventCardModal, дашборд/расписание/карточка
@@ -145,6 +147,11 @@ export interface OrderDTO {
   yandexDiskUrl: string | null
   yandexDiskUrlExpiresAt: string | null
   nasBackupUrl: string | null
+  // См. ScheduleEvent.yandexLinkRequired/nasLinkRequired — у заявок без
+  // записи в расписании (scheduleEvent === null) всегда true (прежнее
+  // поведение "ссылка обязательна" по умолчанию).
+  yandexLinkRequired: boolean
+  nasLinkRequired: boolean
   materialsComment: string | null
   // Время на гримёра — источник правды на связанной ScheduleEvent (её
   // редактируют через основную карточку записи), у заявок без записи всегда null.
@@ -224,6 +231,8 @@ function toDTO(row: OrderWithRelations): OrderDTO {
     yandexDiskUrlExpiresAt: row.scheduleEvent?.yandexDiskUrlExpiresAt
       ? row.scheduleEvent.yandexDiskUrlExpiresAt.toISOString() : null,
     nasBackupUrl: row.scheduleEvent?.nasBackupUrl ?? null,
+    yandexLinkRequired: row.scheduleEvent?.yandexLinkRequired ?? true,
+    nasLinkRequired: row.scheduleEvent?.nasLinkRequired ?? true,
     materialsComment: row.scheduleEvent?.materialsComment ?? null,
     makeupDurationMinutes: row.scheduleEvent?.makeupDurationMinutes ?? null,
     createdAt: row.createdAt.toISOString(),
@@ -435,6 +444,9 @@ export interface OrderInput {
   yandexDiskUrl?: string | null
   nasBackupUrl?: string | null
   materialsComment?: string
+  // См. OrderDTO.yandexLinkRequired/nasLinkRequired.
+  yandexLinkRequired?: boolean
+  nasLinkRequired?: boolean
 }
 
 export async function createOrder(
@@ -607,8 +619,11 @@ export async function updateOrder(
           const nextNasUrl = input.nasBackupUrl === undefined
             ? se.nasBackupUrl
             : (input.nasBackupUrl?.trim() || null)
+          const nextYandexLinkRequired = input.yandexLinkRequired === undefined ? se.yandexLinkRequired : input.yandexLinkRequired
+          const nextNasLinkRequired = input.nasLinkRequired === undefined ? se.nasLinkRequired : input.nasLinkRequired
           const materialsStatus = computeMaterialsStatus({
             yandexDiskUrl: nextYandexUrl, yandexDiskUrlAddedAt, nasBackupUrl: nextNasUrl,
+            yandexLinkRequired: nextYandexLinkRequired, nasLinkRequired: nextNasLinkRequired,
           })
           const yandexDiskUrlExpiresAt = yandexDiskUrlAddedAt ? computeYandexLinkExpiry(yandexDiskUrlAddedAt) : null
 
@@ -630,6 +645,8 @@ export async function updateOrder(
               yandexDiskUrlExpiresAt,
               nasBackupUrl: nextNasUrl,
               materialsStatus,
+              yandexLinkRequired: nextYandexLinkRequired,
+              nasLinkRequired: nextNasLinkRequired,
               ...(input.materialsComment !== undefined && { materialsComment: input.materialsComment?.trim() || null }),
               ...(input.editingRequired !== undefined && { editingRequired: input.editingRequired }),
               ...(input.makeupDurationMinutes !== undefined && { makeupDurationMinutes: input.makeupDurationMinutes }),

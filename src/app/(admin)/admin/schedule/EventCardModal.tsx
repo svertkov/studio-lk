@@ -22,6 +22,7 @@ import { PAYMENT_METHOD_LABELS, ONE_TIME_PAYMENT_METHODS, type PaymentMethod } f
 import { ROOM_DICTIONARY, FORMAT_DICTIONARY } from '@/lib/import/normalize'
 import { getOrderPromotion, getVisibleOrderComment, PROMOTION_PILL_LABEL, type OrderPromotionType } from '@/lib/promotion-model'
 import MaterialsStatusBadge from './MaterialsStatusBadge'
+import RequiredLinkToggle from '@/components/materials/RequiredLinkToggle'
 import SubscriptionPaymentBlock, { type SubscriptionPaymentHandle } from './SubscriptionPaymentBlock'
 import AddClientModal from '../clients/AddClientModal'
 import WorkDocumentsSection from '@/components/documents/WorkDocumentsSection'
@@ -85,6 +86,8 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
   const [yandexDiskUrl, setYandexDiskUrl] = useState(annotation?.yandexDiskUrl ?? '')
   const [nasBackupUrl, setNasBackupUrl] = useState(annotation?.nasBackupUrl ?? '')
   const [materialsComment, setMaterialsComment] = useState(annotation?.materialsComment ?? '')
+  const [yandexLinkRequired, setYandexLinkRequired] = useState(annotation?.yandexLinkRequired ?? true)
+  const [nasLinkRequired, setNasLinkRequired] = useState(annotation?.nasLinkRequired ?? true)
   const [editingRequired, setEditingRequired] = useState<boolean | null>(annotation?.editingRequired ?? null)
   const [clientNameRaw, setClientNameRaw] = useState(annotation?.clientNameRaw ?? '')
   const [contactRaw, setContactRaw] = useState(annotation?.contactRaw ?? '')
@@ -137,6 +140,10 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
   // условие (см. Материалы ниже и schedule-model.ts: getMaterialsDisplay/getBookingAttentionInfo).
   const hasYandexNow = !!yandexDiskUrl
   const hasNasNow = !!nasBackupUrl
+  // "Ok" — поле удовлетворено, если ссылка реально введена ИЛИ администратор
+  // отметил её необязательной (см. RequiredLinkToggle, schedule-model.ts).
+  const yandexOkNow = hasYandexNow || !yandexLinkRequired
+  const nasOkNow = hasNasNow || !nasLinkRequired
   const paymentMissingNow = paymentMode === 'ONE_TIME' && !estimatedPrice
   // Единственная причина, по которой кнопка "Сохранить" может быть
   // заблокирована помимо самого процесса сохранения — см. disabled на кнопке
@@ -249,6 +256,8 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
         yandexDiskUrl: yandexDiskUrl || null,
         nasBackupUrl: nasBackupUrl || null,
         materialsComment,
+        yandexLinkRequired,
+        nasLinkRequired,
         editingRequired,
         clientNameRaw,
         contactRaw,
@@ -608,7 +617,7 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
           <p className={SECTION}>Материалы</p>
           {shouldShowMaterialsBadge(vm) && (
             <div className="flex items-center justify-between">
-              <MaterialsStatusBadge status={materialsStatus} nasBackupUrl={annotation?.nasBackupUrl} size="md" showLabel />
+              <MaterialsStatusBadge status={materialsStatus} nasBackupUrl={annotation?.nasBackupUrl} nasLinkRequired={annotation?.nasLinkRequired} size="md" showLabel />
             </div>
           )}
 
@@ -620,20 +629,22 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
                   NAS-бэкап только дополнительный плюс, а не обязательное
                   условие (см. schedule-model.ts: getMaterialsDisplay/
                   getBookingAttentionInfo). Поэтому блока "hasYandexNow &&
-                  !hasNasNow" здесь больше нет — это больше не проблема, это норма. */}
-              {!hasNasNow && !hasYandexNow && (
+                  !hasNasNow" здесь больше нет — это больше не проблема, это норма.
+                  "Ok"-версии (yandexOkNow/nasOkNow) учитывают ещё и явное решение
+                  администратора "ссылка не требуется" — баннер тогда тоже не показывается. */}
+              {!nasOkNow && !yandexOkNow && (
                 <div className="flex items-start gap-2 rounded-lg px-3 py-2.5 text-xs bg-red-950/40 border border-red-900 text-red-300">
                   <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
                   <p>Съёмка уже прошла, но ссылка на Яндекс.Диск и бэкап на NAS не указаны.</p>
                 </div>
               )}
-              {hasNasNow && !hasYandexNow && (
+              {nasOkNow && !yandexOkNow && (
                 <div className="flex items-start gap-2 rounded-lg px-3 py-2.5 text-xs bg-amber-950/40 border border-amber-900 text-amber-300">
                   <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
                   <p>Бэкап на NAS указан, но ссылка на Яндекс.Диск для клиента не добавлена.</p>
                 </div>
               )}
-              {hasNasNow && hasYandexNow && warningText && (
+              {nasOkNow && hasYandexNow && warningText && (
                 <div className="flex items-start gap-2 rounded-lg px-3 py-2.5 text-xs bg-amber-950/40 border border-amber-900 text-amber-300">
                   <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
                   <p>{warningText}</p>
@@ -673,14 +684,17 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
                   блокирует "Сохранить" — если ссылка не похожа на
                   Яндекс.Диск, это просто предупреждение, а не запрет. */}
               <span className={`text-xs ${
-                !yandexUrlTrimmedLive ? 'text-zinc-500' : looksLikeYandexLink ? 'text-[#00c26b]' : 'text-amber-400'
+                yandexUrlTrimmedLive
+                  ? (looksLikeYandexLink ? 'text-[#00c26b]' : 'text-amber-400')
+                  : (yandexLinkRequired ? 'text-zinc-500' : 'text-zinc-500 bg-zinc-800 rounded-full px-2 py-0.5')
               }`}>
-                {!yandexUrlTrimmedLive
-                  ? 'Ссылка не указана'
-                  : looksLikeYandexLink
-                    ? 'Ссылка указана'
-                    : 'Не похоже на ссылку Яндекс.Диска — сохранить всё равно можно'}
+                {yandexUrlTrimmedLive
+                  ? (looksLikeYandexLink ? 'Ссылка указана' : 'Не похоже на ссылку Яндекс.Диска — сохранить всё равно можно')
+                  : (yandexLinkRequired ? 'Ссылка не указана' : 'Не требуется')}
               </span>
+            </div>
+            <div className="mt-1.5">
+              <RequiredLinkToggle checked={!yandexLinkRequired} onChange={next => setYandexLinkRequired(!next)} />
             </div>
           </div>
 
@@ -697,7 +711,12 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
               )}
             </div>
             <div className="flex items-center justify-end mt-1.5">
-              <span className="text-xs text-zinc-400">{hasNasNow ? 'Бэкап указан' : 'Нет NAS-бэкапа'}</span>
+              <span className={`text-xs ${hasNasNow ? 'text-zinc-400' : nasLinkRequired ? 'text-zinc-400' : 'text-zinc-500 bg-zinc-800 rounded-full px-2 py-0.5'}`}>
+                {hasNasNow ? 'Бэкап указан' : nasLinkRequired ? 'Нет NAS-бэкапа' : 'Не требуется'}
+              </span>
+            </div>
+            <div className="mt-1.5">
+              <RequiredLinkToggle checked={!nasLinkRequired} onChange={next => setNasLinkRequired(!next)} />
             </div>
           </div>
 

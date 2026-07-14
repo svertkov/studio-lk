@@ -13,12 +13,13 @@ const ICONS: Record<MaterialsSeverity, typeof AlertTriangle> = {
 interface Props {
   status: MaterialsStatus
   nasBackupUrl?: string | null
+  nasLinkRequired?: boolean | null
   size?: 'sm' | 'md'
   showLabel?: boolean
 }
 
-export default function MaterialsStatusBadge({ status, nasBackupUrl, size = 'sm', showLabel = false }: Props) {
-  const { label, severity } = getMaterialsDisplay({ materialsStatus: status, nasBackupUrl })
+export default function MaterialsStatusBadge({ status, nasBackupUrl, nasLinkRequired, size = 'sm', showLabel = false }: Props) {
+  const { label, severity } = getMaterialsDisplay({ materialsStatus: status, nasBackupUrl, nasLinkRequired: nasLinkRequired ?? undefined })
   const Icon = ICONS[severity]
   const color = MATERIALS_SEVERITY_TEXT_COLOR[severity]
   const px = size === 'sm' ? 'w-3.5 h-3.5' : 'w-4 h-4'
