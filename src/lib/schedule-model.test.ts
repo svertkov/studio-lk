@@ -170,6 +170,8 @@ function buildPastBookingVm(overrides: Partial<ScheduleEventDTO> = {}): Schedule
     yandexDiskUrl: null, yandexDiskUrlAddedAt: null, yandexDiskUrlExpiresAt: null,
     nasBackupUrl: null, materialsComment: null, materialsStatus: 'NO_LINKS',
     yandexLinkRequired: true, nasLinkRequired: true,
+    yandexNotRequiredConfirmedAt: null, yandexNotRequiredConfirmedByName: null, yandexNotRequiredReason: null,
+    nasNotRequiredConfirmedAt: null, nasNotRequiredConfirmedByName: null, nasNotRequiredReason: null,
     editingRequired: null, clientConfirmationStatus: 'NOT_REQUIRED', subscriptionUsage: null,
     eventType: 'STUDIO_BOOKING', makeupDurationMinutes: null, orderId: null, isCancelled: false,
     ...overrides,

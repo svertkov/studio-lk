@@ -295,6 +295,15 @@ function MaterialsCell({ row }: { row: ShootRowDTO }) {
   })
 
   if (!state.yandex) {
+    // Подтверждённое исключение (ConfirmableStatusToggle) — не то же самое,
+    // что реально отсутствующая обязательная ссылка, показываем отдельно.
+    if (row.yandexLinkRequired === false) {
+      return (
+        <GlowPill color="zinc" icon={CloudOff} title="Ссылка на Яндекс.Диск подтверждённо не требуется">
+          Не требуется
+        </GlowPill>
+      )
+    }
     return <span className="text-zinc-600 text-xs">Нет материалов</span>
   }
 
@@ -337,6 +346,13 @@ function MaterialsCell({ row }: { row: ShootRowDTO }) {
 function BackupCell({ row }: { row: ShootRowDTO }) {
   const nasUrl = isValidHttpUrl(row.nasBackupUrl) ? row.nasBackupUrl : null
   if (!nasUrl) {
+    if (row.nasLinkRequired === false) {
+      return (
+        <GlowPill color="zinc" icon={Server} title="NAS-бэкап подтверждённо не требуется">
+          Не требуется
+        </GlowPill>
+      )
+    }
     return <span className="text-zinc-600 text-xs">Нет backup</span>
   }
   return (

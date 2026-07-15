@@ -178,9 +178,22 @@ function MaterialsCell({ order }: { order: OrderDTO }) {
     nasBackupUrl: nasUrl,
   })
 
-  if (!state.yandex && !state.nas) {
-    const notRequired = order.yandexLinkRequired === false && order.nasLinkRequired === false
-    return <span className="text-zinc-600 text-xs">{notRequired ? 'Не требуется' : 'Нет материалов'}</span>
+  // Каждое поле проверяется независимо — подтверждённое исключение по
+  // одной ссылке не должно "прятать" реально отсутствующую обязательную
+  // ссылку по другой (см. ConfirmableStatusToggle, ТЗ раздел 14).
+  const yandexNotRequired = !state.yandex && order.yandexLinkRequired === false
+  const nasNotRequired = !state.nas && order.nasLinkRequired === false
+
+  if (!state.yandex && !state.nas && !yandexNotRequired && !nasNotRequired) {
+    return <span className="text-zinc-600 text-xs">Нет материалов</span>
+  }
+
+  if (!state.yandex && !state.nas && yandexNotRequired && nasNotRequired) {
+    return (
+      <GlowPill color="zinc" size="sm" icon={CloudOff} title="Обе ссылки на материалы подтверждённо не требуются">
+        Материалы не требуются
+      </GlowPill>
+    )
   }
 
   // flex-col — ВСЕГДА вертикально, порядок фиксирован (Яндекс.Диск, затем
@@ -204,10 +217,20 @@ function MaterialsCell({ order }: { order: OrderDTO }) {
           Яндекс.Диск
         </GlowPill>
       )}
+      {!state.yandex && yandexNotRequired && (
+        <GlowPill color="zinc" size="sm" icon={CloudOff} title="Ссылка на Яндекс.Диск подтверждённо не требуется">
+          Яндекс не требуется
+        </GlowPill>
+      )}
       {state.nas === 'active' && (
         <GlowPill as="a" href={nasUrl!} color="violet" size="sm" icon={Server} onClick={e => e.stopPropagation()}
           title="Открыть резервную копию на NAS" ariaLabel="Открыть резервную копию на NAS">
           NAS
+        </GlowPill>
+      )}
+      {!state.nas && nasNotRequired && (
+        <GlowPill color="zinc" size="sm" icon={Server} title="NAS-бэкап подтверждённо не требуется">
+          NAS не требуется
         </GlowPill>
       )}
     </div>

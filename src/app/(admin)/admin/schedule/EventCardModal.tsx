@@ -771,6 +771,7 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
                 dialogTitle="Сохранить заказ без бэкапа на NAS?"
                 dialogBody="После подтверждения система перестанет требовать NAS-ссылку для этого заказа. В платформе не будет подтверждения наличия долгосрочного бэкапа материалов. Убедитесь, что хранение действительно не требуется или организовано другим способом."
                 escalatedNotice={!yandexLinkRequired ? 'После этого у заказа не останется ни одной обязательной ссылки на материалы.' : undefined}
+                normalIcon={HardDrive}
                 size="sm"
               />
             </div>

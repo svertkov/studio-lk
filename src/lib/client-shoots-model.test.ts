@@ -22,6 +22,7 @@ function event(overrides: Partial<ShootEventInput> = {}): ShootEventInput {
     startAt: new Date('2026-06-01T10:00:00Z'), endAt: new Date('2026-06-01T12:00:00Z'),
     room: 'Светлый зал', format: 'Подкаст', estimatedPrice: 12000, paymentMethod: 'CASH',
     yandexDiskUrl: null, yandexDiskUrlExpiresAt: null, nasBackupUrl: null,
+    yandexLinkRequired: true, nasLinkRequired: true,
     notes: null, makeupDurationMinutes: null, subscriptionUsedHours: null, orderStatus: null,
     ...overrides,
   }

@@ -3,7 +3,7 @@
 import { useState, type ReactNode, type SelectHTMLAttributes } from 'react'
 import Link from 'next/link'
 import { format, parseISO } from 'date-fns'
-import { Search, Link2, UserPlus, ChevronDown, ArchiveRestore } from 'lucide-react'
+import { Search, Link2, UserPlus, ChevronDown, ArchiveRestore, HardDrive } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import GlowPill from '@/components/ui/glow-pill'
 import { createOrder, updateOrder, updateOrderStatus, unarchiveOrder, type OrderDTO, type OrderInput } from '@/lib/actions/orders'
@@ -16,7 +16,7 @@ import { getOrderPaymentSummary } from '@/lib/payment-model'
 import type { ClientType, OrderStatus, OrderPaymentStatus, PaymentMethod } from '@prisma/client'
 import AddClientModal from '../clients/AddClientModal'
 import WorkDocumentsSection from '@/components/documents/WorkDocumentsSection'
-import RequiredLinkToggle from '@/components/materials/RequiredLinkToggle'
+import ConfirmableStatusToggle from '@/components/ui/confirmable-status-toggle'
 
 interface Props {
   order: OrderDTO | null
@@ -143,6 +143,8 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
   const [materialsComment, setMaterialsComment] = useState(order?.materialsComment ?? '')
   const [yandexLinkRequired, setYandexLinkRequired] = useState(order?.yandexLinkRequired ?? true)
   const [nasLinkRequired, setNasLinkRequired] = useState(order?.nasLinkRequired ?? true)
+  const [yandexNotRequiredReason, setYandexNotRequiredReason] = useState<string | null>(order?.yandexNotRequiredReason ?? null)
+  const [nasNotRequiredReason, setNasNotRequiredReason] = useState<string | null>(order?.nasNotRequiredReason ?? null)
 
   const [date, setDate] = useState(startSplit.date)
   const [startTime, setStartTime] = useState(startSplit.time)
@@ -229,6 +231,8 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
         materialsComment: materialsComment.trim(),
         yandexLinkRequired,
         nasLinkRequired,
+        yandexNotRequiredReason,
+        nasNotRequiredReason,
       } : {}),
     }
 
@@ -455,18 +459,73 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
                 </Row>
                 <Field>
                   <Label>Яндекс.Диск</Label>
-                  <input className={INPUT} placeholder="https://disk.yandex.ru/..." value={yandexDiskUrl}
-                    onChange={e => setYandexDiskUrl(e.target.value)} />
+                  <input
+                    className={`${INPUT} ${!yandexLinkRequired ? 'border-red-800/60 bg-red-950/20 text-red-200/80' : ''}`}
+                    placeholder={yandexLinkRequired ? 'https://disk.yandex.ru/...' : 'Материалы на Яндекс.Диске не предусмотрены'}
+                    value={yandexDiskUrl}
+                    readOnly={!yandexLinkRequired}
+                    onChange={e => setYandexDiskUrl(e.target.value)}
+                  />
+                  {!yandexLinkRequired && yandexDiskUrl.trim() && (
+                    <p className="text-amber-400/80 text-xs mt-1.5">
+                      В поле уже указана ссылка. Она будет сохранена, но перестанет считаться обязательной.
+                    </p>
+                  )}
+                  {!yandexLinkRequired && (
+                    <p className="text-zinc-500 text-xs mt-1.5">
+                      {order?.yandexNotRequiredConfirmedByName && order?.yandexNotRequiredConfirmedAt
+                        ? `Подтверждено: ${order.yandexNotRequiredConfirmedByName}, ${format(parseISO(order.yandexNotRequiredConfirmedAt), 'd MMM yyyy, HH:mm')}`
+                        : 'Подтверждено администратором'}
+                    </p>
+                  )}
                   <div className="mt-1.5">
-                    <RequiredLinkToggle checked={!yandexLinkRequired} onChange={next => setYandexLinkRequired(!next)} />
+                    <ConfirmableStatusToggle
+                      active={!yandexLinkRequired}
+                      onConfirm={reason => { setYandexLinkRequired(false); setYandexNotRequiredReason(reason) }}
+                      onDeactivate={() => { setYandexLinkRequired(true); setYandexNotRequiredReason(null) }}
+                      normalLabel="Яндекс.Диск обязателен"
+                      exceptionLabel="Ссылка не требуется"
+                      dialogTitle="Сохранить заказ без ссылки на Яндекс.Диск?"
+                      dialogBody="После подтверждения система перестанет требовать ссылку на Яндекс.Диск для этого заказа. Клиентская ссылка на материалы может отсутствовать. Убедитесь, что это соответствует договорённости и материалы переданы или будут переданы другим способом."
+                      escalatedNotice={!nasLinkRequired ? 'После этого у заказа не останется ни одной обязательной ссылки на материалы.' : undefined}
+                      size="sm"
+                    />
                   </div>
                 </Field>
                 <Field>
                   <Label>NAS</Label>
-                  <input className={INPUT} placeholder="Ссылка на резервную копию" value={nasBackupUrl}
-                    onChange={e => setNasBackupUrl(e.target.value)} />
+                  <input
+                    className={`${INPUT} ${!nasLinkRequired ? 'border-red-800/60 bg-red-950/20 text-red-200/80' : ''}`}
+                    placeholder={nasLinkRequired ? 'Ссылка на резервную копию' : 'Бэкап материалов на NAS отсутствует'}
+                    value={nasBackupUrl}
+                    readOnly={!nasLinkRequired}
+                    onChange={e => setNasBackupUrl(e.target.value)}
+                  />
+                  {!nasLinkRequired && nasBackupUrl.trim() && (
+                    <p className="text-amber-400/80 text-xs mt-1.5">
+                      В поле уже указана ссылка. Она будет сохранена, но перестанет считаться обязательной.
+                    </p>
+                  )}
+                  {!nasLinkRequired && (
+                    <p className="text-zinc-500 text-xs mt-1.5">
+                      {order?.nasNotRequiredConfirmedByName && order?.nasNotRequiredConfirmedAt
+                        ? `Подтверждено: ${order.nasNotRequiredConfirmedByName}, ${format(parseISO(order.nasNotRequiredConfirmedAt), 'd MMM yyyy, HH:mm')}`
+                        : 'Подтверждено администратором'}
+                    </p>
+                  )}
                   <div className="mt-1.5">
-                    <RequiredLinkToggle checked={!nasLinkRequired} onChange={next => setNasLinkRequired(!next)} />
+                    <ConfirmableStatusToggle
+                      active={!nasLinkRequired}
+                      onConfirm={reason => { setNasLinkRequired(false); setNasNotRequiredReason(reason) }}
+                      onDeactivate={() => { setNasLinkRequired(true); setNasNotRequiredReason(null) }}
+                      normalLabel="Бэкап на NAS требуется"
+                      exceptionLabel="NAS не требуется"
+                      dialogTitle="Сохранить заказ без бэкапа на NAS?"
+                      dialogBody="После подтверждения система перестанет требовать NAS-ссылку для этого заказа. В платформе не будет подтверждения наличия долгосрочного бэкапа материалов. Убедитесь, что хранение действительно не требуется или организовано другим способом."
+                      escalatedNotice={!yandexLinkRequired ? 'После этого у заказа не останется ни одной обязательной ссылки на материалы.' : undefined}
+                      normalIcon={HardDrive}
+                      size="sm"
+                    />
                   </div>
                 </Field>
                 <Field>
