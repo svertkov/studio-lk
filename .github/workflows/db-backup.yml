@@ -1,0 +1,52 @@
+name: Ежедневный backup базы данных
+
+# Работает на серверах GitHub, не зависит от того, включён ли ноутбук —
+# см. project_studio_lk_backup_pending (решение о планировщике было отложено,
+# принято 2026-07-16 после инцидента с потерей cms_audit_log). Использует уже
+# существующий scripts/db-backup/create.mjs — тот же скрипт, что и
+# `npm run db:backup` локально, без внешних npm-зависимостей (только
+# встроенные модули Node), поэтому npm install не нужен.
+on:
+  schedule:
+    # 03:00 по Europe/Moscow (UTC+3) = 00:00 UTC — вне рабочего времени студии
+    - cron: '0 0 * * *'
+  workflow_dispatch: {}
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install postgresql-client (pg_dump)
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Create backup
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          BACKUP_DIR: ${{ runner.temp }}/studio-lk-backups
+        run: node scripts/db-backup/create.mjs
+
+      # GitHub Actions runner эфемерный — файл не переживёт джобу сам по
+      # себе, поэтому сохраняем его как artifact. retention-days ограничивает
+      # хранение 90 днями (максимум GitHub) — это не замена долгосрочному
+      # архивному хранилищу (см. AGENTS.md "Data Safety and Audit Integrity",
+      # известное ограничение).
+      - name: Upload backup artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: studio-lk-db-backup-${{ github.run_id }}
+          path: ${{ runner.temp }}/studio-lk-backups/*.sql.gz*
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Upload backup log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: studio-lk-db-backup-log-${{ github.run_id }}
+          path: ${{ runner.temp }}/studio-lk-backups/backup.log
+          retention-days: 90
+          if-no-files-found: ignore

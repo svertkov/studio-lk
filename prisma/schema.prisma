@@ -345,6 +345,7 @@ model User {
   documentsUpdated              Document[]             @relation("DocumentUpdatedBy")
   scheduleEventYandexNotRequiredConfirmations ScheduleEvent[] @relation("ScheduleEventYandexNotRequiredConfirmedBy")
   scheduleEventNasNotRequiredConfirmations    ScheduleEvent[] @relation("ScheduleEventNasNotRequiredConfirmedBy")
+  subscriptionAdjustments        SubscriptionAdjustment[]
 
   @@map("cms_user")
 }
@@ -1080,13 +1081,64 @@ model ClientSubscription {
   createdAt          DateTime           @default(now()) @map("created_at")
   updatedAt          DateTime           @updatedAt @map("updated_at")
 
-  client Client              @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  usages SubscriptionUsage[]
+  client      Client                   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  usages      SubscriptionUsage[]
+  adjustments SubscriptionAdjustment[]
 
   @@index([clientId])
   @@index([status])
   @@index([isArchived])
   @@map("cms_client_subscription")
+}
+
+enum SubscriptionAdjustmentType {
+  MANUAL_UPDATE
+  TRANSFER_OUT
+  TRANSFER_IN
+}
+
+// Иммутабельная бизнес-история корректировок часов абонемента — источник
+// правды для "Истории корректировок" на карточке клиента, НЕ производная от
+// общего AuditLog (см. 2026-07-15/16, project_studio_lk_audit_log_incident:
+// раньше единственной копией этой истории был AuditLog, и его случайное
+// удаление стёрло её полностью). AuditLog по-прежнему пишется параллельно
+// (см. auditEventId) как общий технический журнал, но UI абонемента больше
+// не зависит только от него.
+//
+// Запись создаётся в ТОЙ ЖЕ транзакции, что и само изменение
+// ClientSubscription/SubscriptionUsage (см. updateSubscriptionHours,
+// chargeEventToSubscription в src/lib/actions/subscriptions.ts) — если
+// транзакция не закоммитилась, остаток часов не мог измениться без истории,
+// и наоборот.
+model SubscriptionAdjustment {
+  id                 String                     @id @default(cuid())
+  subscriptionId     String                     @map("subscription_id")
+  type               SubscriptionAdjustmentType
+  oldTotalHours      Float?                     @map("old_total_hours")
+  newTotalHours      Float?                     @map("new_total_hours")
+  oldUsedHours       Float?                     @map("old_used_hours")
+  newUsedHours       Float?                     @map("new_used_hours")
+  oldRemainingHours  Float?                     @map("old_remaining_hours")
+  newRemainingHours  Float?                     @map("new_remaining_hours")
+  // Для TRANSFER_IN/TRANSFER_OUT — сколько часов перенесено и с/на какой
+  // абонемент. Обычная строка, не Prisma-связь (не хотим второй именованной
+  // связи ClientSubscription<->ClientSubscription ради редко читаемого поля).
+  hours              Float?
+  relatedSubscriptionId String?                 @map("related_subscription_id")
+  scheduleEventId    String?                    @map("schedule_event_id")
+  reason             String?
+  comment            String?
+  actorUserId        String?                    @map("actor_user_id")
+  // Id соответствующей строки в общем AuditLog, если она успешно записалась
+  // (та же транзакция — по факту либо обе строки есть, либо ни одной).
+  auditEventId       String?                    @map("audit_event_id")
+  createdAt          DateTime                   @default(now()) @map("created_at")
+
+  subscription ClientSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  actor        User?              @relation(fields: [actorUserId], references: [id])
+
+  @@index([subscriptionId])
+  @@map("cms_subscription_adjustment")
 }
 
 // Списание часов по одной записи расписания. У события может быть максимум

@@ -60,6 +60,7 @@ export default function SubscriptionDetailModal({ subscriptionId, onOpenChange, 
   const [detail, setDetail] = useState<SubscriptionDetailDTO | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [adjustments, setAdjustments] = useState<SubscriptionAdjustmentDTO[] | null>(null)
+  const [historyIncompleteBefore, setHistoryIncompleteBefore] = useState<string | null>(null)
 
   // Ручная корректировка часов
   const [packageHoursDraft, setPackageHoursDraft] = useState<number | null>(null)
@@ -98,7 +99,7 @@ export default function SubscriptionDetailModal({ subscriptionId, onOpenChange, 
       }
     })
     getSubscriptionAdjustmentHistory(subscriptionId).then(res => {
-      if (!cancelled) setAdjustments(res.data)
+      if (!cancelled) { setAdjustments(res.data); setHistoryIncompleteBefore(res.historyIncompleteBefore) }
     })
     return () => { cancelled = true }
   }, [subscriptionId])
@@ -134,6 +135,7 @@ export default function SubscriptionDetailModal({ subscriptionId, onOpenChange, 
     await loadDetail()
     const adj = await getSubscriptionAdjustmentHistory(subscriptionId)
     setAdjustments(adj.data)
+    setHistoryIncompleteBefore(adj.historyIncompleteBefore)
     onChanged?.()
   }
 
@@ -158,7 +160,7 @@ export default function SubscriptionDetailModal({ subscriptionId, onOpenChange, 
   }
 
   function adjustmentLine(a: SubscriptionAdjustmentDTO): string {
-    if (a.action === 'SUBSCRIPTION_HOURS_ADJUSTED') {
+    if (a.type === 'MANUAL_UPDATE') {
       const parts: string[] = []
       if (a.oldUsedHours != null && a.newUsedHours != null && a.oldUsedHours !== a.newUsedHours) {
         parts.push(`Использовано: ${formatHours(a.oldUsedHours)} → ${formatHours(a.newUsedHours)} ч`)
@@ -171,11 +173,11 @@ export default function SubscriptionDetailModal({ subscriptionId, onOpenChange, 
       }
       return [parts.join(' · '), a.comment].filter(Boolean).join(' · ')
     }
-    if (a.action === 'SUBSCRIPTION_HOURS_TRANSFERRED_OUT') {
+    if (a.type === 'TRANSFER_OUT') {
       return ['Перенесено списание на другой абонемент', a.relatedScheduleEventDate ? `Связано с записью от ${formatDate(a.relatedScheduleEventDate)}` : null]
         .filter(Boolean).join(' · ')
     }
-    if (a.action === 'SUBSCRIPTION_HOURS_TRANSFERRED_IN') {
+    if (a.type === 'TRANSFER_IN') {
       return ['Принято списание с другого абонемента', a.relatedScheduleEventDate ? `Связано с записью от ${formatDate(a.relatedScheduleEventDate)}` : null]
         .filter(Boolean).join(' · ')
     }
@@ -360,17 +362,33 @@ export default function SubscriptionDetailModal({ subscriptionId, onOpenChange, 
                 </p>
                 {adjustments === null ? (
                   <p className="text-zinc-500 text-xs">Загрузка...</p>
-                ) : adjustments.length === 0 ? (
-                  <p className="text-zinc-500 text-xs">Ручных корректировок пока не было.</p>
                 ) : (
-                  <div className="space-y-1.5">
-                    {adjustments.map(a => (
-                      <div key={a.id} className="text-xs text-zinc-400 bg-zinc-800/30 rounded-lg px-3 py-2">
-                        <span className="text-zinc-300">{formatDateTime(a.createdAt)}</span>
-                        {' · '}{adjustmentLine(a)}
+                  <>
+                    {adjustments.length === 0 && (
+                      historyIncompleteBefore ? (
+                        <p className="text-amber-400/80 text-xs">
+                          История до {formatDateTime(historyIncompleteBefore)} частично недоступна из-за ранее произошедшей потери журнала. Текущие часы абонемента не пострадали.
+                        </p>
+                      ) : (
+                        <p className="text-zinc-500 text-xs">Ручных корректировок пока не было.</p>
+                      )
+                    )}
+                    {adjustments.length > 0 && (
+                      <div className="space-y-1.5">
+                        {historyIncompleteBefore && (
+                          <p className="text-amber-400/80 text-[11px] mb-1.5">
+                            История до {formatDateTime(historyIncompleteBefore)} частично недоступна из-за ранее произошедшей потери журнала.
+                          </p>
+                        )}
+                        {adjustments.map(a => (
+                          <div key={a.id} className="text-xs text-zinc-400 bg-zinc-800/30 rounded-lg px-3 py-2">
+                            <span className="text-zinc-300">{formatDateTime(a.createdAt)}</span>
+                            {' · '}{adjustmentLine(a)}
+                          </div>
+                        ))}
                       </div>
-                    ))}
-                  </div>
+                    )}
+                  </>
                 )}
               </div>
             </>

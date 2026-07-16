@@ -5,7 +5,7 @@ import { prisma } from '@/lib/prisma'
 import { auth } from '@/auth'
 import type { ClientSubscription, SubscriptionStatus, SubscriptionUsage, Prisma } from '@prisma/client'
 import { canAutoRecomputeStatus, displayRemainingHours } from '@/lib/subscription-model'
-import { writeAuditLog as writeAuditLogEntry } from '@/lib/audit'
+import { writeAuditLog as writeAuditLogEntry, resolveValidUserId } from '@/lib/audit'
 
 // ============================================================
 // АВТОРИЗАЦИЯ
@@ -260,6 +260,11 @@ export async function chargeEventToSubscription(
       // "Перенесено списание на другой абонемент") — единственный случай,
       // когда chargeEventToSubscription пишет в AuditLog: обычное первое
       // списание — это просто нормальная оплата, не "корректировка".
+      //
+      // Запись в AuditLog и в SubscriptionAdjustment — В ЭТОЙ ЖЕ транзакции,
+      // не после неё (см. project_studio_lk_audit_log_incident): иначе
+      // возможна ситуация "часы перенеслись, история — нет", если процесс
+      // упадёт между коммитом транзакции и отдельной записью лога.
       let transferredFromSubscriptionId: string | null = null
       if (existing && existing.subscriptionId !== input.subscriptionId) {
         const otherSub = await tx.clientSubscription.findUnique({
@@ -269,6 +274,37 @@ export async function chargeEventToSubscription(
         if (otherSub) {
           await applyAutoStatus(tx, otherSub)
           transferredFromSubscriptionId = otherSub.id
+
+          const validUserId = await resolveValidUserId(tx, authResult.userId)
+          const transferMeta = { scheduleEventId: input.scheduleEventId, hours: input.usedHours, manual: true as const }
+
+          const auditOut = await tx.auditLog.create({
+            data: {
+              userId: validUserId, action: 'SUBSCRIPTION_HOURS_TRANSFERRED_OUT', entityType: 'ClientSubscription',
+              entityId: otherSub.id, metadata: { ...transferMeta, toSubscriptionId: input.subscriptionId },
+            },
+          })
+          await tx.subscriptionAdjustment.create({
+            data: {
+              subscriptionId: otherSub.id, type: 'TRANSFER_OUT', hours: input.usedHours,
+              relatedSubscriptionId: input.subscriptionId, scheduleEventId: input.scheduleEventId,
+              actorUserId: validUserId, auditEventId: auditOut.id,
+            },
+          })
+
+          const auditIn = await tx.auditLog.create({
+            data: {
+              userId: validUserId, action: 'SUBSCRIPTION_HOURS_TRANSFERRED_IN', entityType: 'ClientSubscription',
+              entityId: input.subscriptionId, metadata: { ...transferMeta, fromSubscriptionId: otherSub.id },
+            },
+          })
+          await tx.subscriptionAdjustment.create({
+            data: {
+              subscriptionId: input.subscriptionId, type: 'TRANSFER_IN', hours: input.usedHours,
+              relatedSubscriptionId: otherSub.id, scheduleEventId: input.scheduleEventId,
+              actorUserId: validUserId, auditEventId: auditIn.id,
+            },
+          })
         }
       }
 
@@ -280,26 +316,6 @@ export async function chargeEventToSubscription(
         transferredFromSubscriptionId,
       }
     })
-
-    if (result.transferredFromSubscriptionId) {
-      const transferMeta = {
-        scheduleEventId: input.scheduleEventId,
-        hours: input.usedHours,
-        manual: true as const,
-      }
-      await writeAuditLog({
-        userId: authResult.userId,
-        action: 'SUBSCRIPTION_HOURS_TRANSFERRED_OUT',
-        entityId: result.transferredFromSubscriptionId,
-        metadata: { ...transferMeta, toSubscriptionId: input.subscriptionId },
-      })
-      await writeAuditLog({
-        userId: authResult.userId,
-        action: 'SUBSCRIPTION_HOURS_TRANSFERRED_IN',
-        entityId: input.subscriptionId,
-        metadata: { ...transferMeta, fromSubscriptionId: result.transferredFromSubscriptionId },
-      })
-    }
 
     revalidateSubscriptionConsumers(result.subscription.clientId)
     return { ok: true, data: toDTO(result.subscription) }
@@ -512,20 +528,44 @@ export async function updateSubscriptionHours(
       }
     }
 
-    const updated = await prisma.clientSubscription.update({ where: { id: subscriptionId }, data, include: USAGE_INCLUDE })
+    // Остаток + AuditLog + SubscriptionAdjustment — одной транзакцией (см.
+    // project_studio_lk_audit_log_incident): не должно быть ситуации "часы
+    // изменились, история корректировки — нет".
+    const updated = await prisma.$transaction(async tx => {
+      const updatedSub = await tx.clientSubscription.update({ where: { id: subscriptionId }, data, include: USAGE_INCLUDE })
+      const validUserId = await resolveValidUserId(tx, authResult.userId)
 
-    await writeAuditLog({
-      userId: authResult.userId,
-      action: 'SUBSCRIPTION_HOURS_ADJUSTED',
-      entityId: subscriptionId,
-      metadata: {
-        oldTotalHours, newTotalHours: input.packageHours,
-        oldUsedHours, newUsedHours: input.usedHours,
-        oldRemainingHours, newRemainingHours,
-        comment: input.adjustmentComment?.trim() || null,
-        reason: input.adjustmentReason?.trim() || null,
-        manual: true,
-      },
+      const auditEvent = await tx.auditLog.create({
+        data: {
+          userId: validUserId,
+          action: 'SUBSCRIPTION_HOURS_ADJUSTED',
+          entityType: 'ClientSubscription',
+          entityId: subscriptionId,
+          metadata: {
+            oldTotalHours, newTotalHours: input.packageHours,
+            oldUsedHours, newUsedHours: input.usedHours,
+            oldRemainingHours, newRemainingHours,
+            comment: input.adjustmentComment?.trim() || null,
+            reason: input.adjustmentReason?.trim() || null,
+            manual: true,
+          },
+        },
+      })
+      await tx.subscriptionAdjustment.create({
+        data: {
+          subscriptionId,
+          type: 'MANUAL_UPDATE',
+          oldTotalHours, newTotalHours: input.packageHours,
+          oldUsedHours, newUsedHours: input.usedHours,
+          oldRemainingHours, newRemainingHours,
+          reason: input.adjustmentReason?.trim() || null,
+          comment: input.adjustmentComment?.trim() || null,
+          actorUserId: validUserId,
+          auditEventId: auditEvent.id,
+        },
+      })
+
+      return updatedSub
     })
 
     revalidateSubscriptionConsumers(updated.clientId)
@@ -537,16 +577,18 @@ export async function updateSubscriptionHours(
 }
 
 // ============================================================
-// ИСТОРИЯ КОРРЕКТИРОВОК — и ручные правки часов (updateSubscriptionHours), и
-// переносы оплаты между абонементами (chargeEventToSubscription) — то же
-// AuditLog, что и у смены статуса, просто другой набор action. Единая
-// таблица истории для "Истории корректировок" в карточке абонемента.
+// ИСТОРИЯ КОРРЕКТИРОВОК — читается из SubscriptionAdjustment (иммутабельная
+// бизнес-таблица, см. prisma/schema.prisma), НЕ из общего AuditLog — тот
+// остаётся параллельным техническим журналом (см. auditEventId), но больше
+// не единственный источник этой истории (см.
+// project_studio_lk_audit_log_incident: раньше был единственным, и его
+// удаление стёрло историю целиком).
 // ============================================================
 
 export interface SubscriptionAdjustmentDTO {
   id: string
   createdAt: string
-  action: string
+  type: string
   oldTotalHours: number | null
   newTotalHours: number | null
   oldUsedHours: number | null
@@ -559,50 +601,55 @@ export interface SubscriptionAdjustmentDTO {
   relatedScheduleEventDate: string | null
 }
 
-const ADJUSTMENT_ACTIONS = ['SUBSCRIPTION_HOURS_ADJUSTED', 'SUBSCRIPTION_HOURS_TRANSFERRED_OUT', 'SUBSCRIPTION_HOURS_TRANSFERRED_IN']
+// Момент, когда защита включилась (append-only триггер на AuditLog + перевод
+// истории на SubscriptionAdjustment, см. AGENTS.md "Data Safety and Audit
+// Integrity"). У абонементов старше этой даты не восстановить, БЫЛИ ли у них
+// корректировки до неё — прежняя единственная копия (AuditLog) стёрта
+// инцидентом 2026-07-15. Честно показываем это в UI вместо "не было", а не
+// делаем вид, что пустой список означает "корректировок никогда не было".
+const SUBSCRIPTION_ADJUSTMENT_TRACKING_SINCE = new Date('2026-07-16T00:00:00Z')
 
 export async function getSubscriptionAdjustmentHistory(subscriptionId: string): Promise<
-  { ok: true; data: SubscriptionAdjustmentDTO[] } | { ok: false; data: SubscriptionAdjustmentDTO[]; error: string }
+  { ok: true; data: SubscriptionAdjustmentDTO[]; historyIncompleteBefore: string | null }
+  | { ok: false; data: SubscriptionAdjustmentDTO[]; historyIncompleteBefore: string | null; error: string }
 > {
   try {
-    const rows = await prisma.auditLog.findMany({
-      where: { entityType: 'ClientSubscription', entityId: subscriptionId, action: { in: ADJUSTMENT_ACTIONS } },
-      orderBy: { createdAt: 'desc' },
-    })
+    const [rows, subscription] = await Promise.all([
+      prisma.subscriptionAdjustment.findMany({ where: { subscriptionId }, orderBy: { createdAt: 'desc' } }),
+      prisma.clientSubscription.findUnique({ where: { id: subscriptionId }, select: { purchasedAt: true } }),
+    ])
 
-    const scheduleEventIds = Array.from(new Set(
-      rows.map(r => (r.metadata as Record<string, unknown> | null)?.scheduleEventId).filter((v): v is string => typeof v === 'string'),
-    ))
+    const scheduleEventIds = Array.from(new Set(rows.map(r => r.scheduleEventId).filter((v): v is string => v != null)))
     const events = scheduleEventIds.length > 0
       ? await prisma.scheduleEvent.findMany({ where: { id: { in: scheduleEventIds } }, select: { id: true, startAt: true } })
       : []
     const eventDateById = new Map(events.map(e => [e.id, e.startAt ? e.startAt.toISOString() : null]))
 
-    const data: SubscriptionAdjustmentDTO[] = rows.map(r => {
-      const m = (r.metadata ?? {}) as Record<string, unknown>
-      const num = (key: string) => (typeof m[key] === 'number' ? m[key] as number : null)
-      const str = (key: string) => (typeof m[key] === 'string' ? m[key] as string : null)
-      const scheduleEventId = str('scheduleEventId')
-      return {
-        id: r.id,
-        createdAt: r.createdAt.toISOString(),
-        action: r.action,
-        oldTotalHours: num('oldTotalHours'),
-        newTotalHours: num('newTotalHours'),
-        oldUsedHours: num('oldUsedHours'),
-        newUsedHours: num('newUsedHours'),
-        oldRemainingHours: num('oldRemainingHours'),
-        newRemainingHours: num('newRemainingHours'),
-        comment: str('comment'),
-        reason: str('reason'),
-        hours: num('hours'),
-        relatedScheduleEventDate: scheduleEventId ? (eventDateById.get(scheduleEventId) ?? null) : null,
-      }
-    })
+    const data: SubscriptionAdjustmentDTO[] = rows.map(r => ({
+      id: r.id,
+      createdAt: r.createdAt.toISOString(),
+      type: r.type,
+      oldTotalHours: r.oldTotalHours,
+      newTotalHours: r.newTotalHours,
+      oldUsedHours: r.oldUsedHours,
+      newUsedHours: r.newUsedHours,
+      oldRemainingHours: r.oldRemainingHours,
+      newRemainingHours: r.newRemainingHours,
+      comment: r.comment,
+      reason: r.reason,
+      hours: r.hours,
+      relatedScheduleEventDate: r.scheduleEventId ? (eventDateById.get(r.scheduleEventId) ?? null) : null,
+    }))
 
-    return { ok: true, data }
+    // Пометка нужна, только если абонемент вообще существовал ДО того, как
+    // заработала защита — новые абонементы всегда имеют полную историю.
+    const historyIncompleteBefore = subscription && subscription.purchasedAt < SUBSCRIPTION_ADJUSTMENT_TRACKING_SINCE
+      ? SUBSCRIPTION_ADJUSTMENT_TRACKING_SINCE.toISOString()
+      : null
+
+    return { ok: true, data, historyIncompleteBefore }
   } catch (e) {
     console.error('[getSubscriptionAdjustmentHistory]', e)
-    return { ok: false, data: [], error: 'Не удалось загрузить историю корректировок' }
+    return { ok: false, data: [], historyIncompleteBefore: null, error: 'Не удалось загрузить историю корректировок' }
   }
 }
