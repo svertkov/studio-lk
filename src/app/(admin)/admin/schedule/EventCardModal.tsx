@@ -26,6 +26,9 @@ import ConfirmableStatusToggle from '@/components/ui/confirmable-status-toggle'
 import SubscriptionPaymentBlock, { type SubscriptionPaymentHandle } from './SubscriptionPaymentBlock'
 import AddClientModal from '../clients/AddClientModal'
 import WorkDocumentsSection from '@/components/documents/WorkDocumentsSection'
+import OrderFinanceBlock from '@/components/orders/OrderFinanceBlock'
+import MontageDisableChoiceDialog from '@/components/orders/MontageDisableChoiceDialog'
+import type { MontageProjectDTO } from '@/lib/actions/montage'
 
 // "08:00–09:00", либо с датой спереди, если гримёр уходит на предыдущий
 // календарный день ("9 мар., 23:00–09:00" — начало съёмки в 00:xx).
@@ -91,6 +94,11 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
   const [yandexNotRequiredReason, setYandexNotRequiredReason] = useState<string | null>(annotation?.yandexNotRequiredReason ?? null)
   const [nasNotRequiredReason, setNasNotRequiredReason] = useState<string | null>(annotation?.nasNotRequiredReason ?? null)
   const [editingRequired, setEditingRequired] = useState<boolean | null>(annotation?.editingRequired ?? null)
+  // См. OrderFinanceBlock — activeMontageProjects заполняется самим блоком,
+  // переиспользуем для MontageDisableChoiceDialog при отключении монтажа.
+  const [activeMontageProjects, setActiveMontageProjects] = useState<MontageProjectDTO[]>([])
+  const [montageDisableDialogOpen, setMontageDisableDialogOpen] = useState(false)
+  const [pendingEditingRequired, setPendingEditingRequired] = useState<boolean | null | 'unset'>('unset')
   const [clientNameRaw, setClientNameRaw] = useState(annotation?.clientNameRaw ?? '')
   const [contactRaw, setContactRaw] = useState(annotation?.contactRaw ?? '')
   const [companyRaw, setCompanyRaw] = useState(annotation?.companyRaw ?? '')
@@ -217,6 +225,18 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
     setClientId(id)
     setClientName(name)
     setSimilarMatches(null)
+  }
+
+  // Отключение "Монтаж требуется" при уже существующем проекте монтажа —
+  // раньше проект просто зависал без предупреждения (см. план). Перехватываем
+  // переход true -> не true, если есть непогашенный проект.
+  function handleEditingRequiredChange(next: boolean | null) {
+    if (editingRequired === true && next !== true && activeMontageProjects.length > 0) {
+      setPendingEditingRequired(next)
+      setMontageDisableDialogOpen(true)
+      return
+    }
+    setEditingRequired(next)
   }
 
   async function copyLink(url: string, field: 'yandex' | 'nas') {
@@ -565,12 +585,14 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
             <p className="text-zinc-500 text-xs">Оплата через абонемент доступна после привязки клиента к записи.</p>
           )}
           {(!hasClient || paymentMode === 'ONE_TIME') && (
-            <div className="grid grid-cols-2 gap-3 items-end">
-              <div>
-                <label className={LABEL}>Стоимость, ₽</label>
-                <input className={INPUT} type="number" min="0" placeholder="напр. 15000" value={estimatedPrice}
-                  onChange={e => setEstimatedPrice(e.target.value)} />
-              </div>
+            <>
+              <OrderFinanceBlock
+                orderId={annotation?.orderId ?? null}
+                revenueValue={estimatedPrice}
+                onRevenueChange={setEstimatedPrice}
+                editingRequired={editingRequired}
+                onMontageProjectsLoaded={setActiveMontageProjects}
+              />
               <div>
                 <label className={LABEL}>Способ оплаты</label>
                 <select className={SELECT} value={paymentMethod} onChange={e => setPaymentMethod(e.target.value as PaymentMethod | '')}>
@@ -580,7 +602,7 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
                   ))}
                 </select>
               </div>
-            </div>
+            </>
           )}
           {paymentMissingNow && (
             isBookingPast ? (
@@ -593,30 +615,20 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
             )
           )}
 
-          {isBookingPast && (
-            <div>
-              <label className={LABEL}>Монтаж</label>
-              <div className="flex gap-2">
-                <button type="button" onClick={() => setEditingRequired(true)}
-                  className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                    editingRequired === true ? 'bg-[#FACC15] text-black' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-white'
-                  }`}>
-                  Монтаж требуется
-                </button>
-                <button type="button" onClick={() => setEditingRequired(false)}
-                  className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                    editingRequired === false ? 'bg-[#00c26b] text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-white'
-                  }`}>
-                  Монтаж не требуется
-                </button>
-              </div>
-              <p className="text-zinc-500 text-xs mt-1.5">
-                {editingRequired === null
-                  ? 'Выберите, нужен ли монтаж, прежде чем прикладывать материалы — так администратор не забудет это сделать.'
-                  : 'После сохранения заказ автоматически перейдёт в «Монтаж», если монтаж требуется, или в «Завершено», если монтаж не требуется.'}
-              </p>
-            </div>
-          )}
+          <div>
+            <label className={LABEL}>Монтаж</label>
+            <select className={SELECT} value={editingRequired === null ? '' : String(editingRequired)}
+              onChange={e => handleEditingRequiredChange(e.target.value === '' ? null : e.target.value === 'true')}>
+              <option value="">Не указано</option>
+              <option value="true">Нужен</option>
+              <option value="false">Не нужен</option>
+            </select>
+            <p className="text-zinc-500 text-xs mt-1.5">
+              {editingRequired === null
+                ? 'Выберите, нужен ли монтаж, прежде чем прикладывать материалы — так администратор не забудет это сделать.'
+                : 'После сохранения заказ автоматически перейдёт в «Монтаж», если монтаж требуется, или в «Завершено», если монтаж не требуется.'}
+            </p>
+          </div>
 
           <p className={SECTION}>Материалы</p>
           {shouldShowMaterialsBadge(vm) && (
@@ -833,6 +845,14 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
           customSource: 'Google Calendar',
         }}
         onCreated={client => { setAddClientOpen(false); handleLinkClient(client.id, client.name) }}
+      />
+    )}
+    {montageDisableDialogOpen && activeMontageProjects[0] && (
+      <MontageDisableChoiceDialog
+        open={montageDisableDialogOpen}
+        onOpenChange={setMontageDisableDialogOpen}
+        project={activeMontageProjects[0]}
+        onResolve={() => { if (pendingEditingRequired !== 'unset') setEditingRequired(pendingEditingRequired); setPendingEditingRequired('unset') }}
       />
     )}
     </>

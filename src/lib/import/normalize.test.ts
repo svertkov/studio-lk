@@ -1,5 +1,16 @@
 import { describe, it, expect } from 'vitest'
-import { parseDurationHours, extractTimeRange, combineDateWithStudioTime } from './normalize'
+import { parseDurationHours, extractTimeRange, combineDateWithStudioTime, normalizeFormat } from './normalize'
+
+describe('normalizeFormat — словарь форматов съёмки', () => {
+  it('maps "креатив"/"creative" aliases to the canonical "Креативная съёмка"', () => {
+    expect(normalizeFormat('креативная съемка')).toBe('Креативная съёмка')
+    expect(normalizeFormat('Creative shoot')).toBe('Креативная съёмка')
+  })
+
+  it('leaves an unrecognized format as trimmed raw text', () => {
+    expect(normalizeFormat('  что-то новое  ')).toBe('что-то новое')
+  })
+})
 
 describe('extractTimeRange — восстановление времени из "часы" колонки', () => {
   it('parses "2 часа (16-18)" as 16:00-18:00', () => {

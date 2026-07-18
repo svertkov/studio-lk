@@ -237,6 +237,7 @@ export const FORMAT_DICTIONARY: AliasEntry[] = [
   { canonical: 'Курс', aliases: ['курс', 'course', 'урок'] },
   { canonical: 'Онлайн-трансляция', aliases: ['трансляц', 'транляц', 'stream', 'эфир', 'вебинар', 'webinar'] },
   { canonical: 'Корпоративное видео', aliases: ['корпоратив', 'corporate'] },
+  { canonical: 'Креативная съёмка', aliases: ['креатив', 'creative'] },
 ]
 
 export function normalizeFormat(raw: string): string {

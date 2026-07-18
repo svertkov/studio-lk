@@ -17,6 +17,9 @@ import type { ClientType, OrderStatus, OrderPaymentStatus, PaymentMethod } from 
 import AddClientModal from '../clients/AddClientModal'
 import WorkDocumentsSection from '@/components/documents/WorkDocumentsSection'
 import ConfirmableStatusToggle from '@/components/ui/confirmable-status-toggle'
+import OrderFinanceBlock from '@/components/orders/OrderFinanceBlock'
+import MontageDisableChoiceDialog from '@/components/orders/MontageDisableChoiceDialog'
+import type { MontageProjectDTO } from '@/lib/actions/montage'
 
 interface Props {
   order: OrderDTO | null
@@ -138,6 +141,15 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
   const [editingRequired, setEditingRequired] = useState<'' | 'true' | 'false'>(
     order?.editingRequired === true ? 'true' : order?.editingRequired === false ? 'false' : ''
   )
+  // activeMontageProjects заполняется самим OrderFinanceBlock (единственное
+  // место, что реально загружает проекты монтажа заказа) — переиспользуем
+  // для диалога отключения монтажа, не делаем второй такой же запрос.
+  // Прибыль (netProfitMode и т.п.) редактируется и сохраняется САМИМ
+  // OrderFinanceBlock напрямую через updateOrderNetProfit — не часть этой
+  // формы/handleSave, поэтому здесь для неё нет локального состояния.
+  const [activeMontageProjects, setActiveMontageProjects] = useState<MontageProjectDTO[]>([])
+  const [montageDisableDialogOpen, setMontageDisableDialogOpen] = useState(false)
+  const [pendingEditingRequired, setPendingEditingRequired] = useState<'' | 'true' | 'false' | null>(null)
   const [yandexDiskUrl, setYandexDiskUrl] = useState(order?.yandexDiskUrl ?? '')
   const [nasBackupUrl, setNasBackupUrl] = useState(order?.nasBackupUrl ?? '')
   const [materialsComment, setMaterialsComment] = useState(order?.materialsComment ?? '')
@@ -190,6 +202,18 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
 
   function unlinkClient() {
     setClientId(null)
+  }
+
+  // Отключение "Монтаж требуется" при уже существующем проекте монтажа —
+  // раньше проект просто зависал без предупреждения (см. план). Перехватываем
+  // переход true -> не true, если есть непогашенный проект.
+  function handleEditingRequiredChange(next: '' | 'true' | 'false') {
+    if (editingRequired === 'true' && next !== 'true' && activeMontageProjects.length > 0) {
+      setPendingEditingRequired(next)
+      setMontageDisableDialogOpen(true)
+      return
+    }
+    setEditingRequired(next)
   }
 
   async function handleSave() {
@@ -450,7 +474,7 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
                   </Field>
                   <Field>
                     <Label>Монтаж</Label>
-                    <SelectField value={editingRequired} onChange={e => setEditingRequired(e.target.value as '' | 'true' | 'false')}>
+                    <SelectField value={editingRequired} onChange={e => handleEditingRequiredChange(e.target.value as '' | 'true' | 'false')}>
                       <option value="">Не указано</option>
                       <option value="true">Нужен</option>
                       <option value="false">Не нужен</option>
@@ -546,12 +570,14 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
               </div>
             ) : (
               <>
+                <OrderFinanceBlock
+                  orderId={order?.id ?? null}
+                  revenueValue={preliminaryAmount}
+                  onRevenueChange={setPreliminaryAmount}
+                  editingRequired={editingRequired === '' ? null : editingRequired === 'true'}
+                  onMontageProjectsLoaded={setActiveMontageProjects}
+                />
                 <Row>
-                  <Field>
-                    <Label>Предварительная стоимость, ₽</Label>
-                    <input className={INPUT} type="number" min="0" placeholder="напр. 15000" value={preliminaryAmount}
-                      onChange={e => setPreliminaryAmount(e.target.value)} />
-                  </Field>
                   <Field>
                     <Label>Способ оплаты</Label>
                     <SelectField value={paymentMethod} onChange={e => setPaymentMethod(e.target.value as PaymentMethod | '')}>
@@ -561,15 +587,15 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
                       ))}
                     </SelectField>
                   </Field>
+                  <Field>
+                    <Label>Статус оплаты</Label>
+                    <SelectField value={paymentStatus} onChange={e => setPaymentStatus(e.target.value as OrderPaymentStatus)}>
+                      {(Object.keys(ORDER_PAYMENT_STATUS_LABELS) as OrderPaymentStatus[]).map(s => (
+                        <option key={s} value={s}>{ORDER_PAYMENT_STATUS_LABELS[s]}</option>
+                      ))}
+                    </SelectField>
+                  </Field>
                 </Row>
-                <Field>
-                  <Label>Статус оплаты</Label>
-                  <SelectField value={paymentStatus} onChange={e => setPaymentStatus(e.target.value as OrderPaymentStatus)}>
-                    {(Object.keys(ORDER_PAYMENT_STATUS_LABELS) as OrderPaymentStatus[]).map(s => (
-                      <option key={s} value={s}>{ORDER_PAYMENT_STATUS_LABELS[s]}</option>
-                    ))}
-                  </SelectField>
-                </Field>
               </>
             )}
 
@@ -604,6 +630,15 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
           </div>
         </DialogContent>
       </Dialog>
+
+      {montageDisableDialogOpen && activeMontageProjects[0] && (
+        <MontageDisableChoiceDialog
+          open={montageDisableDialogOpen}
+          onOpenChange={setMontageDisableDialogOpen}
+          project={activeMontageProjects[0]}
+          onResolve={() => { if (pendingEditingRequired !== null) setEditingRequired(pendingEditingRequired); setPendingEditingRequired(null) }}
+        />
+      )}
 
       {addClientOpen && (
         <AddClientModal

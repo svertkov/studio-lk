@@ -16,6 +16,7 @@ import {
 } from '@/lib/montage-model'
 import { getDocumentDisplayNumber } from '@/lib/document-model'
 import { updateOrderStatus } from '@/lib/actions/orders'
+import { writeAuditLog } from '@/lib/audit'
 
 // ============================================================
 // АВТОРИЗАЦИЯ — та же локальная проверка, что в actions/orders.ts и
@@ -27,11 +28,11 @@ import { updateOrderStatus } from '@/lib/actions/orders'
 // как и все остальные админ-разделы (см. src/app/(admin)/layout.tsx).
 // ============================================================
 
-async function requireStaffSession(): Promise<{ ok: true } | { ok: false; error: string }> {
+async function requireStaffSession(): Promise<{ ok: true; userId: string | null } | { ok: false; error: string }> {
   try {
     const session = await auth()
     if (!session?.user) return { ok: false, error: 'Требуется авторизация' }
-    return { ok: true }
+    return { ok: true, userId: session.user.id ?? null }
   } catch {
     return { ok: false, error: 'Требуется авторизация' }
   }
@@ -334,6 +335,29 @@ export async function getMontageProjectsForClient(clientId: string): Promise<
   } catch (e) {
     console.error('[getMontageProjectsForClient]', e)
     return { ok: false, data: [], error: 'Не удалось загрузить проекты монтажа клиента' }
+  }
+}
+
+// Проекты монтажа ОДНОГО заказа — читается финансовым блоком карточки заказа
+// (OrderFinanceBlock) и диалогом отключения монтажа (MontageDisableChoiceDialog),
+// чтобы показывать/менять MontageProject.editorAmount/clientAmount напрямую,
+// не заводя копию этих полей на Order (см. AGENTS.md, единый источник данных).
+export async function getMontageProjectsForOrder(orderId: string): Promise<
+  { ok: true; data: MontageProjectDTO[] } | { ok: false; data: MontageProjectDTO[]; error: string }
+> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, data: [], error: authResult.error }
+
+  try {
+    const rows = await prisma.montageProject.findMany({
+      where: { orderId },
+      orderBy: { createdAt: 'desc' },
+      include: MONTAGE_INCLUDE,
+    })
+    return { ok: true, data: rows.map(toDTO) }
+  } catch (e) {
+    console.error('[getMontageProjectsForOrder]', e)
+    return { ok: false, data: [], error: 'Не удалось загрузить проекты монтажа заказа' }
   }
 }
 
@@ -676,6 +700,10 @@ export async function pauseMontageProject(
       include: MONTAGE_INCLUDE,
     })
 
+    await writeAuditLog({
+      userId: authResult.userId, action: 'MONTAGE_PROJECT_PAUSED', entityType: 'MontageProject', entityId: id,
+      metadata: { reason: reason?.trim() || null },
+    })
     revalidateMontagePaths(updated.order?.clientId ?? updated.clientId)
     return { ok: true, data: toDTO(updated) }
   } catch (e) {
@@ -703,6 +731,9 @@ export async function resumeMontageProject(
       include: MONTAGE_INCLUDE,
     })
 
+    await writeAuditLog({
+      userId: authResult.userId, action: 'MONTAGE_PROJECT_RESUMED', entityType: 'MontageProject', entityId: id,
+    })
     revalidateMontagePaths(updated.order?.clientId ?? updated.clientId)
     return { ok: true, data: toDTO(updated) }
   } catch (e) {
@@ -737,6 +768,10 @@ export async function cancelMontageProject(
       include: MONTAGE_INCLUDE,
     })
 
+    await writeAuditLog({
+      userId: authResult.userId, action: 'MONTAGE_PROJECT_CANCELLED', entityType: 'MontageProject', entityId: id,
+      metadata: { reason: reason?.trim() || null },
+    })
     revalidateMontagePaths(updated.order?.clientId ?? updated.clientId)
     return { ok: true, data: toDTO(updated) }
   } catch (e) {
@@ -764,6 +799,9 @@ export async function archiveMontageProject(
       include: MONTAGE_INCLUDE,
     })
 
+    await writeAuditLog({
+      userId: authResult.userId, action: 'MONTAGE_PROJECT_ARCHIVED', entityType: 'MontageProject', entityId: id,
+    })
     revalidateMontagePaths(updated.order?.clientId ?? updated.clientId)
     return { ok: true, data: toDTO(updated) }
   } catch (e) {

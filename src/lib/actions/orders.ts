@@ -4,12 +4,12 @@ import { revalidatePath } from 'next/cache'
 import { prisma } from '@/lib/prisma'
 import { auth } from '@/auth'
 import type {
-  Order, Client, ScheduleEvent,
+  Order, Client, ScheduleEvent, MontageProject,
   OrderStatus, OrderSource, OrderPaymentStatus, PaymentMethod, ClientType, OrderPromotionType, DocumentFlowType,
-  DocumentType, DocumentStatus, ClientContractState,
+  DocumentType, DocumentStatus, ClientContractState, OrderNetProfitMode,
 } from '@prisma/client'
 import { getDocumentDisplayNumber } from '@/lib/document-model'
-import { computeDurationMinutes, isOrderReadyForArchive, archiveReasonForStatus } from '@/lib/order-model'
+import { computeDurationMinutes, isOrderReadyForArchive, archiveReasonForStatus, computeOrderNetProfit } from '@/lib/order-model'
 import { computeMaterialsStatus, computeYandexLinkExpiry } from '@/lib/schedule-model'
 import { parseEventTitle } from '@/lib/event-category'
 import { ensureMontageProjectForOrder } from '@/lib/actions/montage'
@@ -67,7 +67,17 @@ type OrderDocument = {
   type: DocumentType; number: number | null; suffix: string | null; status: DocumentStatus
   amount: number | null; issueDate: Date; serviceDescription: string | null
 }
-type OrderWithRelations = Order & { client: OrderClient | null; scheduleEvent: OrderScheduleEvent | null; documents: OrderDocument[] }
+// Только денежные поля + статус — для расчёта выплаты монтажёру в
+// computeOrderNetProfit. Полная карточка проекта (для UI-блока "Финансы
+// монтажа") читается отдельно через getMontageProjectsForOrder (montage.ts).
+type OrderMontageProject = Pick<MontageProject, 'id' | 'editorAmount' | 'clientAmount' | 'status'>
+type OrderWithRelations = Order & {
+  client: OrderClient | null
+  scheduleEvent: OrderScheduleEvent | null
+  documents: OrderDocument[]
+  netProfitOverrideBy: { name: string | null; email: string } | null
+  montageProjects: OrderMontageProject[]
+}
 
 const ORDER_INCLUDE = {
   client: { select: { name: true, phone: true, telegram: true, email: true, type: true, companyName: true, contractState: true } },
@@ -76,6 +86,11 @@ const ORDER_INCLUDE = {
   // клиента сюда не тянем (это отдельный, редко нужный на карточке заказа
   // relation-переход через client, не стоит лишнего join на каждый заказ доски).
   documents: { select: { type: true, number: true, suffix: true, status: true, amount: true, issueDate: true, serviceDescription: true } },
+  netProfitOverrideBy: { select: { name: true, email: true } },
+  // Только денежные поля + статус, не полный проект — см. OrderMontageProject.
+  // CANCELLED-проекты исключаются из расчёта прибыли (см. toDTO), но всё
+  // равно попадают сюда, чтобы UI мог показать "проект был, но отменён".
+  montageProjects: { select: { id: true, editorAmount: true, clientAmount: true, status: true } },
   scheduleEvent: {
     select: {
       id: true, camerasCount: true, editingRequired: true,
@@ -129,6 +144,22 @@ export interface OrderDTO {
   preliminaryAmount: number | null
   paymentStatus: OrderPaymentStatus
   paymentMethod: PaymentMethod | null
+  // Прибыль заказа — см. computeOrderNetProfit (order-model.ts). AUTO:
+  // netProfitAmount === netProfitAutoAmount (выручка минус выплата монтажёру
+  // связанных активных MontageProject). MANUAL_OVERRIDE: администратор
+  // подтвердил другое значение — netProfitAutoAmount всё равно приходит для
+  // сравнения "автоматически было бы: …" в UI.
+  netProfitMode: OrderNetProfitMode
+  netProfitAmount: number | null
+  netProfitAutoAmount: number | null
+  netProfitManualAmount: number | null
+  netProfitOverrideAt: string | null
+  netProfitOverrideByName: string | null
+  netProfitOverrideReason: string | null
+  // Есть ли непогашенный (не CANCELLED) проект монтажа — сама выплата/статус
+  // проекта читаются отдельно через getMontageProjectsForOrder (montage.ts),
+  // не дублируются здесь полностью (см. AGENTS.md, единый источник данных).
+  hasActiveMontageProject: boolean
   // Оплата абонементом — структурная связь на ScheduleEvent.subscriptionUsage,
   // не текст и не отдельная копия для заказа. null — абонемент не привязан
   // (и у заявок без записи в расписании — всегда null, привязать абонемент
@@ -202,6 +233,16 @@ function toDTO(row: OrderWithRelations): OrderDTO {
   // Если клиент привязан (client), его актуальные данные побеждают снэпшот на
   // заказе — снэпшот (clientName/clientPhone/...) остаётся только для заявок
   // без привязанного клиента (см. комментарий у Order.clientName в схеме).
+  const activeMontageProjects = row.montageProjects.filter(p => p.status !== 'CANCELLED')
+  const montageEditorAmountTotal = activeMontageProjects.length > 0
+    ? activeMontageProjects.reduce((sum, p) => sum + (p.editorAmount ?? 0), 0)
+    : null
+  const netProfit = computeOrderNetProfit({
+    revenue: row.scheduleEvent?.estimatedPrice ?? row.preliminaryAmount,
+    montageEditorAmountTotal,
+    mode: row.netProfitMode,
+    manualAmount: row.netProfitManualAmount,
+  })
   return {
     id: row.id,
     status: row.status,
@@ -223,6 +264,14 @@ function toDTO(row: OrderWithRelations): OrderDTO {
     preliminaryAmount: row.scheduleEvent?.estimatedPrice ?? row.preliminaryAmount,
     paymentStatus: row.paymentStatus,
     paymentMethod: row.scheduleEvent?.paymentMethod ?? row.paymentMethod,
+    netProfitMode: row.netProfitMode,
+    netProfitAmount: netProfit.amount,
+    netProfitAutoAmount: netProfit.autoAmount,
+    netProfitManualAmount: row.netProfitManualAmount,
+    netProfitOverrideAt: row.netProfitOverrideAt ? row.netProfitOverrideAt.toISOString() : null,
+    netProfitOverrideByName: row.netProfitOverrideBy?.name ?? row.netProfitOverrideBy?.email ?? null,
+    netProfitOverrideReason: row.netProfitOverrideReason,
+    hasActiveMontageProject: activeMontageProjects.length > 0,
     subscriptionUsage: row.scheduleEvent?.subscriptionUsage ? {
       usedHours: row.scheduleEvent.subscriptionUsage.usedHours,
       remainingHours: row.scheduleEvent.subscriptionUsage.subscription.packageHours
@@ -596,6 +645,10 @@ export async function updateOrder(
     let nasLinkRequiredChange: { before: boolean; after: boolean; reason: string | null } | null = null
 
     const order = await prisma.$transaction(async tx => {
+      // Общий для всей транзакции — та же причина отложить резолв сюда, что
+      // и раньше (было: только внутри hasBookingTimeNow).
+      const validUserId = await resolveValidUserId(tx, authResult.userId)
+
       const updated = await tx.order.update({
         where: { id },
         data: {
@@ -660,7 +713,7 @@ export async function updateOrder(
           // Контекст подтверждения исключения — тот же приём, что
           // upsertScheduleEvent (src/lib/actions/schedule.ts): заполняется
           // только на реальном переходе true→false, обнуляется на возврате.
-          const validUserId = await resolveValidUserId(tx, authResult.userId)
+          // validUserId уже посчитан выше (общий для всей транзакции).
           const wasYandexNotRequired = se.yandexLinkRequired === false
           const wasNasNotRequired = se.nasLinkRequired === false
 
@@ -794,12 +847,100 @@ export async function updateOrder(
         entityType: 'ScheduleEvent', entityId: order.scheduleEvent.id, metadata: nasLinkRequiredChange,
       })
     }
-
     revalidateOrderPaths(order.clientId)
     return { ok: true, data: toDTO(order) }
   } catch (e) {
     console.error('[updateOrder]', e)
     return { ok: false, error: 'Не удалось обновить заказ' }
+  }
+}
+
+// ============================================================
+// ОДИН ЗАКАЗ ПО ID — нужен местам, у которых нет полного OrderDTO под рукой
+// (например, EventCardModal, который открывается по ScheduleEvent и знает
+// только annotation.orderId, см. OrderFinanceBlock).
+// ============================================================
+
+export async function getOrder(
+  id: string
+): Promise<{ ok: true; data: OrderDTO } | { ok: false; error: string }> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, error: authResult.error }
+
+  try {
+    const row = await prisma.order.findUnique({ where: { id }, include: ORDER_INCLUDE })
+    if (!row) return { ok: false, error: 'Заказ не найден' }
+    return { ok: true, data: toDTO(row) }
+  } catch (e) {
+    console.error('[getOrder]', e)
+    return { ok: false, error: 'Не удалось загрузить заказ' }
+  }
+}
+
+// ============================================================
+// ЧИСТАЯ ПРИБЫЛЬ ЗАКАЗА — самостоятельное действие (не часть updateOrder),
+// тот же приём "overlay-мутация, отдельная от общей кнопки Сохранить", что
+// уже используется для pause/cancel/archiveMontageProject и
+// updateMontageProject (см. OrderFinanceBlock — вызывает это напрямую,
+// независимо от того, в какой из двух карточек заказа открыт блок финансов).
+// ============================================================
+
+export interface UpdateOrderNetProfitInput {
+  mode: OrderNetProfitMode
+  manualAmount: number | null
+  reason: string | null
+}
+
+export async function updateOrderNetProfit(
+  id: string, input: UpdateOrderNetProfitInput
+): Promise<{ ok: true; data: OrderDTO } | { ok: false; error: string }> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, error: authResult.error }
+
+  try {
+    const existing = await prisma.order.findUnique({ where: { id } })
+    if (!existing) return { ok: false, error: 'Заказ не найден' }
+
+    const wasManualOverride = existing.netProfitMode === 'MANUAL_OVERRIDE'
+    const netProfitOverrideAt = input.mode === 'AUTO'
+      ? null
+      : wasManualOverride ? (existing.netProfitOverrideAt ?? new Date()) : new Date()
+    const netProfitOverrideReason = input.mode === 'AUTO' ? null : (input.reason?.trim() || null)
+    const netProfitManualAmount = input.mode === 'AUTO' ? null : input.manualAmount
+
+    const order = await prisma.$transaction(async tx => {
+      const validUserId = await resolveValidUserId(tx, authResult.userId)
+      const netProfitOverrideById = input.mode === 'AUTO'
+        ? null
+        : wasManualOverride ? existing.netProfitOverrideById : validUserId
+
+      const updated = await tx.order.update({
+        where: { id },
+        data: {
+          netProfitMode: input.mode,
+          netProfitManualAmount,
+          netProfitOverrideAt,
+          netProfitOverrideById,
+          netProfitOverrideReason,
+        },
+        include: ORDER_INCLUDE,
+      })
+
+      if (existing.netProfitMode !== input.mode) {
+        await writeAuditLog({
+          userId: authResult.userId, action: 'ORDER_NET_PROFIT_MODE_CHANGED', entityType: 'Order', entityId: id,
+          metadata: { before: existing.netProfitMode, after: input.mode, manualAmount: netProfitManualAmount, reason: netProfitOverrideReason },
+        })
+      }
+
+      return updated
+    })
+
+    revalidateOrderPaths(order.clientId)
+    return { ok: true, data: toDTO(order) }
+  } catch (e) {
+    console.error('[updateOrderNetProfit]', e)
+    return { ok: false, error: 'Не удалось изменить прибыль заказа' }
   }
 }
 

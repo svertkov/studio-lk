@@ -154,6 +154,12 @@ enum OrderPaymentStatus {
   SUBSCRIPTION
 }
 
+// Режим отображаемой прибыли заказа — см. Order.netProfitMode.
+enum OrderNetProfitMode {
+  AUTO
+  MANUAL_OVERRIDE
+}
+
 // Какой состав документов нужен этой работе — см. Order.documentFlowType.
 enum DocumentFlowType {
   NOT_REQUIRED
@@ -345,6 +351,7 @@ model User {
   documentsUpdated              Document[]             @relation("DocumentUpdatedBy")
   scheduleEventYandexNotRequiredConfirmations ScheduleEvent[] @relation("ScheduleEventYandexNotRequiredConfirmedBy")
   scheduleEventNasNotRequiredConfirmations    ScheduleEvent[] @relation("ScheduleEventNasNotRequiredConfirmedBy")
+  orderNetProfitOverrides       Order[]                @relation("OrderNetProfitOverrideBy")
   subscriptionAdjustments        SubscriptionAdjustment[]
 
   @@map("cms_user")
@@ -589,6 +596,13 @@ model Document {
   issueDate DateTime        @map("issue_date")
   status    DocumentStatus
   purpose   InvoicePurpose? @map("purpose")
+  // Свободная сумма — источник истины ТОЛЬКО для документов без строк
+  // (исторические счета и всё, кроме INVOICE). Если у документа есть lineItems,
+  // amount становится ПРОИЗВОДНЫМ значением: пересчитывается сервером при
+  // любом изменении строк (см. recomputeDocumentAmount, actions/documents.ts) —
+  // не самостоятельно редактируемое поле, а кэш суммы, чтобы все существующие
+  // читатели (appendixAmountMismatches, /admin/documents, WorkDocumentsSection)
+  // продолжали работать без изменений.
   amount    Float?          @map("amount")
   dueDate   DateTime?       @map("due_date")
   comment   String?
@@ -617,6 +631,9 @@ model Document {
   linkedDocs     Document[]      @relation("ContractLink")
   createdBy      User?           @relation("DocumentCreatedBy", fields: [createdById], references: [id])
   updatedBy      User?           @relation("DocumentUpdatedBy", fields: [updatedById], references: [id])
+  // Только для type=INVOICE в этой версии (см. InvoiceLineItem) — ACT/APPENDIX/
+  // CONTRACT продолжают использовать amount/serviceDescription как раньше.
+  lineItems      InvoiceLineItem[]
 
   @@unique([type, number])
   // Номер приложения уникален в рамках одного договора (CONTRACT никогда не
@@ -628,6 +645,57 @@ model Document {
   @@index([montageProjectId])
   @@index([status])
   @@map("cms_document")
+}
+
+// Единица измерения строки счёта — небольшой закрытый список (как формат/зал
+// съёмки, см. AliasEntry-словари в src/lib/import/normalize.ts), не свободный
+// текст: нужен предсказуемый набор для отображения "x2 шт." / "x3 ч." и т.п.
+enum InvoiceLineItemUnit {
+  PIECE   // шт.
+  HOUR    // ч.
+  DAY     // дн.
+  SERVICE // услуга — по умолчанию, количество обычно 1
+}
+
+// НДС — фиксированный небольшой набор ставок РФ, не произвольный процент.
+// NOT_APPLICABLE ("без НДС") — значение по умолчанию, соответствует текущей
+// деятельности студии; расширять список ставок без явного запроса пользователя
+// не нужно (см. ТЗ раздел 23).
+enum VatRate {
+  NOT_APPLICABLE
+  ZERO
+  RATE_10
+  RATE_20
+}
+
+// Строка счёта — впервые структурирует то, что раньше было одним текстовым
+// Document.serviceDescription + одним Document.amount. Строки принадлежат
+// ОДНОМУ Document (в этой версии — только type=INVOICE, см. комментарий у
+// Document.lineItems). lineTotal (quantity * unitPrice) НЕ хранится —
+// считается чистой функцией computeLineItemTotal (document-model.ts), тот же
+// принцип "не хранить производное", что computeMontageProfit.
+model InvoiceLineItem {
+  id          String              @id @default(cuid())
+  documentId  String              @map("document_id")
+  // Порядок строк в счёте — ручная сортировка (кнопки вверх/вниз в UI), не
+  // полагаемся на createdAt (строки можно менять местами без пересоздания).
+  sortOrder   Int                 @default(0) @map("sort_order")
+  description String
+  quantity    Float               @default(1)
+  unit        InvoiceLineItemUnit @default(SERVICE)
+  unitPrice   Float               @map("unit_price")
+  vatRate     VatRate             @default(NOT_APPLICABLE) @map("vat_rate")
+  // Пометка одноразовой миграции существующих однострочных счетов (см.
+  // scripts/migrate-invoice-line-items) — не теряем факт "это перенесено из
+  // старого единого amount, а не введено вручную построчно".
+  migratedFromLegacyAmount Boolean @default(false) @map("migrated_from_legacy_amount")
+  createdAt   DateTime            @default(now()) @map("created_at")
+  updatedAt   DateTime            @updatedAt @map("updated_at")
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([documentId])
+  @@map("cms_invoice_line_item")
 }
 
 // ============================================================
@@ -810,8 +878,24 @@ model Order {
   // Document, чтобы несколько документов одной работы не хранили одно и то же
   // число копией (см. AGENTS.md, "Реестр документов").
   documentPackageNumber  Int?                @unique @map("document_package_number")
+  // ---- Прибыль заказа — AUTO НИЧЕГО не хранит, computeOrderNetProfit
+  // (order-model.ts) считает её на лету при каждом чтении из preliminaryAmount
+  // (выручка) минус выплата монтажёру связанных MontageProject.editorAmount —
+  // тот же принцип "не хранить производное", что computeMontageProfit
+  // (montage-model.ts). MANUAL_OVERRIDE — осознанное бизнес-исключение
+  // (администратор считает автоматическую цифру неверной, например из-за
+  // расходов, не структурированных в системе) — тогда и только тогда
+  // сохраняется реальное число прибыли. Метаданные подтверждения живут рядом
+  // с самим полем — тот же приём, что ScheduleEvent.yandexNotRequiredConfirmedAt/
+  // By/Reason (см. выше), не отдельная таблица.
+  netProfitMode           OrderNetProfitMode @default(AUTO) @map("net_profit_mode")
+  netProfitManualAmount   Float?             @map("net_profit_manual_amount")
+  netProfitOverrideAt     DateTime?          @map("net_profit_override_at")
+  netProfitOverrideById   String?            @map("net_profit_override_by_id")
+  netProfitOverrideReason String?            @map("net_profit_override_reason")
 
   client               Client?               @relation(fields: [clientId], references: [id])
+  netProfitOverrideBy  User?                 @relation("OrderNetProfitOverrideBy", fields: [netProfitOverrideById], references: [id])
   scheduleEvent        ScheduleEvent?
   telegramConversation TelegramConversation? @relation(fields: [telegramConversationId], references: [id])
   documents            Document[]
