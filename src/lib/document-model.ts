@@ -96,6 +96,7 @@ export const DOCUMENT_FLOW_TYPE_LABELS: Record<DocumentFlowType, string> = {
   INVOICE_ONLY: 'Только счёт',
   INVOICE_AND_ACT: 'Счёт и акт',
   CONTRACT_INVOICE_ACT: 'Договор, счёт и акт',
+  CONTRACT_APPENDIX_INVOICE_ACT: 'Договор, приложение, счёт и акт',
   UNKNOWN: 'Не определено',
 }
 
@@ -106,8 +107,19 @@ export const MONTAGE_DOCUMENT_MODE_LABELS: Record<MontageDocumentMode, string> =
   UNKNOWN: 'Не определено',
 }
 
-const FLOW_TYPES_REQUIRING_ACT: DocumentFlowType[] = ['INVOICE_AND_ACT', 'CONTRACT_INVOICE_ACT']
-const FLOW_TYPES_REQUIRING_INVOICE: DocumentFlowType[] = ['INVOICE_ONLY', 'INVOICE_AND_ACT', 'CONTRACT_INVOICE_ACT']
+// Единый источник состава требований по типу документооборота — читается
+// отсюда везде (getWorkDocumentAttentionReasons ниже, дашборд документов,
+// таблица "Заказы"), НЕ копируется в отдельные локальные массивы по месту
+// использования (см. AGENTS.md, "Единый источник данных", п.4) — до этой
+// правки такая копия существовала отдельно в OrdersListView.tsx и второй раз
+// инлайн в actions/documents.ts, из-за чего нужно было бы помнить обновить
+// три места сразу при любом изменении состава требований.
+export const FLOW_TYPES_REQUIRING_ACT: DocumentFlowType[] = ['INVOICE_AND_ACT', 'CONTRACT_INVOICE_ACT', 'CONTRACT_APPENDIX_INVOICE_ACT']
+export const FLOW_TYPES_REQUIRING_INVOICE: DocumentFlowType[] = ['INVOICE_ONLY', 'INVOICE_AND_ACT', 'CONTRACT_INVOICE_ACT', 'CONTRACT_APPENDIX_INVOICE_ACT']
+// Только новый режим требует приложение — CONTRACT_INVOICE_ACT сознательно
+// не трогаем (это отдельный, уже существующий режим без приложения, менять
+// его поведение не просили и не нужно).
+export const FLOW_TYPES_REQUIRING_APPENDIX: DocumentFlowType[] = ['CONTRACT_APPENDIX_INVOICE_ACT']
 
 // ============================================================
 // ОТОБРАЖАЕМЫЙ НОМЕР — чистая функция, не хранимое поле (см. AGENTS.md:
@@ -184,6 +196,7 @@ export const DOCUMENT_PAYMENT_STATE_LABELS: Record<DocumentPaymentState, string>
 
 export type DocumentAttentionReason =
   | 'CONTRACT_STATE_UNSPECIFIED'
+  | 'MISSING_APPENDIX'
   | 'MISSING_INVOICE'
   | 'MISSING_ACT'
   | 'UNPAID_INVOICE'
@@ -191,6 +204,7 @@ export type DocumentAttentionReason =
 
 export const DOCUMENT_ATTENTION_LABELS: Record<DocumentAttentionReason, string> = {
   CONTRACT_STATE_UNSPECIFIED: 'Не указан статус договора',
+  MISSING_APPENDIX: 'Не прикреплено приложение к договору',
   MISSING_INVOICE: 'Нет номера счёта',
   MISSING_ACT: 'Не прикреплён акт выполненных работ',
   UNPAID_INVOICE: 'Счёт не оплачен',
@@ -202,6 +216,7 @@ export interface DocumentWorkAttentionInput {
   montageDocumentMode: MontageDocumentMode | null // монтаж; null — не монтаж
   isCompleted: boolean
   isCancelledOrArchived: boolean
+  hasAppendix: boolean
   hasInvoice: boolean
   hasAct: boolean
   paymentState: DocumentPaymentState
@@ -213,9 +228,15 @@ export function getWorkDocumentAttentionReasons(input: DocumentWorkAttentionInpu
 
   if (input.montageDocumentMode === 'UNKNOWN') reasons.push('MONTAGE_MODE_UNKNOWN')
 
+  const needsAppendix = input.documentFlowType != null && FLOW_TYPES_REQUIRING_APPENDIX.includes(input.documentFlowType)
   const needsInvoice = input.documentFlowType != null && FLOW_TYPES_REQUIRING_INVOICE.includes(input.documentFlowType)
   const needsAct = input.documentFlowType != null && FLOW_TYPES_REQUIRING_ACT.includes(input.documentFlowType)
 
+  // Приложение — как и счёт, актуально сразу (не только "по завершении
+  // работы"): оно фиксирует объём/стоимость услуги ДО начала работы, тот же
+  // принцип, что и у MISSING_INVOICE ниже (не гейтится isCompleted, в отличие
+  // от MISSING_ACT).
+  if (needsAppendix && !input.hasAppendix) reasons.push('MISSING_APPENDIX')
   if (needsInvoice && !input.hasInvoice) reasons.push('MISSING_INVOICE')
   if (needsAct && input.isCompleted && !input.hasAct) reasons.push('MISSING_ACT')
   if (input.hasInvoice && (input.paymentState === 'PENDING' || input.paymentState === 'PARTIALLY_PAID')) {

@@ -10,7 +10,8 @@ import {
 import { writeAuditLog, resolveValidUserId } from '@/lib/audit'
 import {
   getDocumentDisplayNumber, getWorkDocumentAttentionReasons, getClientContractAttentionReasons, getDocumentPaymentState,
-  computeLineItemTotal, computeLineItemsTotal, type DocumentAttentionReason,
+  computeLineItemTotal, computeLineItemsTotal, FLOW_TYPES_REQUIRING_INVOICE, FLOW_TYPES_REQUIRING_ACT,
+  type DocumentAttentionReason,
 } from '@/lib/document-model'
 
 // ============================================================
@@ -813,16 +814,17 @@ export async function getDocumentsDashboardStats(): Promise<{ ok: true; data: Do
     let appendixAmountMismatches = 0
 
     for (const o of orders) {
+      const hasAppendix = o.documents.some(d => d.type === 'APPENDIX')
       const hasInvoice = o.documents.some(d => d.type === 'INVOICE')
       const hasAct = o.documents.some(d => d.type === 'ACT')
-      const needsInvoice = o.documentFlowType === 'INVOICE_ONLY' || o.documentFlowType === 'INVOICE_AND_ACT' || o.documentFlowType === 'CONTRACT_INVOICE_ACT'
-      const needsAct = o.documentFlowType === 'INVOICE_AND_ACT' || o.documentFlowType === 'CONTRACT_INVOICE_ACT'
+      const needsInvoice = FLOW_TYPES_REQUIRING_INVOICE.includes(o.documentFlowType)
+      const needsAct = FLOW_TYPES_REQUIRING_ACT.includes(o.documentFlowType)
       if (needsInvoice && !hasInvoice) ordersWithoutInvoice += 1
       if (needsAct && o.status === 'COMPLETED' && !hasAct) completedWorksWithoutAct += 1
       const reasons = getWorkDocumentAttentionReasons({
         documentFlowType: o.documentFlowType, montageDocumentMode: null,
         isCompleted: o.status === 'COMPLETED', isCancelledOrArchived: false,
-        hasInvoice, hasAct, paymentState: 'UNKNOWN',
+        hasAppendix, hasInvoice, hasAct, paymentState: 'UNKNOWN',
       })
       if (reasons.length > 0) attentionCount += 1
       const appendix = o.documents.find(d => d.type === 'APPENDIX' && d.amount != null)
@@ -831,12 +833,13 @@ export async function getDocumentsDashboardStats(): Promise<{ ok: true; data: Do
       }
     }
     for (const m of montageProjects) {
+      const hasAppendix = m.documents.some(d => d.type === 'APPENDIX')
       const hasInvoice = m.documents.some(d => d.type === 'INVOICE')
       const hasAct = m.documents.some(d => d.type === 'ACT')
       const reasons = getWorkDocumentAttentionReasons({
         documentFlowType: null, montageDocumentMode: m.documentMode,
         isCompleted: m.status === 'DELIVERED', isCancelledOrArchived: false,
-        hasInvoice, hasAct, paymentState: 'UNKNOWN',
+        hasAppendix, hasInvoice, hasAct, paymentState: 'UNKNOWN',
       })
       if (reasons.length > 0) attentionCount += 1
       if (m.documentMode === 'SEPARATE' && m.status === 'DELIVERED' && !hasAct) completedWorksWithoutAct += 1
@@ -1144,22 +1147,24 @@ export async function getDocumentAttentionList(): Promise<{ ok: true; data: Docu
 
     const rows: DocumentAttentionRowDTO[] = []
     for (const o of orders) {
+      const hasAppendix = o.documents.some(d => d.type === 'APPENDIX')
       const hasInvoice = o.documents.some(d => d.type === 'INVOICE')
       const hasAct = o.documents.some(d => d.type === 'ACT')
       const reasons = getWorkDocumentAttentionReasons({
         documentFlowType: o.documentFlowType, montageDocumentMode: null,
         isCompleted: o.status === 'COMPLETED', isCancelledOrArchived: false,
-        hasInvoice, hasAct, paymentState: 'UNKNOWN',
+        hasAppendix, hasInvoice, hasAct, paymentState: 'UNKNOWN',
       })
       if (reasons.length > 0) rows.push({ id: o.id, workTitle: o.title ?? o.clientName ?? 'Заказ', workHref: '/admin/orders', reasons })
     }
     for (const m of montageProjects) {
+      const hasAppendix = m.documents.some(d => d.type === 'APPENDIX')
       const hasInvoice = m.documents.some(d => d.type === 'INVOICE')
       const hasAct = m.documents.some(d => d.type === 'ACT')
       const reasons = getWorkDocumentAttentionReasons({
         documentFlowType: null, montageDocumentMode: m.documentMode,
         isCompleted: m.status === 'DELIVERED', isCancelledOrArchived: false,
-        hasInvoice, hasAct, paymentState: 'UNKNOWN',
+        hasAppendix, hasInvoice, hasAct, paymentState: 'UNKNOWN',
       })
       if (reasons.length > 0) rows.push({ id: m.id, workTitle: m.title ?? 'Проект монтажа', workHref: '/admin/editing', reasons })
     }

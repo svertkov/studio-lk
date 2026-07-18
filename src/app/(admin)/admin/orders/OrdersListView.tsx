@@ -22,6 +22,7 @@ import { formatDurationMinutes } from '@/lib/schedule-model'
 import { computeMaterialsCapsules } from '@/lib/client-shoots-model'
 import { isValidHttpUrl } from '@/lib/url'
 import { ROOM_DICTIONARY, FORMAT_DICTIONARY } from '@/lib/import/normalize'
+import { FLOW_TYPES_REQUIRING_INVOICE, FLOW_TYPES_REQUIRING_ACT, FLOW_TYPES_REQUIRING_APPENDIX } from '@/lib/document-model'
 import type { OrderStatus, OrderPaymentStatus } from '@prisma/client'
 import OrderFormModal from '../crm/OrderFormModal'
 import OrderCard from '../crm/OrderCard'
@@ -133,28 +134,33 @@ function StatusBadge({ status }: { status: OrderStatus }) {
   )
 }
 
-const INVOICE_REQUIRED_FLOW_TYPES: string[] = ['INVOICE_ONLY', 'INVOICE_AND_ACT', 'CONTRACT_INVOICE_ACT']
-const ACT_REQUIRED_FLOW_TYPES: string[] = ['INVOICE_AND_ACT', 'CONTRACT_INVOICE_ACT']
-
 // Реестр документов (см. AGENTS.md) — компактная колонка вместо трёх широких
 // (ТЗ разд.16: "не добавлять три широкие отдельные колонки"). Номера читаются
 // из OrderDTO.invoiceDisplayNumber/actDisplayNumber (уже вычислены на сервере
 // через getDocumentDisplayNumber, здесь никакой отдельной логики нумерации).
+// Состав требований по режиму документооборота — из document-model.ts
+// (FLOW_TYPES_REQUIRING_*), НЕ отдельным локальным списком: раньше здесь была
+// собственная копия этого же списка, из-за чего при добавлении нового режима
+// документооборота пришлось бы не забыть обновить её отдельно от остальных
+// мест (см. AGENTS.md, "Единый источник данных").
 function DocumentsCell({ order }: { order: OrderDTO }) {
   if (order.documentFlowType === 'NOT_REQUIRED' || order.documentFlowType === 'UNKNOWN') {
     return <span className="text-zinc-600 text-xs">—</span>
   }
-  const needsInvoice = INVOICE_REQUIRED_FLOW_TYPES.includes(order.documentFlowType)
-  const needsAct = ACT_REQUIRED_FLOW_TYPES.includes(order.documentFlowType)
-  const missingContract = order.documentFlowType === 'CONTRACT_INVOICE_ACT'
+  const needsAppendix = FLOW_TYPES_REQUIRING_APPENDIX.includes(order.documentFlowType)
+  const needsInvoice = FLOW_TYPES_REQUIRING_INVOICE.includes(order.documentFlowType)
+  const needsAct = FLOW_TYPES_REQUIRING_ACT.includes(order.documentFlowType)
+  const missingContract = (order.documentFlowType === 'CONTRACT_INVOICE_ACT' || order.documentFlowType === 'CONTRACT_APPENDIX_INVOICE_ACT')
     && order.clientContractState !== 'ACTIVE'
 
   return (
     <div className="flex flex-col items-start gap-0.5 min-w-0">
       {missingContract && <span className="text-red-400 text-[11px] whitespace-nowrap">Без договора</span>}
-      {order.appendixDisplayNumber && (
+      {order.appendixDisplayNumber ? (
         <span className="text-zinc-300 text-[11px] truncate">Прил {order.appendixDisplayNumber}</span>
-      )}
+      ) : needsAppendix ? (
+        <span className="text-amber-400 text-[11px] whitespace-nowrap">Нет приложения</span>
+      ) : null}
       {order.invoiceDisplayNumber ? (
         <span className="text-zinc-300 text-[11px] truncate">Сч {order.invoiceDisplayNumber}</span>
       ) : needsInvoice ? (

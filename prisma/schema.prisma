@@ -166,6 +166,10 @@ enum DocumentFlowType {
   INVOICE_ONLY
   INVOICE_AND_ACT
   CONTRACT_INVOICE_ACT
+  // Договор → приложение → счёт → акт — типовая схема для юрлиц, где
+  // приложение фиксирует конкретную услугу/стоимость/объём работ (в отличие
+  // от CONTRACT_INVOICE_ACT, где приложение не требуется).
+  CONTRACT_APPENDIX_INVOICE_ACT
   UNKNOWN
 }
 

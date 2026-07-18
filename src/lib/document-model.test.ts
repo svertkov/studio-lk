@@ -85,6 +85,7 @@ describe('getWorkDocumentAttentionReasons', () => {
     montageDocumentMode: null,
     isCompleted: false,
     isCancelledOrArchived: false,
+    hasAppendix: false,
     hasInvoice: false,
     hasAct: false,
     paymentState: 'UNKNOWN',
@@ -123,6 +124,22 @@ describe('getWorkDocumentAttentionReasons', () => {
   it('a fully satisfied work (all required documents present, paid) has no reasons', () => {
     expect(getWorkDocumentAttentionReasons({
       ...base, documentFlowType: 'INVOICE_AND_ACT', hasInvoice: true, hasAct: true, isCompleted: true, paymentState: 'PAID',
+    })).toEqual([])
+  })
+
+  it('flags a missing appendix for the contract+appendix+invoice+act flow type, regardless of completion (same as invoice)', () => {
+    expect(getWorkDocumentAttentionReasons({ ...base, documentFlowType: 'CONTRACT_APPENDIX_INVOICE_ACT', isCompleted: false }))
+      .toContain('MISSING_APPENDIX')
+  })
+
+  it('does not flag a missing appendix for flow types that do not require one (e.g. the plain contract+invoice+act mode)', () => {
+    expect(getWorkDocumentAttentionReasons({ ...base, documentFlowType: 'CONTRACT_INVOICE_ACT' })).not.toContain('MISSING_APPENDIX')
+  })
+
+  it('a contract+appendix+invoice+act work with all four documents present, completed and paid has no reasons', () => {
+    expect(getWorkDocumentAttentionReasons({
+      ...base, documentFlowType: 'CONTRACT_APPENDIX_INVOICE_ACT',
+      hasAppendix: true, hasInvoice: true, hasAct: true, isCompleted: true, paymentState: 'PAID',
     })).toEqual([])
   })
 })

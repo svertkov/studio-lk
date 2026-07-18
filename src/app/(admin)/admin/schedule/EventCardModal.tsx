@@ -693,12 +693,27 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
 
           <div>
             <label className={LABEL}>Монтаж</label>
-            <select className={SELECT} value={editingRequired === null ? '' : String(editingRequired)}
-              onChange={e => handleEditingRequiredChange(e.target.value === '' ? null : e.target.value === 'true')}>
-              <option value="">Не указано</option>
-              <option value="true">Нужен</option>
-              <option value="false">Не нужен</option>
-            </select>
+            {/* Восстановлен прежний вид (две крупные кнопки-переключатели) по
+                просьбе пользователя 2026-07-19 — выпадающий список, введённый
+                этой доработкой ранее, оказался менее удобным для бинарного
+                выбора. Гейтинг по isBookingPast сознательно НЕ восстановлен:
+                это было отдельное самостоятельное решение (позволить
+                администратору указывать монтаж независимо от даты записи),
+                пользователь его не просил отменять. */}
+            <div className="flex gap-2">
+              <button type="button" onClick={() => handleEditingRequiredChange(true)}
+                className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00c26b] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 ${
+                  editingRequired === true ? 'bg-[#FACC15] text-black' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-white'
+                }`}>
+                Монтаж требуется
+              </button>
+              <button type="button" onClick={() => handleEditingRequiredChange(false)}
+                className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00c26b] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 ${
+                  editingRequired === false ? 'bg-[#00c26b] text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-white'
+                }`}>
+                Монтаж не требуется
+              </button>
+            </div>
             <p className="text-zinc-500 text-xs mt-1.5">
               {editingRequired === null
                 ? 'Выберите, нужен ли монтаж, прежде чем прикладывать материалы — так администратор не забудет это сделать.'
