@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   getDocumentDisplayNumber, suggestDocumentFlowType, getDocumentPaymentState,
   getWorkDocumentAttentionReasons, getClientContractAttentionReasons,
+  computeLineItemTotal, computeLineItemsTotal,
 } from '@/lib/document-model'
 
 describe('getDocumentDisplayNumber', () => {
@@ -141,5 +142,27 @@ describe('getClientContractAttentionReasons', () => {
     expect(getClientContractAttentionReasons('LLC', 'NO_CONTRACT')).toEqual([])
     expect(getClientContractAttentionReasons('LLC', 'ACTIVE')).toEqual([])
     expect(getClientContractAttentionReasons('LLC', 'PREPARING')).toEqual([])
+  })
+})
+
+describe('computeLineItemTotal / computeLineItemsTotal', () => {
+  it('multiplies quantity by unit price for a single line', () => {
+    expect(computeLineItemTotal({ quantity: 2, unitPrice: 5000 })).toBe(10000)
+  })
+
+  it('supports fractional quantity (e.g. hours)', () => {
+    expect(computeLineItemTotal({ quantity: 1.5, unitPrice: 2000 })).toBe(3000)
+  })
+
+  it('sums multiple line items', () => {
+    expect(computeLineItemsTotal([
+      { quantity: 1, unitPrice: 15000 },
+      { quantity: 2, unitPrice: 5000 },
+      { quantity: 3, unitPrice: 1000 },
+    ])).toBe(28000)
+  })
+
+  it('an empty list of line items totals to zero', () => {
+    expect(computeLineItemsTotal([])).toBe(0)
   })
 })

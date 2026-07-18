@@ -2,19 +2,22 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
-import { FileText, Plus, ScrollText, Layers } from 'lucide-react'
+import { FileText, Plus, ScrollText, Layers, ChevronUp, ChevronDown, Trash2 } from 'lucide-react'
 import GlowPill from '@/components/ui/glow-pill'
 import {
   getDocumentsForOrder, getDocumentsForMontageProject, getClientContractSummary,
   getOrderDocumentFlowType, getMontageDocumentMode,
   createDocument, updateDocument, updateOrderDocumentFlowType, updateMontageDocumentMode,
-  type DocumentDTO, type ClientContractSummary,
+  addInvoiceLineItem, updateInvoiceLineItem, removeInvoiceLineItem, reorderInvoiceLineItems,
+  type DocumentDTO, type ClientContractSummary, type InvoiceLineItemDTO,
 } from '@/lib/actions/documents'
 import {
   DOCUMENT_FLOW_TYPE_LABELS, MONTAGE_DOCUMENT_MODE_LABELS, DOCUMENT_STATUS_LABELS,
   DOCUMENT_STATUS_OPTIONS_BY_TYPE, INVOICE_PURPOSE_LABELS, DOCUMENT_PAYMENT_STATE_LABELS,
   CLIENT_CONTRACT_STATE_LABELS, getContractStateColor, getDocumentPaymentState,
+  INVOICE_LINE_ITEM_UNIT_LABELS, VAT_RATE_LABELS, computeLineItemsTotal,
   type DocumentFlowType, type MontageDocumentMode, type DocumentType, type DocumentStatus, type InvoicePurpose,
+  type InvoiceLineItemUnit, type VatRate,
 } from '@/lib/document-model'
 
 const SELECT = 'h-9 bg-zinc-800 border border-zinc-700 text-zinc-200 rounded-lg px-2.5 text-xs outline-none focus:border-[#00c26b] transition-colors cursor-pointer'
@@ -277,14 +280,17 @@ export default function WorkDocumentsSection({ clientId, orderId, montageProject
             {invoices.map(inv => {
               const paymentState = getDocumentPaymentState(inv.orderPaymentStatus, inv.montagePaymentStatus)
               return (
-                <div key={inv.id} className="flex items-center justify-between gap-2 bg-zinc-800/40 rounded-lg px-3 py-2">
-                  <div className="min-w-0">
-                    <p className="text-zinc-200 text-xs">{inv.displayNumber} {inv.purpose && `· ${INVOICE_PURPOSE_LABELS[inv.purpose]}`}</p>
-                    <p className="text-zinc-500 text-[11px] mt-0.5">{formatDate(inv.issueDate)} · {formatMoney(inv.amount)} · {DOCUMENT_PAYMENT_STATE_LABELS[paymentState]}</p>
+                <div key={inv.id} className="bg-zinc-800/40 rounded-lg px-3 py-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-zinc-200 text-xs">{inv.displayNumber} {inv.purpose && `· ${INVOICE_PURPOSE_LABELS[inv.purpose]}`}</p>
+                      <p className="text-zinc-500 text-[11px] mt-0.5">{formatDate(inv.issueDate)} · {formatMoney(inv.amount)} · {DOCUMENT_PAYMENT_STATE_LABELS[paymentState]}</p>
+                    </div>
+                    <select className={`${SELECT} flex-shrink-0`} value={inv.status} onChange={e => handleStatusChange(inv, e.target.value as DocumentStatus)}>
+                      {DOCUMENT_STATUS_OPTIONS_BY_TYPE.INVOICE.map(s => <option key={s} value={s}>{DOCUMENT_STATUS_LABELS[s]}</option>)}
+                    </select>
                   </div>
-                  <select className={`${SELECT} flex-shrink-0`} value={inv.status} onChange={e => handleStatusChange(inv, e.target.value as DocumentStatus)}>
-                    {DOCUMENT_STATUS_OPTIONS_BY_TYPE.INVOICE.map(s => <option key={s} value={s}>{DOCUMENT_STATUS_LABELS[s]}</option>)}
-                  </select>
+                  <InvoiceLineItemsEditor invoice={inv} onUpdated={doc => setDocuments(prev => prev?.map(d => (d.id === doc.id ? doc : d)) ?? null)} />
                 </div>
               )
             })}
@@ -385,6 +391,200 @@ export default function WorkDocumentsSection({ clientId, orderId, montageProject
       {montageProjectId && modeType === 'NOT_REQUIRED' && (
         <p className="text-zinc-500 text-xs">Документы для этого проекта не требуются.</p>
       )}
+    </div>
+  )
+}
+
+type LineItemPatch = Partial<{ description: string; quantity: number; unit: InvoiceLineItemUnit; unitPrice: number; vatRate: VatRate }>
+
+// Строки счёта — только первый список (добавить/убрать/переставить), без
+// "умных" кнопок автозаполнения (отложено по решению пользователя). Полностью
+// самодостаточный overlay поверх одного конкретного счёта: сохраняет каждое
+// изменение сразу через свои собственные действия, возвращая родителю
+// обновлённый DocumentDTO целиком (amount пересчитан сервером — см.
+// recomputeDocumentAmount, actions/documents.ts), а не патчит локальный стейт
+// вручную, чтобы не разойтись с сервером.
+function InvoiceLineItemsEditor({ invoice, onUpdated }: { invoice: DocumentDTO; onUpdated: (doc: DocumentDTO) => void }) {
+  const [adding, setAdding] = useState(false)
+  const [newDescription, setNewDescription] = useState('')
+  const [newQuantity, setNewQuantity] = useState('1')
+  const [newUnit, setNewUnit] = useState<InvoiceLineItemUnit>('SERVICE')
+  const [newUnitPrice, setNewUnitPrice] = useState('')
+  const [newVatRate, setNewVatRate] = useState<VatRate>('NOT_APPLICABLE')
+  const [savingNew, setSavingNew] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
+
+  async function handleAdd() {
+    if (!newDescription.trim() || !newUnitPrice) return
+    setSavingNew(true)
+    setError(null)
+    const result = await addInvoiceLineItem({
+      documentId: invoice.id,
+      description: newDescription,
+      quantity: Number(newQuantity) || 1,
+      unit: newUnit,
+      unitPrice: Number(newUnitPrice),
+      vatRate: newVatRate,
+    })
+    setSavingNew(false)
+    if (!result.ok) { setError(result.error); return }
+    onUpdated(result.data)
+    setNewDescription(''); setNewQuantity('1'); setNewUnit('SERVICE'); setNewUnitPrice(''); setNewVatRate('NOT_APPLICABLE')
+    setAdding(false)
+  }
+
+  async function handleSave(id: string, patch: LineItemPatch) {
+    const result = await updateInvoiceLineItem({ id, ...patch })
+    if (result.ok) onUpdated(result.data)
+  }
+
+  async function handleRemove(id: string) {
+    const result = await removeInvoiceLineItem(id)
+    setConfirmDeleteId(null)
+    if (result.ok) onUpdated(result.data)
+  }
+
+  async function handleMove(index: number, direction: -1 | 1) {
+    const items = invoice.lineItems
+    const targetIndex = index + direction
+    if (targetIndex < 0 || targetIndex >= items.length) return
+    const reordered = [...items]
+    const [moved] = reordered.splice(index, 1)
+    reordered.splice(targetIndex, 0, moved)
+    const result = await reorderInvoiceLineItems(invoice.id, reordered.map(i => i.id))
+    if (result.ok) onUpdated(result.data)
+  }
+
+  const lastIndex = invoice.lineItems.length - 1
+
+  return (
+    <div className="mt-2 pt-2 border-t border-zinc-700/50 space-y-1.5">
+      {invoice.lineItems.length === 0 && !adding && (
+        <p className="text-zinc-600 text-[11px]">Позиций нет — сумма счёта берётся из поля «Сумма» выше.</p>
+      )}
+      {invoice.lineItems.map((item, index) => (
+        <LineItemRow
+          key={item.id}
+          item={item}
+          index={index}
+          lastIndex={lastIndex}
+          onSave={patch => handleSave(item.id, patch)}
+          onMoveUp={() => handleMove(index, -1)}
+          onMoveDown={() => handleMove(index, 1)}
+          confirmingDelete={confirmDeleteId === item.id}
+          onRequestDelete={() => setConfirmDeleteId(item.id)}
+          onCancelDelete={() => setConfirmDeleteId(null)}
+          onConfirmDelete={() => handleRemove(item.id)}
+        />
+      ))}
+      {invoice.lineItems.length > 0 && (
+        <p className="text-zinc-500 text-[11px] text-right pr-1">Итого по позициям: {formatMoney(computeLineItemsTotal(invoice.lineItems))}</p>
+      )}
+      {adding ? (
+        <div className="bg-zinc-900/60 border border-zinc-700 rounded-lg p-2 space-y-1.5">
+          <input placeholder="Наименование услуги" className={`${INPUT} w-full`} value={newDescription} onChange={e => setNewDescription(e.target.value)} />
+          <div className="grid grid-cols-4 gap-1.5">
+            <input type="number" min="0" step="any" placeholder="Кол-во" className={INPUT} value={newQuantity} onChange={e => setNewQuantity(e.target.value)} />
+            <select className={SELECT} value={newUnit} onChange={e => setNewUnit(e.target.value as InvoiceLineItemUnit)}>
+              {(Object.keys(INVOICE_LINE_ITEM_UNIT_LABELS) as InvoiceLineItemUnit[]).map(u => <option key={u} value={u}>{INVOICE_LINE_ITEM_UNIT_LABELS[u]}</option>)}
+            </select>
+            <input type="number" min="0" placeholder="Цена" className={INPUT} value={newUnitPrice} onChange={e => setNewUnitPrice(e.target.value)} />
+            <select className={SELECT} value={newVatRate} onChange={e => setNewVatRate(e.target.value as VatRate)}>
+              {(Object.keys(VAT_RATE_LABELS) as VatRate[]).map(v => <option key={v} value={v}>{VAT_RATE_LABELS[v]}</option>)}
+            </select>
+          </div>
+          {error && <p className="text-red-400 text-[11px]">{error}</p>}
+          <div className="flex justify-end gap-2">
+            <button type="button" onClick={() => { setAdding(false); setError(null) }} className="text-zinc-400 hover:text-zinc-200 text-[11px] px-2 py-1">Отмена</button>
+            <button type="button" disabled={savingNew} onClick={handleAdd} className="bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 text-zinc-100 text-[11px] font-medium px-2.5 py-1 rounded-lg">
+              {savingNew ? 'Сохранение…' : 'Добавить'}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button type="button" onClick={() => setAdding(true)} className="flex items-center gap-1 text-[#00c26b] text-[11px] hover:underline">
+          <Plus className="w-3 h-3" /> Добавить позицию
+        </button>
+      )}
+    </div>
+  )
+}
+
+interface LineItemRowProps {
+  item: InvoiceLineItemDTO
+  index: number
+  lastIndex: number
+  onSave: (patch: LineItemPatch) => void
+  onMoveUp: () => void
+  onMoveDown: () => void
+  confirmingDelete: boolean
+  onRequestDelete: () => void
+  onCancelDelete: () => void
+  onConfirmDelete: () => void
+}
+
+// Локальный черновик полей строки — сохраняется по onBlur (не по каждому
+// символу), тот же принцип "мгновенно на выбор/список, дебаунс на текст",
+// что и в use-autosave.ts, но здесь достаточно простого onBlur без отдельного
+// хука — строк счёта немного, а сохранение всей карточки уже не завязано на
+// это поле.
+function LineItemRow({ item, index, lastIndex, onSave, onMoveUp, onMoveDown, confirmingDelete, onRequestDelete, onCancelDelete, onConfirmDelete }: LineItemRowProps) {
+  const [description, setDescription] = useState(item.description)
+  const [quantity, setQuantity] = useState(String(item.quantity))
+  const [unitPrice, setUnitPrice] = useState(String(item.unitPrice))
+
+  return (
+    <div className="bg-zinc-900/40 rounded-lg px-2 py-1.5 space-y-1">
+      <div className="flex items-center gap-1.5">
+        <input
+          className={`${INPUT} flex-1 min-w-0`}
+          value={description}
+          onChange={e => setDescription(e.target.value)}
+          onBlur={() => { if (description.trim() && description !== item.description) onSave({ description }) }}
+        />
+        <div className="flex items-center gap-0.5 flex-shrink-0">
+          <button type="button" disabled={index === 0} onClick={onMoveUp} className="text-zinc-500 hover:text-zinc-300 disabled:opacity-20 p-0.5">
+            <ChevronUp className="w-3.5 h-3.5" />
+          </button>
+          <button type="button" disabled={index === lastIndex} onClick={onMoveDown} className="text-zinc-500 hover:text-zinc-300 disabled:opacity-20 p-0.5">
+            <ChevronDown className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </div>
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <input
+          type="number" min="0" step="any" className={`${INPUT} w-16`}
+          value={quantity}
+          onChange={e => setQuantity(e.target.value)}
+          onBlur={() => { const n = Number(quantity); if (n > 0 && n !== item.quantity) onSave({ quantity: n }) }}
+        />
+        <select className={SELECT} value={item.unit} onChange={e => onSave({ unit: e.target.value as InvoiceLineItemUnit })}>
+          {(Object.keys(INVOICE_LINE_ITEM_UNIT_LABELS) as InvoiceLineItemUnit[]).map(u => <option key={u} value={u}>{INVOICE_LINE_ITEM_UNIT_LABELS[u]}</option>)}
+        </select>
+        <span className="text-zinc-600 text-[11px]">×</span>
+        <input
+          type="number" min="0" className={`${INPUT} w-24`}
+          value={unitPrice}
+          onChange={e => setUnitPrice(e.target.value)}
+          onBlur={() => { const n = Number(unitPrice); if (n >= 0 && n !== item.unitPrice) onSave({ unitPrice: n }) }}
+        />
+        <select className={SELECT} value={item.vatRate} onChange={e => onSave({ vatRate: e.target.value as VatRate })}>
+          {(Object.keys(VAT_RATE_LABELS) as VatRate[]).map(v => <option key={v} value={v}>{VAT_RATE_LABELS[v]}</option>)}
+        </select>
+        <span className="text-zinc-300 text-xs ml-auto">{formatMoney(item.total)}</span>
+        {item.migratedFromLegacyAmount && <GlowPill size="sm" color="zinc">перенесено</GlowPill>}
+        {confirmingDelete ? (
+          <span className="flex items-center gap-1">
+            <button type="button" onClick={onConfirmDelete} className="text-red-400 hover:text-red-300 text-[11px] underline">Удалить</button>
+            <button type="button" onClick={onCancelDelete} className="text-zinc-500 hover:text-zinc-300 text-[11px] underline">Отмена</button>
+          </span>
+        ) : (
+          <button type="button" onClick={onRequestDelete} className="text-zinc-500 hover:text-red-400 p-0.5">
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        )}
+      </div>
     </div>
   )
 }

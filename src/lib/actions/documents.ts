@@ -3,9 +3,15 @@
 import { revalidatePath } from 'next/cache'
 import { prisma } from '@/lib/prisma'
 import { auth } from '@/auth'
-import { Prisma, type DocumentType, type DocumentStatus, type InvoicePurpose, type ClientContractState, type DocumentFlowType, type MontageDocumentMode, type ClientType } from '@prisma/client'
+import {
+  Prisma, type DocumentType, type DocumentStatus, type InvoicePurpose, type ClientContractState,
+  type DocumentFlowType, type MontageDocumentMode, type ClientType, type InvoiceLineItemUnit, type VatRate,
+} from '@prisma/client'
 import { writeAuditLog, resolveValidUserId } from '@/lib/audit'
-import { getDocumentDisplayNumber, getWorkDocumentAttentionReasons, getClientContractAttentionReasons, getDocumentPaymentState, type DocumentAttentionReason } from '@/lib/document-model'
+import {
+  getDocumentDisplayNumber, getWorkDocumentAttentionReasons, getClientContractAttentionReasons, getDocumentPaymentState,
+  computeLineItemTotal, computeLineItemsTotal, type DocumentAttentionReason,
+} from '@/lib/document-model'
 
 // ============================================================
 // АВТОРИЗАЦИЯ — та же локальная проверка, что в actions/orders.ts,
@@ -119,6 +125,18 @@ async function assignInvoiceSuffixIfNeeded(
 // DTO
 // ============================================================
 
+export interface InvoiceLineItemDTO {
+  id: string
+  sortOrder: number
+  description: string
+  quantity: number
+  unit: InvoiceLineItemUnit
+  unitPrice: number
+  vatRate: VatRate
+  total: number
+  migratedFromLegacyAmount: boolean
+}
+
 export interface DocumentDTO {
   id: string
   type: DocumentType
@@ -146,18 +164,23 @@ export interface DocumentDTO {
   // MontageProject.clientPaymentStatus на клиенте, не хранится здесь копией.
   orderPaymentStatus: string | null
   montagePaymentStatus: string | null
+  // Только для type=INVOICE в этой версии — см. AGENTS.md/prisma/schema.prisma.
+  // Пустой массив для ACT/APPENDIX/CONTRACT и для старых счетов без строк.
+  lineItems: InvoiceLineItemDTO[]
 }
 
 type DocumentRow = Prisma.DocumentGetPayload<{
   include: {
     order: { select: { documentPackageNumber: true; title: true; clientName: true; paymentStatus: true } }
     montageProject: { select: { documentPackageNumber: true; title: true; clientPaymentStatus: true } }
+    lineItems: { orderBy: { sortOrder: 'asc' } }
   }
 }>
 
 const DOCUMENT_INCLUDE = {
   order: { select: { documentPackageNumber: true, title: true, clientName: true, paymentStatus: true } },
   montageProject: { select: { documentPackageNumber: true, title: true, clientPaymentStatus: true } },
+  lineItems: { orderBy: { sortOrder: 'asc' } },
 } satisfies Prisma.DocumentInclude
 
 function toDocumentDTO(row: DocumentRow): DocumentDTO {
@@ -187,6 +210,17 @@ function toDocumentDTO(row: DocumentRow): DocumentDTO {
     workTitle,
     orderPaymentStatus: row.order?.paymentStatus ?? null,
     montagePaymentStatus: row.montageProject?.clientPaymentStatus ?? null,
+    lineItems: row.lineItems.map(li => ({
+      id: li.id,
+      sortOrder: li.sortOrder,
+      description: li.description,
+      quantity: li.quantity,
+      unit: li.unit,
+      unitPrice: li.unitPrice,
+      vatRate: li.vatRate,
+      total: computeLineItemTotal(li),
+      migratedFromLegacyAmount: li.migratedFromLegacyAmount,
+    })),
   }
 }
 
@@ -350,6 +384,184 @@ export async function updateDocument(input: UpdateDocumentInput): Promise<
   } catch (e) {
     console.error('[updateDocument]', e)
     return { ok: false, error: 'Не удалось обновить документ' }
+  }
+}
+
+// ============================================================
+// СТРОКИ СЧЁТА — только для type=INVOICE (см. AGENTS.md, prisma/schema.prisma
+// у InvoiceLineItem). Document.amount становится производным полем, как
+// только у счёта появляется хотя бы одна строка — пересчитывается на каждую
+// мутацию строк внутри транзакции, а не читается по-другому в остальном коде
+// (appendixAmountMismatches, /admin/documents, WorkDocumentsSection —
+// продолжают читать amount как раньше).
+// ============================================================
+
+async function recomputeDocumentAmount(tx: Prisma.TransactionClient, documentId: string): Promise<void> {
+  const items = await tx.invoiceLineItem.findMany({ where: { documentId }, select: { quantity: true, unitPrice: true } })
+  await tx.document.update({ where: { id: documentId }, data: { amount: items.length > 0 ? computeLineItemsTotal(items) : null } })
+}
+
+export interface AddInvoiceLineItemInput {
+  documentId: string
+  description: string
+  quantity: number
+  unit: InvoiceLineItemUnit
+  unitPrice: number
+  vatRate: VatRate
+}
+
+export async function addInvoiceLineItem(input: AddInvoiceLineItemInput): Promise<
+  { ok: true; data: DocumentDTO } | { ok: false; error: string }
+> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, error: authResult.error }
+
+  const description = input.description.trim()
+  if (!description) return { ok: false, error: 'Укажите наименование услуги' }
+  if (!(input.quantity > 0)) return { ok: false, error: 'Количество должно быть больше нуля' }
+  if (!(input.unitPrice >= 0)) return { ok: false, error: 'Цена не может быть отрицательной' }
+
+  try {
+    const doc = await prisma.$transaction(async tx => {
+      const existing = await tx.document.findUnique({ where: { id: input.documentId } })
+      if (!existing) return null
+      const count = await tx.invoiceLineItem.count({ where: { documentId: input.documentId } })
+      const validUserId = await resolveValidUserId(tx, authResult.userId)
+      await tx.invoiceLineItem.create({
+        data: {
+          documentId: input.documentId,
+          sortOrder: count,
+          description,
+          quantity: input.quantity,
+          unit: input.unit,
+          unitPrice: input.unitPrice,
+          vatRate: input.vatRate,
+        },
+      })
+      await recomputeDocumentAmount(tx, input.documentId)
+      return tx.document.update({ where: { id: input.documentId }, data: { updatedById: validUserId }, include: DOCUMENT_INCLUDE })
+    })
+    if (!doc) return { ok: false, error: 'Документ не найден' }
+
+    await writeAuditLog({
+      userId: authResult.userId, action: 'DOCUMENT_LINE_ITEM_ADDED', entityType: 'Document', entityId: input.documentId,
+      metadata: { description, quantity: input.quantity, unitPrice: input.unitPrice },
+    })
+    revalidateDocumentPaths({ clientId: doc.clientId, orderId: doc.orderId, montageProjectId: doc.montageProjectId })
+    return { ok: true, data: toDocumentDTO(doc) }
+  } catch (e) {
+    console.error('[addInvoiceLineItem]', e)
+    return { ok: false, error: 'Не удалось добавить строку счёта' }
+  }
+}
+
+export interface UpdateInvoiceLineItemInput {
+  id: string
+  description?: string
+  quantity?: number
+  unit?: InvoiceLineItemUnit
+  unitPrice?: number
+  vatRate?: VatRate
+}
+
+export async function updateInvoiceLineItem(input: UpdateInvoiceLineItemInput): Promise<
+  { ok: true; data: DocumentDTO } | { ok: false; error: string }
+> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, error: authResult.error }
+
+  if (input.description !== undefined && !input.description.trim()) return { ok: false, error: 'Укажите наименование услуги' }
+  if (input.quantity !== undefined && !(input.quantity > 0)) return { ok: false, error: 'Количество должно быть больше нуля' }
+  if (input.unitPrice !== undefined && !(input.unitPrice >= 0)) return { ok: false, error: 'Цена не может быть отрицательной' }
+
+  try {
+    const doc = await prisma.$transaction(async tx => {
+      const existing = await tx.invoiceLineItem.findUnique({ where: { id: input.id } })
+      if (!existing) return null
+      const validUserId = await resolveValidUserId(tx, authResult.userId)
+      await tx.invoiceLineItem.update({
+        where: { id: input.id },
+        data: {
+          description: input.description !== undefined ? input.description.trim() : undefined,
+          quantity: input.quantity,
+          unit: input.unit,
+          unitPrice: input.unitPrice,
+          vatRate: input.vatRate,
+        },
+      })
+      await recomputeDocumentAmount(tx, existing.documentId)
+      return tx.document.update({ where: { id: existing.documentId }, data: { updatedById: validUserId }, include: DOCUMENT_INCLUDE })
+    })
+    if (!doc) return { ok: false, error: 'Строка счёта не найдена' }
+
+    await writeAuditLog({
+      userId: authResult.userId, action: 'DOCUMENT_LINE_ITEM_UPDATED', entityType: 'Document', entityId: doc.id,
+      metadata: { lineItemId: input.id, fields: Object.keys(input).filter(k => k !== 'id') },
+    })
+    revalidateDocumentPaths({ clientId: doc.clientId, orderId: doc.orderId, montageProjectId: doc.montageProjectId })
+    return { ok: true, data: toDocumentDTO(doc) }
+  } catch (e) {
+    console.error('[updateInvoiceLineItem]', e)
+    return { ok: false, error: 'Не удалось изменить строку счёта' }
+  }
+}
+
+export async function removeInvoiceLineItem(id: string): Promise<
+  { ok: true; data: DocumentDTO } | { ok: false; error: string }
+> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, error: authResult.error }
+
+  try {
+    const doc = await prisma.$transaction(async tx => {
+      const existing = await tx.invoiceLineItem.findUnique({ where: { id } })
+      if (!existing) return null
+      const validUserId = await resolveValidUserId(tx, authResult.userId)
+      await tx.invoiceLineItem.delete({ where: { id } })
+      // Сомкнуть sortOrder оставшихся строк без "дыр" — проще для последующей
+      // вставки/перестановки, чем нормализация на каждом чтении.
+      const remaining = await tx.invoiceLineItem.findMany({ where: { documentId: existing.documentId }, orderBy: { sortOrder: 'asc' } })
+      await Promise.all(remaining.map((item, index) =>
+        item.sortOrder === index ? Promise.resolve() : tx.invoiceLineItem.update({ where: { id: item.id }, data: { sortOrder: index } }),
+      ))
+      await recomputeDocumentAmount(tx, existing.documentId)
+      return tx.document.update({ where: { id: existing.documentId }, data: { updatedById: validUserId }, include: DOCUMENT_INCLUDE })
+    })
+    if (!doc) return { ok: false, error: 'Строка счёта не найдена' }
+
+    await writeAuditLog({ userId: authResult.userId, action: 'DOCUMENT_LINE_ITEM_REMOVED', entityType: 'Document', entityId: doc.id, metadata: { lineItemId: id } })
+    revalidateDocumentPaths({ clientId: doc.clientId, orderId: doc.orderId, montageProjectId: doc.montageProjectId })
+    return { ok: true, data: toDocumentDTO(doc) }
+  } catch (e) {
+    console.error('[removeInvoiceLineItem]', e)
+    return { ok: false, error: 'Не удалось удалить строку счёта' }
+  }
+}
+
+export async function reorderInvoiceLineItems(documentId: string, orderedIds: string[]): Promise<
+  { ok: true; data: DocumentDTO } | { ok: false; error: string }
+> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, error: authResult.error }
+
+  try {
+    const doc = await prisma.$transaction(async tx => {
+      const existing = await tx.invoiceLineItem.findMany({ where: { documentId } })
+      if (existing.length !== orderedIds.length || !existing.every(item => orderedIds.includes(item.id))) {
+        throw new Error('MISMATCH')
+      }
+      const validUserId = await resolveValidUserId(tx, authResult.userId)
+      await Promise.all(orderedIds.map((lineItemId, index) => tx.invoiceLineItem.update({ where: { id: lineItemId }, data: { sortOrder: index } })))
+      return tx.document.update({ where: { id: documentId }, data: { updatedById: validUserId }, include: DOCUMENT_INCLUDE })
+    })
+
+    await writeAuditLog({ userId: authResult.userId, action: 'DOCUMENT_LINE_ITEM_REORDERED', entityType: 'Document', entityId: documentId })
+    revalidateDocumentPaths({ clientId: doc.clientId, orderId: doc.orderId, montageProjectId: doc.montageProjectId })
+    return { ok: true, data: toDocumentDTO(doc) }
+  } catch (e) {
+    if (e instanceof Error && e.message === 'MISMATCH') return { ok: false, error: 'Список строк не совпадает с текущим состоянием счёта — обновите страницу' }
+    console.error('[reorderInvoiceLineItems]', e)
+    return { ok: false, error: 'Не удалось изменить порядок строк' }
   }
 }
 

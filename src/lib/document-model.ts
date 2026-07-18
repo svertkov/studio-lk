@@ -1,9 +1,24 @@
 import type {
   DocumentType, DocumentStatus, InvoicePurpose, ClientContractState,
   DocumentFlowType, MontageDocumentMode, ClientType, PaymentMethod,
+  InvoiceLineItemUnit, VatRate,
 } from '@prisma/client'
 
-export type { DocumentType, DocumentStatus, InvoicePurpose, ClientContractState, DocumentFlowType, MontageDocumentMode }
+export type { DocumentType, DocumentStatus, InvoicePurpose, ClientContractState, DocumentFlowType, MontageDocumentMode, InvoiceLineItemUnit, VatRate }
+
+export const INVOICE_LINE_ITEM_UNIT_LABELS: Record<InvoiceLineItemUnit, string> = {
+  PIECE: 'шт.',
+  HOUR: 'ч.',
+  DAY: 'дн.',
+  SERVICE: 'услуга',
+}
+
+export const VAT_RATE_LABELS: Record<VatRate, string> = {
+  NOT_APPLICABLE: 'Без НДС',
+  ZERO: 'НДС 0%',
+  RATE_10: 'НДС 10%',
+  RATE_20: 'НДС 20%',
+}
 
 // ============================================================
 // РЕЕСТР ДОКУМЕНТОВ — реестр номеров/статусов договоров, счетов, актов.
@@ -214,4 +229,25 @@ export function getClientContractAttentionReasons(clientType: ClientType, contra
   const isLegal = clientType === 'LLC' || clientType === 'IP'
   if (isLegal && contractState === 'UNSPECIFIED') return ['CONTRACT_STATE_UNSPECIFIED']
   return []
+}
+
+// ============================================================
+// СТРОКИ СЧЁТА — по образцу computeMontageProfit: чистые функции, ничего не
+// хранят сами по себе. Document.amount пересчитывается из суммы строк на
+// сервере (см. recomputeDocumentAmount в actions/documents.ts) только для
+// счетов, у которых есть хотя бы одна строка — старые счета без строк
+// продолжают хранить amount как раньше.
+// ============================================================
+
+export interface InvoiceLineItemInput {
+  quantity: number
+  unitPrice: number
+}
+
+export function computeLineItemTotal(item: InvoiceLineItemInput): number {
+  return item.quantity * item.unitPrice
+}
+
+export function computeLineItemsTotal(items: InvoiceLineItemInput[]): number {
+  return items.reduce((sum, item) => sum + computeLineItemTotal(item), 0)
 }
