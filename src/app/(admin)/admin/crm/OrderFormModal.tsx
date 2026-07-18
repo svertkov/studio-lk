@@ -1,8 +1,9 @@
 'use client'
 
-import { useState, type ReactNode, type SelectHTMLAttributes } from 'react'
+import { useEffect, useState, type ReactNode, type SelectHTMLAttributes } from 'react'
 import Link from 'next/link'
 import { format, parseISO } from 'date-fns'
+import { ru } from 'date-fns/locale'
 import { Search, Link2, UserPlus, ChevronDown, ArchiveRestore, HardDrive } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import GlowPill from '@/components/ui/glow-pill'
@@ -20,6 +21,8 @@ import ConfirmableStatusToggle from '@/components/ui/confirmable-status-toggle'
 import OrderFinanceBlock from '@/components/orders/OrderFinanceBlock'
 import MontageDisableChoiceDialog from '@/components/orders/MontageDisableChoiceDialog'
 import type { MontageProjectDTO } from '@/lib/actions/montage'
+import { useAutosave, readAutosaveDraft, clearAutosaveDraft, type StoredDraft } from '@/lib/hooks/use-autosave'
+import SaveStatusIndicator from '@/components/ui/save-status-indicator'
 
 interface Props {
   order: OrderDTO | null
@@ -216,15 +219,11 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
     setEditingRequired(next)
   }
 
-  async function handleSave() {
-    if (!clientId && !clientName.trim()) {
-      setError('Укажите имя клиента или название заявки')
-      return
-    }
-    setSaving(true)
-    setError(null)
-
-    const input: OrderInput = {
+  // Единая точка построения OrderInput — используется и явным "Сохранить", и
+  // автосохранением (см. useAutosave ниже), чтобы не держать два разных
+  // способа собрать один и тот же payload.
+  function buildOrderInput(): OrderInput {
+    return {
       title: clientName.trim() || undefined,
       clientId,
       clientName: clientName.trim(),
@@ -259,8 +258,76 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
         nasNotRequiredReason,
       } : {}),
     }
+  }
 
-    const result = isEdit ? await updateOrder(order!.id, input) : await createOrder(input)
+  // Автосохранение — пишет прямо в реальную запись заказа (updateOrder), без
+  // отдельной "черновик"-сущности. Только для уже существующих заказов: для
+  // совсем нового заказа (ещё нет id) периодическое автосохранение намеренно
+  // не включаем — иначе каждый тик дебаунса создавал бы новый заказ повторно
+  // (isEdit статичен на весь срок жизни модалки, а createOrder не идемпотентен).
+  // Локальная резервная копия в этом случае тоже не пишется — риск (потерять
+  // недозаполненную ещё не начатую заявку при краше) намного меньше, чем у
+  // потери правок уже открытого существующего заказа, на которую и рассчитан
+  // этот механизм.
+  const storageKey = order?.id ? `studio-lk:autosave:order:${order.id}` : null
+  const autosave = useAutosave<OrderInput>({
+    value: buildOrderInput(),
+    onSave: async input => {
+      if (!isEdit) return { ok: true }
+      const result = await updateOrder(order!.id, input)
+      return result.ok ? { ok: true } : { ok: false, error: result.error }
+    },
+    enabled: isEdit && !saving,
+    storageKey,
+  })
+
+  const [draftBanner, setDraftBanner] = useState<StoredDraft<OrderInput> | null>(null)
+
+  // Проверка черновика — один раз при открытии карточки. setState отложен
+  // через setTimeout(…, 0) — react-hooks/set-state-in-effect (см. память проекта).
+  useEffect(() => {
+    if (!storageKey) return
+    const timer = setTimeout(() => {
+      const draft = readAutosaveDraft<OrderInput>(storageKey)
+      if (draft && (!order || new Date(draft.updatedAt) > new Date(order.updatedAt))) {
+        setDraftBanner(draft)
+      }
+    }, 0)
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storageKey])
+
+  function applyDraft(input: OrderInput) {
+    if (input.clientId !== undefined) setClientId(input.clientId ?? null)
+    if (input.clientName !== undefined) setClientName(input.clientName ?? '')
+    if (input.clientPhone !== undefined) setClientPhone(input.clientPhone ?? '')
+    if (input.clientTelegram !== undefined) setClientTelegram(input.clientTelegram ?? '')
+    if (input.clientEmail !== undefined) setClientEmail(input.clientEmail ?? '')
+    if (input.clientType !== undefined) setClientType(input.clientType ?? '')
+    if (input.companyName !== undefined) setCompanyName(input.companyName ?? '')
+    if (input.serviceType !== undefined) setServiceType(input.serviceType ?? '')
+    if (input.room !== undefined) setRoom(input.room ?? '')
+    if (input.comment !== undefined) setComment(input.comment ?? '')
+    if (input.promotionType !== undefined) setPromotionType(input.promotionType ?? null)
+    if (input.preliminaryAmount !== undefined) setPreliminaryAmount(input.preliminaryAmount != null ? String(input.preliminaryAmount) : '')
+    if (input.paymentMethod !== undefined) setPaymentMethod(input.paymentMethod ?? '')
+    if (input.paymentStatus !== undefined) setPaymentStatus(input.paymentStatus ?? 'NOT_SPECIFIED')
+    if (input.makeupDurationMinutes !== undefined) setMakeupDurationMinutes(input.makeupDurationMinutes != null ? String(input.makeupDurationMinutes) : '')
+    if (input.editingRequired !== undefined) setEditingRequired(input.editingRequired === null || input.editingRequired === undefined ? '' : input.editingRequired ? 'true' : 'false')
+    if (input.yandexDiskUrl !== undefined) setYandexDiskUrl(input.yandexDiskUrl ?? '')
+    if (input.nasBackupUrl !== undefined) setNasBackupUrl(input.nasBackupUrl ?? '')
+    if (input.materialsComment !== undefined) setMaterialsComment(input.materialsComment ?? '')
+  }
+
+  async function handleSave() {
+    if (!clientId && !clientName.trim()) {
+      setError('Укажите имя клиента или название заявки')
+      return
+    }
+    setSaving(true)
+    setError(null)
+
+    const result = isEdit ? await autosave.flush() : await createOrder(buildOrderInput())
     if (!result.ok) {
       setSaving(false)
       setError(result.error)
@@ -279,6 +346,10 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
     setSaving(false)
     onSaved()
     onOpenChange(false)
+  }
+
+  async function handleOpenClientCard() {
+    await autosave.flush()
   }
 
   return (
@@ -308,6 +379,19 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
           </DialogHeader>
 
           <div className="flex-1 overflow-y-auto px-6 py-4 space-y-3">
+            {draftBanner && (
+              <div className="flex items-center justify-between gap-3 bg-amber-950/30 border border-amber-900/60 rounded-lg px-3 py-2.5 text-xs">
+                <span className="text-amber-300">
+                  Найден несохранённый черновик от {format(parseISO(draftBanner.updatedAt), 'd MMM yyyy, HH:mm', { locale: ru })}.
+                </span>
+                <div className="flex items-center gap-3 flex-shrink-0">
+                  <button type="button" onClick={() => { applyDraft(draftBanner.value); setDraftBanner(null) }}
+                    className="text-amber-300 underline hover:text-amber-200">Восстановить</button>
+                  <button type="button" onClick={() => { if (storageKey) clearAutosaveDraft(storageKey); setDraftBanner(null) }}
+                    className="text-zinc-400 underline hover:text-zinc-300">Отклонить</button>
+                </div>
+              </div>
+            )}
             {isEdit && (
               <>
                 <p className={SECTION}>Статус</p>
@@ -322,7 +406,7 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
               <div className="bg-zinc-800/50 rounded-lg p-3 flex items-center justify-between gap-3">
                 <p className="text-zinc-200 text-sm truncate">{clientName || 'Без имени'}</p>
                 <div className="flex items-center gap-3 flex-shrink-0">
-                  <Link href={`/admin/clients/${clientId}`} className="text-xs text-[#00c26b] hover:underline">
+                  <Link href={`/admin/clients/${clientId}`} onClick={handleOpenClientCard} className="text-xs text-[#00c26b] hover:underline">
                     Открыть карточку
                   </Link>
                   <button type="button" onClick={unlinkClient} className="text-xs text-zinc-400 hover:text-white underline">
@@ -395,7 +479,7 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
                       ))}
                     </div>
                   )}
-                  <button type="button" onClick={() => setAddClientOpen(true)}
+                  <button type="button" onClick={async () => { await autosave.flush(); setAddClientOpen(true) }}
                     className="flex items-center gap-1.5 text-xs text-zinc-400 hover:text-white underline mt-2">
                     <UserPlus className="w-3.5 h-3.5" />
                     Создать нового клиента
@@ -612,6 +696,7 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
           </div>
 
           <div className="flex items-center gap-3 px-6 py-4 border-t border-zinc-800 flex-shrink-0">
+            {isEdit && <SaveStatusIndicator status={autosave.status} error={autosave.error} />}
             {order?.isArchived && (
               <button type="button" onClick={handleUnarchive} disabled={unarchiving}
                 className="flex items-center gap-1.5 flex-shrink-0 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-semibold text-sm px-3.5 py-2.5 rounded-lg transition-colors">
@@ -623,7 +708,7 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
               className="flex-1 bg-[#00c26b] hover:bg-[#00b360] disabled:opacity-50 text-white font-semibold text-sm py-2.5 rounded-lg transition-colors">
               {saving ? 'Сохранение...' : 'Сохранить'}
             </button>
-            <button type="button" onClick={() => onOpenChange(false)}
+            <button type="button" onClick={async () => { await autosave.flush(); onOpenChange(false) }}
               className="px-4 py-2.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-sm rounded-lg transition-colors">
               Закрыть
             </button>

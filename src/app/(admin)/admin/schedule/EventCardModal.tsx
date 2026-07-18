@@ -29,6 +29,8 @@ import WorkDocumentsSection from '@/components/documents/WorkDocumentsSection'
 import OrderFinanceBlock from '@/components/orders/OrderFinanceBlock'
 import MontageDisableChoiceDialog from '@/components/orders/MontageDisableChoiceDialog'
 import type { MontageProjectDTO } from '@/lib/actions/montage'
+import { useAutosave, readAutosaveDraft, clearAutosaveDraft, type StoredDraft } from '@/lib/hooks/use-autosave'
+import SaveStatusIndicator from '@/components/ui/save-status-indicator'
 
 // "08:00–09:00", либо с датой спереди, если гримёр уходит на предыдущий
 // календарный день ("9 мар., 23:00–09:00" — начало съёмки в 00:xx).
@@ -249,6 +251,93 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
     }
   }
 
+  // Единая точка построения payload для upsertScheduleEvent — используется и
+  // явным "Сохранить" (см. handleSave), и автосохранением (см. useAutosave
+  // ниже), чтобы не держать два разных способа собрать один и тот же объект.
+  function buildEventInput() {
+    return {
+      calendarEventId: calendarEvent.id,
+      title: calendarEvent.title,
+      description: calendarEvent.description,
+      startAt: calendarEvent.start,
+      endAt: calendarEvent.end,
+      eventType,
+      room,
+      format: formatValue,
+      camerasCount: camerasCount ? parseInt(camerasCount, 10) : null,
+      // Абонемент оплачивается один раз при покупке — отдельная запись не должна
+      // повторно создавать выручку, поэтому очищаем разовую цену.
+      estimatedPrice: paymentMode === 'SUBSCRIPTION' ? null : (estimatedPrice ? parseFloat(estimatedPrice) : null),
+      paymentMethod: paymentMode === 'SUBSCRIPTION' ? null : (paymentMethod || null),
+      notes,
+      promotionType,
+      yandexDiskUrl: yandexDiskUrl || null,
+      nasBackupUrl: nasBackupUrl || null,
+      materialsComment,
+      yandexLinkRequired,
+      nasLinkRequired,
+      yandexNotRequiredReason,
+      nasNotRequiredReason,
+      editingRequired,
+      clientNameRaw,
+      contactRaw,
+      companyRaw,
+      makeupDurationMinutes,
+    }
+  }
+
+  // Автосохранение — та же запись (upsertScheduleEvent — upsert по
+  // calendarEventId, который всегда есть, событие приходит из Google
+  // Calendar), поэтому, в отличие от OrderFormModal, здесь нет случая
+  // "записи ещё не существует" — периодическое автосохранение включено
+  // всегда. Локальная резервная копия в localStorage — на случай перезагрузки
+  // страницы/краша между сетевыми тиками.
+  const storageKey = `studio-lk:autosave:event:${calendarEvent.id}`
+  const autosave = useAutosave({
+    value: buildEventInput(),
+    onSave: async input => {
+      const result = await upsertScheduleEvent(input)
+      return result.ok ? { ok: true } : { ok: false, error: result.error }
+    },
+    enabled: !saving,
+    storageKey,
+  })
+
+  const [draftBanner, setDraftBanner] = useState<StoredDraft<ReturnType<typeof buildEventInput>> | null>(null)
+
+  // Проверка черновика — один раз при открытии карточки. setState отложен
+  // через setTimeout(…, 0) — react-hooks/set-state-in-effect (см. память проекта).
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      const draft = readAutosaveDraft<ReturnType<typeof buildEventInput>>(storageKey)
+      if (draft) setDraftBanner(draft)
+    }, 0)
+    return () => clearTimeout(timer)
+  }, [storageKey])
+
+  function applyDraft(input: ReturnType<typeof buildEventInput>) {
+    setRoom(input.room ?? '')
+    setFormatValue(input.format ?? '')
+    setCamerasCount(input.camerasCount != null ? String(input.camerasCount) : '')
+    setEstimatedPrice(input.estimatedPrice != null ? String(input.estimatedPrice) : '')
+    setPaymentMethod(input.paymentMethod ?? '')
+    setNotes(input.notes ?? '')
+    setPromotionType(input.promotionType ?? null)
+    setYandexDiskUrl(input.yandexDiskUrl ?? '')
+    setNasBackupUrl(input.nasBackupUrl ?? '')
+    setMaterialsComment(input.materialsComment ?? '')
+    setYandexLinkRequired(input.yandexLinkRequired)
+    setNasLinkRequired(input.nasLinkRequired)
+    setYandexNotRequiredReason(input.yandexNotRequiredReason ?? null)
+    setNasNotRequiredReason(input.nasNotRequiredReason ?? null)
+    setEditingRequired(input.editingRequired ?? null)
+    setClientNameRaw(input.clientNameRaw ?? '')
+    setContactRaw(input.contactRaw ?? '')
+    setCompanyRaw(input.companyRaw ?? '')
+    setMakeupDurationInput(input.makeupDurationMinutes != null ? String(input.makeupDurationMinutes) : '')
+    setMakeupDurationUnit('minutes')
+  }
+
   async function handleSave(confirmationOverride?: ClientConfirmationStatus) {
     setSaving(true)
     setError(null)
@@ -260,33 +349,7 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
     // вернулся бы в false. finally гарантирует сброс при любом исходе.
     try {
       const result = await upsertScheduleEvent({
-        calendarEventId: calendarEvent.id,
-        title: calendarEvent.title,
-        description: calendarEvent.description,
-        startAt: calendarEvent.start,
-        endAt: calendarEvent.end,
-        eventType,
-        room,
-        format: formatValue,
-        camerasCount: camerasCount ? parseInt(camerasCount, 10) : null,
-        // Абонемент оплачивается один раз при покупке — отдельная запись не должна
-        // повторно создавать выручку, поэтому очищаем разовую цену.
-        estimatedPrice: paymentMode === 'SUBSCRIPTION' ? null : (estimatedPrice ? parseFloat(estimatedPrice) : null),
-        paymentMethod: paymentMode === 'SUBSCRIPTION' ? null : (paymentMethod || null),
-        notes,
-        promotionType,
-        yandexDiskUrl: yandexDiskUrl || null,
-        nasBackupUrl: nasBackupUrl || null,
-        materialsComment,
-        yandexLinkRequired,
-        nasLinkRequired,
-        yandexNotRequiredReason,
-        nasNotRequiredReason,
-        editingRequired,
-        clientNameRaw,
-        contactRaw,
-        companyRaw,
-        makeupDurationMinutes,
+        ...buildEventInput(),
         ...(confirmationOverride && { clientConfirmationStatus: confirmationOverride }),
       })
       if (!result.ok) {
@@ -352,6 +415,19 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
         </DialogHeader>
 
         <div className="flex-1 overflow-y-auto px-6 py-4 space-y-3">
+          {draftBanner && (
+            <div className="flex items-center justify-between gap-3 bg-amber-950/30 border border-amber-900/60 rounded-lg px-3 py-2.5 text-xs">
+              <span className="text-amber-300">
+                Найден несохранённый черновик от {format(parseISO(draftBanner.updatedAt), 'd MMM yyyy, HH:mm', { locale: ru })}.
+              </span>
+              <div className="flex items-center gap-3 flex-shrink-0">
+                <button type="button" onClick={() => { applyDraft(draftBanner.value); setDraftBanner(null) }}
+                  className="text-amber-300 underline hover:text-amber-200">Восстановить</button>
+                <button type="button" onClick={() => { clearAutosaveDraft(storageKey); setDraftBanner(null) }}
+                  className="text-zinc-400 underline hover:text-zinc-300">Отклонить</button>
+              </div>
+            </div>
+          )}
           {calendarEvent.description && (
             <p className="text-zinc-400 text-xs whitespace-pre-wrap bg-zinc-800/50 rounded-lg p-3">
               {calendarEvent.description}
@@ -554,7 +630,7 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
                 </div>
               </div>
               <div className="flex flex-col items-start gap-2">
-                <button type="button" onClick={() => setAddClientOpen(true)}
+                <button type="button" onClick={async () => { await autosave.flush(); setAddClientOpen(true) }}
                   className="inline-flex items-center gap-1.5 bg-[#00c26b] hover:bg-[#00b360] disabled:opacity-50 text-white font-semibold text-xs px-3 py-2 rounded-lg transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#00c26b]">
                   <UserPlus className="w-3.5 h-3.5" />
                   Создать нового клиента
@@ -820,11 +896,12 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
         )}
 
         <div className="flex items-center gap-3 px-6 py-4 border-t border-zinc-800 flex-shrink-0">
+          <SaveStatusIndicator status={autosave.status} error={autosave.error} />
           <button type="button" onClick={() => handleSave()} disabled={saving || subscriptionBlocksSave}
             className="flex-1 bg-[#00c26b] hover:bg-[#00b360] disabled:opacity-50 text-white font-semibold text-sm py-2.5 rounded-lg transition-colors">
             {saving ? 'Сохранение...' : 'Сохранить'}
           </button>
-          <button type="button" onClick={() => onOpenChange(false)}
+          <button type="button" onClick={async () => { await autosave.flush(); onOpenChange(false) }}
             className="px-4 py-2.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-sm rounded-lg transition-colors">
             Закрыть
           </button>
