@@ -61,7 +61,7 @@ type MontageOrder = Pick<Order, 'id' | 'title' | 'status' | 'clientId' | 'client
 type MontageClient = Pick<Client, 'id' | 'name' | 'companyName'>
 type MontageEditor = Pick<EditorProfile, 'id' | 'displayName'>
 
-type MontageProjectDocument = { type: DocumentType; number: number | null; suffix: string | null; status: DocumentStatus; amount: number | null }
+type MontageProjectDocument = { type: DocumentType; number: string | null; suffix: string | null; status: DocumentStatus; amount: number | null }
 type MontageProjectWithRelations = MontageProject & {
   order: MontageOrder | null
   client: MontageClient | null

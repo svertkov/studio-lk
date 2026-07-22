@@ -891,7 +891,7 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
           {annotation?.orderId && (
             <>
               <p className={SECTION}>Документы</p>
-              <WorkDocumentsSection orderId={annotation.orderId} clientId={annotation.clientId} />
+              <WorkDocumentsSection orderId={annotation.orderId} clientId={annotation.clientId} onBeforeEditRelated={() => autosave.flush()} />
             </>
           )}
 

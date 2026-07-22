@@ -10,24 +10,33 @@ import {
 import { writeAuditLog, resolveValidUserId } from '@/lib/audit'
 import {
   getDocumentDisplayNumber, getWorkDocumentAttentionReasons, getClientContractAttentionReasons, getDocumentPaymentState,
-  computeLineItemTotal, computeLineItemsTotal, FLOW_TYPES_REQUIRING_INVOICE, FLOW_TYPES_REQUIRING_ACT,
+  computeLineItemTotal, computeLineItemsTotal, compareDocumentNumbers, FLOW_TYPES_REQUIRING_INVOICE, FLOW_TYPES_REQUIRING_ACT,
   type DocumentAttentionReason,
 } from '@/lib/document-model'
 
 // ============================================================
 // АВТОРИЗАЦИЯ — та же локальная проверка, что в actions/orders.ts,
 // actions/montage.ts и т.д. (в проекте нет общего requireRole-хелпера).
-// RBAC для документов сознательно не реализован на этом этапе (см. AGENTS.md).
+// Гранулярного RBAC для документов по-прежнему нет (см. AGENTS.md) — но с
+// 2026-07-22 сюда добавлен возврат общей роли пользователя (role), нужной
+// для редактирования приложения (см. updateDocument): OWNER/ADMIN — тот же
+// точечный паттерн, что уже используется в actions/telegram.ts и
+// api/telegram/blob-upload — не новая система прав.
 // ============================================================
 
-async function requireStaffSession(): Promise<{ ok: true; userId: string | null } | { ok: false; error: string }> {
+async function requireStaffSession(): Promise<{ ok: true; userId: string | null; role: string | null } | { ok: false; error: string }> {
   try {
     const session = await auth()
     if (!session?.user) return { ok: false, error: 'Требуется авторизация' }
-    return { ok: true, userId: session.user.id ?? null }
+    return { ok: true, userId: session.user.id ?? null, role: session.user.role ?? null }
   } catch {
     return { ok: false, error: 'Требуется авторизация' }
   }
+}
+
+export async function getCurrentUserRole(): Promise<string | null> {
+  const authResult = await requireStaffSession()
+  return authResult.ok ? authResult.role : null
 }
 
 // Реестр документов затрагивает клиента, заказ/монтаж, CRM, финансы и
@@ -94,9 +103,22 @@ async function ensureDocumentPackageNumber(
 // договор, комплект работы). Простой count+1 достаточен — конкуренция за
 // один и тот же договор практически невозможна (один администратор),
 // @@unique([contractId, number]) ловит гипотетическую гонку через P2002.
-async function getNextAppendixNumber(tx: Prisma.TransactionClient, contractId: string): Promise<number> {
+async function getNextAppendixNumber(tx: Prisma.TransactionClient, contractId: string): Promise<string> {
   const count = await tx.document.count({ where: { type: 'APPENDIX', contractId } })
-  return count + 1
+  return String(count + 1)
+}
+
+// Сортировка списка договоров по номеру — строка (см. Document.number),
+// поэтому НЕ orderBy на стороне БД (лексикографически "10" встал бы перед
+// "2") — только natural sort в памяти (document-model.ts). Документы без
+// номера всегда в конце, независимо от направления.
+function sortByNumberDescending<T extends { number: string | null }>(rows: T[]): T[] {
+  return [...rows].sort((a, b) => {
+    if (a.number == null && b.number == null) return 0
+    if (a.number == null) return 1
+    if (b.number == null) return -1
+    return compareDocumentNumbers(b.number, a.number)
+  })
 }
 
 // Суффикс "1"/"2" при нескольких счетах одной работы — не хранится
@@ -141,7 +163,7 @@ export interface InvoiceLineItemDTO {
 export interface DocumentDTO {
   id: string
   type: DocumentType
-  number: number | null
+  number: string | null
   suffix: string | null
   isHistorical: boolean
   issueDate: string
@@ -266,15 +288,15 @@ export async function createDocument(input: CreateDocumentInput): Promise<
 
   try {
     const created = await prisma.$transaction(async tx => {
-      let number: number | null = null
+      let number: string | null = null
       let suffix: string | null = null
 
       if (input.type === 'CONTRACT') {
         if (input.isHistorical && input.historicalNumber != null) {
-          number = input.historicalNumber
-          await bumpCounterIfLower(tx, 'contract_number', number)
+          await bumpCounterIfLower(tx, 'contract_number', input.historicalNumber)
+          number = String(input.historicalNumber)
         } else {
-          number = await getNextCounterValue(tx, 'contract_number')
+          number = String(await getNextCounterValue(tx, 'contract_number'))
         }
       } else if (input.type === 'APPENDIX') {
         number = await getNextAppendixNumber(tx, input.contractId as string)
@@ -347,6 +369,16 @@ export interface UpdateDocumentInput {
   dueDate?: string | null
   comment?: string | null
   serviceDescription?: string | null
+  // Ниже — только для APPENDIX (см. AGENTS.md, "документные реквизиты").
+  // Требуют роль OWNER/ADMIN (проверяется внутри, не только скрытием кнопки
+  // в UI) и пишут отдельное audit-событие APPENDIX_NUMBER_CHANGED, если
+  // реально меняется number.
+  number?: string | null
+  // Переподключение только на ДРУГОЙ договор ТОГО ЖЕ клиента — проверяется
+  // на сервере. Заказ/проект монтажа приложения не меняются в этой версии
+  // (нет сценария использования — привязки задаются один раз при создании).
+  contractId?: string
+  reason?: string | null
 }
 
 export async function updateDocument(input: UpdateDocumentInput): Promise<
@@ -358,6 +390,58 @@ export async function updateDocument(input: UpdateDocumentInput): Promise<
   try {
     const before = await prisma.document.findUnique({ where: { id: input.id } })
     if (!before) return { ok: false, error: 'Документ не найден' }
+
+    const isAppendixEdit = before.type === 'APPENDIX'
+      && (input.number !== undefined || input.contractId !== undefined || input.amount !== undefined
+        || input.issueDate !== undefined || input.comment !== undefined || input.serviceDescription !== undefined)
+    if (isAppendixEdit && authResult.role !== 'OWNER' && authResult.role !== 'ADMIN') {
+      return { ok: false, error: 'Недостаточно прав для редактирования приложения' }
+    }
+
+    // Переподключение к другому договору — только тот же клиент (см. план).
+    // Резолвим клиента ОБОИХ договоров (старого и нового) заранее — нужно и
+    // для проверки, и для инвалидации кеша клиента, у которого приложение
+    // "исчезнет" из карточки после переноса.
+    let targetContractId = before.contractId
+    let effectiveClientId: string | null = null
+    let oldContractClientId: string | null = null
+
+    if (before.type === 'APPENDIX' && before.contractId) {
+      const oldContract = await prisma.document.findUnique({ where: { id: before.contractId }, select: { clientId: true } })
+      effectiveClientId = oldContract?.clientId ?? null
+      oldContractClientId = effectiveClientId
+    }
+
+    if (before.type === 'APPENDIX' && input.contractId !== undefined && input.contractId !== before.contractId) {
+      const newContract = await prisma.document.findUnique({ where: { id: input.contractId }, select: { id: true, type: true, clientId: true } })
+      if (!newContract || newContract.type !== 'CONTRACT') {
+        return { ok: false, error: 'Указанный документ не является договором' }
+      }
+      if (oldContractClientId && newContract.clientId !== oldContractClientId) {
+        return { ok: false, error: 'Нельзя привязать приложение к договору другого клиента' }
+      }
+      targetContractId = newContract.id
+      effectiveClientId = newContract.clientId
+    }
+
+    let normalizedNumber: string | undefined
+    if (before.type === 'APPENDIX' && input.number !== undefined) {
+      const trimmed = input.number?.trim() ?? ''
+      if (!trimmed) return { ok: false, error: 'Укажите номер приложения' }
+      normalizedNumber = trimmed
+      if (normalizedNumber !== before.number || targetContractId !== before.contractId) {
+        // Архивные приложения по-прежнему занимают номер (существующее
+        // правило проекта — см. assignInvoiceSuffixIfNeeded), исключаются
+        // только отменённые (status=CANCELLED).
+        const conflict = await prisma.document.findFirst({
+          where: { type: 'APPENDIX', contractId: targetContractId, number: normalizedNumber, status: { not: 'CANCELLED' }, id: { not: before.id } },
+        })
+        if (conflict) {
+          return { ok: false, error: `У договора уже существует приложение с номером №${normalizedNumber}` }
+        }
+      }
+    }
+
     const validUserId = await resolveValidUserId(prisma, authResult.userId)
 
     const updated = await prisma.document.update({
@@ -370,19 +454,46 @@ export async function updateDocument(input: UpdateDocumentInput): Promise<
         dueDate: input.dueDate === undefined ? undefined : input.dueDate ? new Date(input.dueDate) : null,
         comment: input.comment === undefined ? undefined : (input.comment?.trim() || null),
         serviceDescription: input.serviceDescription === undefined ? undefined : (input.serviceDescription?.trim() || null),
+        number: normalizedNumber,
+        contractId: before.type === 'APPENDIX' && input.contractId !== undefined ? targetContractId : undefined,
         updatedById: validUserId,
       },
       include: DOCUMENT_INCLUDE,
     })
 
-    await writeAuditLog({
-      userId: authResult.userId, action: 'DOCUMENT_UPDATED', entityType: 'Document', entityId: updated.id,
-      metadata: { fields: Object.keys(input).filter(k => k !== 'id'), statusBefore: before.status, statusAfter: updated.status },
-    })
+    const numberChanged = normalizedNumber !== undefined && normalizedNumber !== before.number
+    if (numberChanged) {
+      await writeAuditLog({
+        userId: authResult.userId, action: 'APPENDIX_NUMBER_CHANGED', entityType: 'Document', entityId: updated.id,
+        metadata: {
+          oldNumber: before.number, newNumber: normalizedNumber,
+          otherChangedFields: Object.keys(input).filter(k => !['id', 'number', 'reason'].includes(k)),
+          reason: input.reason?.trim() || null,
+          documentId: updated.id, contractId: updated.contractId, orderId: updated.orderId, montageProjectId: updated.montageProjectId,
+        },
+      })
+    } else {
+      await writeAuditLog({
+        userId: authResult.userId, action: 'DOCUMENT_UPDATED', entityType: 'Document', entityId: updated.id,
+        metadata: { fields: Object.keys(input).filter(k => k !== 'id'), statusBefore: before.status, statusAfter: updated.status },
+      })
+    }
 
-    revalidateDocumentPaths({ clientId: updated.clientId, orderId: updated.orderId, montageProjectId: updated.montageProjectId })
+    // APPENDIX не хранит clientId напрямую (см. AGENTS.md) — карточка клиента
+    // инвалидируется через клиента РЕЗОЛВЛЕННОГО договора, не через
+    // updated.clientId (он всегда null для APPENDIX).
+    revalidateDocumentPaths({
+      clientId: before.type === 'APPENDIX' ? effectiveClientId : updated.clientId,
+      orderId: updated.orderId, montageProjectId: updated.montageProjectId,
+    })
+    if (oldContractClientId && oldContractClientId !== effectiveClientId) {
+      revalidateDocumentPaths({ clientId: oldContractClientId })
+    }
     return { ok: true, data: toDocumentDTO(updated) }
   } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+      return { ok: false, error: 'Такой номер документа уже занят — проверьте уникальность' }
+    }
     console.error('[updateDocument]', e)
     return { ok: false, error: 'Не удалось обновить документ' }
   }
@@ -677,7 +788,7 @@ export async function getDocumentsForClient(clientId: string): Promise<{ ok: tru
 
 export interface ContractRowDTO {
   id: string
-  number: number | null
+  number: string | null
   issueDate: string
   status: DocumentStatus
   comment: string | null
@@ -697,9 +808,8 @@ export async function getContractsList(): Promise<{ ok: true; data: ContractRowD
     const rows = await prisma.document.findMany({
       where: { type: 'CONTRACT' },
       include: { client: { select: { id: true, name: true, type: true, orders: { select: { id: true } } } } },
-      orderBy: { number: 'desc' },
     })
-    const data: ContractRowDTO[] = await Promise.all(rows.map(async r => {
+    const data: ContractRowDTO[] = await Promise.all(sortByNumberDescending(rows).map(async r => {
       const [appendicesCount, invoicesCount, actsCount] = await Promise.all([
         prisma.document.count({ where: { contractId: r.id, type: 'APPENDIX' } }),
         prisma.document.count({ where: { contractId: r.id, type: 'INVOICE' } }),
@@ -925,10 +1035,14 @@ export async function getClientContractSummary(clientId: string): Promise<
   const authResult = await requireStaffSession()
   if (!authResult.ok) return { ok: false, data: null, error: authResult.error }
   try {
-    const [client, activeContract] = await Promise.all([
+    const [client, activeContracts] = await Promise.all([
       prisma.client.findUnique({ where: { id: clientId }, select: { contractState: true, contractStateComment: true, type: true } }),
-      prisma.document.findFirst({ where: { type: 'CONTRACT', clientId, status: 'ACTIVE' }, orderBy: { number: 'desc' } }),
+      prisma.document.findMany({ where: { type: 'CONTRACT', clientId, status: 'ACTIVE' } }),
     ])
+    // На практике у клиента обычно 0-1 действующих договоров — findMany +
+    // сортировка в памяти вместо findFirst с orderBy на строковом поле (см.
+    // sortByNumberDescending выше, тот же принцип, что getContractsList).
+    const activeContract = sortByNumberDescending(activeContracts)[0] ?? null
     return {
       ok: true,
       data: {
@@ -942,6 +1056,31 @@ export async function getClientContractSummary(clientId: string): Promise<
   } catch (e) {
     console.error('[getClientContractSummary]', e)
     return { ok: false, data: null, error: 'Не удалось загрузить статус договора' }
+  }
+}
+
+export interface ClientContractOptionDTO {
+  id: string
+  displayNumber: string
+  status: DocumentStatus
+}
+
+// Список ВСЕХ договоров клиента (не только действующего) — только для выбора
+// "к какому договору привязано приложение" в AppendixEditDialog. Специально
+// не переиспользует getContractsList (та тянет всю платформу целиком с
+// ordersCount/appendicesCount/etc — избыточно для маленького select'а).
+export async function getContractsForClient(clientId: string): Promise<
+  { ok: true; data: ClientContractOptionDTO[] } | { ok: false; data: ClientContractOptionDTO[]; error: string }
+> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, data: [], error: authResult.error }
+  try {
+    const rows = await prisma.document.findMany({ where: { type: 'CONTRACT', clientId } })
+    const data = sortByNumberDescending(rows).map(r => ({ id: r.id, displayNumber: getDocumentDisplayNumber(r, null), status: r.status }))
+    return { ok: true, data }
+  } catch (e) {
+    console.error('[getContractsForClient]', e)
+    return { ok: false, data: [], error: 'Не удалось загрузить договоры клиента' }
   }
 }
 

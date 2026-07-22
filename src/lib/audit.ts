@@ -22,6 +22,16 @@ export async function resolveValidUserId(
 // же helper, поэтому вынесен сюда один раз (см. AGENTS.md, правило 4).
 // try/catch внутри — намеренно: аудит не должен блокировать основную
 // операцию, если запись лога не удалась.
+//
+// 2026-07-22: обнаружено, что userId здесь передавался КАК ЕСТЬ, без
+// resolveValidUserId — в отличие от полей самой сущности (createdById и
+// т.п.), которые вызывающий код уже резолвит отдельно. Если сессия пережила
+// удаление пользователя (тот же протухший JWT, о котором предупреждает
+// комментарий выше), `auditLog.create` падал на `cms_audit_log_user_id_fkey`
+// — и запись аудита ТИХО терялась целиком (try/catch её проглатывал), вместо
+// того чтобы сохраниться хотя бы с userId=null. Резолвим здесь же, один раз,
+// а не в каждом вызывающем месте — иначе пришлось бы помнить сделать это в
+// каждом из уже полутора десятков call site'ов.
 export async function writeAuditLog(params: {
   userId: string | null
   action: string
@@ -30,9 +40,10 @@ export async function writeAuditLog(params: {
   metadata?: Record<string, unknown>
 }): Promise<void> {
   try {
+    const validUserId = await resolveValidUserId(prisma, params.userId)
     await prisma.auditLog.create({
       data: {
-        userId: params.userId,
+        userId: validUserId,
         action: params.action,
         entityType: params.entityType,
         entityId: params.entityId,

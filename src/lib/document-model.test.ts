@@ -2,12 +2,12 @@ import { describe, it, expect } from 'vitest'
 import {
   getDocumentDisplayNumber, suggestDocumentFlowType, getDocumentPaymentState,
   getWorkDocumentAttentionReasons, getClientContractAttentionReasons,
-  computeLineItemTotal, computeLineItemsTotal,
+  computeLineItemTotal, computeLineItemsTotal, compareDocumentNumbers,
 } from '@/lib/document-model'
 
 describe('getDocumentDisplayNumber', () => {
   it('formats a contract by its own sequential number', () => {
-    expect(getDocumentDisplayNumber({ type: 'CONTRACT', number: 18, suffix: null }, null)).toBe('№18')
+    expect(getDocumentDisplayNumber({ type: 'CONTRACT', number: '18', suffix: null }, null)).toBe('№18')
   })
 
   it('returns a placeholder for a contract with no number yet', () => {
@@ -29,12 +29,52 @@ describe('getDocumentDisplayNumber', () => {
   })
 
   it('formats an appendix by its own per-contract number, ignoring workPackageNumber', () => {
-    expect(getDocumentDisplayNumber({ type: 'APPENDIX', number: 1, suffix: null }, 127)).toBe('№1')
-    expect(getDocumentDisplayNumber({ type: 'APPENDIX', number: 3, suffix: null }, null)).toBe('№3')
+    expect(getDocumentDisplayNumber({ type: 'APPENDIX', number: '1', suffix: null }, 127)).toBe('№1')
+    expect(getDocumentDisplayNumber({ type: 'APPENDIX', number: '3', suffix: null }, null)).toBe('№3')
   })
 
   it('returns a placeholder for an appendix with no number yet', () => {
     expect(getDocumentDisplayNumber({ type: 'APPENDIX', number: null, suffix: null }, null)).toBe('Без номера')
+  })
+
+  it('formats a composite appendix number as-is (string, not coerced to integer)', () => {
+    expect(getDocumentDisplayNumber({ type: 'APPENDIX', number: '1/1', suffix: null }, null)).toBe('№1/1')
+    expect(getDocumentDisplayNumber({ type: 'APPENDIX', number: '1-А', suffix: null }, null)).toBe('№1-А')
+    expect(getDocumentDisplayNumber({ type: 'APPENDIX', number: '01', suffix: null }, null)).toBe('№01')
+  })
+})
+
+describe('compareDocumentNumbers — natural sort', () => {
+  it('compares plain numeric strings by value, not lexicographically', () => {
+    expect(compareDocumentNumbers('2', '10')).toBeLessThan(0)
+    expect(compareDocumentNumbers('10', '2')).toBeGreaterThan(0)
+    expect(compareDocumentNumbers('9', '9')).toBe(0)
+  })
+
+  it('sorts a mixed list into natural numeric order', () => {
+    const sorted = ['10', '1', '2'].sort(compareDocumentNumbers)
+    expect(sorted).toEqual(['1', '2', '10'])
+  })
+
+  it('compares composite dash-suffixed numbers chunk by chunk', () => {
+    expect(compareDocumentNumbers('1-А', '1-Б')).toBeLessThan(0)
+    expect(compareDocumentNumbers('1-А', '1-А')).toBe(0)
+    expect(compareDocumentNumbers('2-А', '1-Б')).toBeGreaterThan(0)
+  })
+
+  it('compares composite slash-suffixed numbers chunk by chunk', () => {
+    expect(compareDocumentNumbers('1/1', '1/2')).toBeLessThan(0)
+    expect(compareDocumentNumbers('1/2', '1/10')).toBeLessThan(0)
+  })
+
+  it('treats a leading zero as the same numeric value (natural-sort semantics)', () => {
+    expect(compareDocumentNumbers('01', '1')).toBe(0)
+  })
+
+  it('always sorts documents without a number to the end, regardless of direction', () => {
+    expect(compareDocumentNumbers(null, '1')).toBeGreaterThan(0)
+    expect(compareDocumentNumbers('1', null)).toBeLessThan(0)
+    expect(compareDocumentNumbers(null, null)).toBe(0)
   })
 })
 

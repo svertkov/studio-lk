@@ -128,8 +128,50 @@ export const FLOW_TYPES_REQUIRING_APPENDIX: DocumentFlowType[] = ['CONTRACT_APPE
 
 export interface DocumentNumberInput {
   type: DocumentType
-  number: number | null
+  number: string | null
   suffix: string | null
+}
+
+// Разбивает строку на чередующиеся числовые/нечисловые куски ("1-А" →
+// ["1","-А"]) — основа natural sort ниже.
+function splitNumberIntoChunks(value: string): Array<{ isNumeric: boolean; text: string }> {
+  const chunks: Array<{ isNumeric: boolean; text: string }> = []
+  const regex = /(\d+)|(\D+)/g
+  let match: RegExpExecArray | null
+  while ((match = regex.exec(value)) !== null) {
+    chunks.push(match[1] !== undefined ? { isNumeric: true, text: match[1] } : { isNumeric: false, text: match[2] })
+  }
+  return chunks
+}
+
+// Natural sort для номера документа (теперь строка — см. Document.number) —
+// "2" < "10" по значению, а не лексикографически. Составные номера
+// сравниваются кусок за куском ("1-А" < "1-Б", "1/1" < "1/2"). Документы без
+// номера всегда в конце, независимо от направления сортировки — вызывающий
+// код переворачивает только сам знак результата (см. getContractsList).
+// НЕ использовать ORDER BY number на стороне БД для CONTRACT/APPENDIX —
+// текстовая сортировка Postgres даёт неверный порядок ("10" раньше "2").
+export function compareDocumentNumbers(a: string | null, b: string | null): number {
+  if (a == null && b == null) return 0
+  if (a == null) return 1
+  if (b == null) return -1
+  const chunksA = splitNumberIntoChunks(a)
+  const chunksB = splitNumberIntoChunks(b)
+  const length = Math.max(chunksA.length, chunksB.length)
+  for (let i = 0; i < length; i++) {
+    const chunkA = chunksA[i]
+    const chunkB = chunksB[i]
+    if (!chunkA) return -1
+    if (!chunkB) return 1
+    if (chunkA.isNumeric && chunkB.isNumeric) {
+      const diff = Number(chunkA.text) - Number(chunkB.text)
+      if (diff !== 0) return diff
+    } else {
+      const diff = chunkA.text.localeCompare(chunkB.text, 'ru')
+      if (diff !== 0) return diff
+    }
+  }
+  return 0
 }
 
 export function getDocumentDisplayNumber(document: DocumentNumberInput, workPackageNumber: number | null): string {

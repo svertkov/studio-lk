@@ -5,12 +5,13 @@ import Link from 'next/link'
 import { FileText, Plus, ScrollText, Layers, ChevronUp, ChevronDown, Trash2 } from 'lucide-react'
 import GlowPill from '@/components/ui/glow-pill'
 import {
-  getDocumentsForOrder, getDocumentsForMontageProject, getClientContractSummary,
+  getDocumentsForOrder, getDocumentsForMontageProject, getClientContractSummary, getCurrentUserRole,
   getOrderDocumentFlowType, getMontageDocumentMode,
   createDocument, updateDocument, updateOrderDocumentFlowType, updateMontageDocumentMode,
   addInvoiceLineItem, updateInvoiceLineItem, removeInvoiceLineItem, reorderInvoiceLineItems,
   type DocumentDTO, type ClientContractSummary, type InvoiceLineItemDTO,
 } from '@/lib/actions/documents'
+import AppendixEditDialog from './AppendixEditDialog'
 import {
   DOCUMENT_FLOW_TYPE_LABELS, MONTAGE_DOCUMENT_MODE_LABELS, DOCUMENT_STATUS_LABELS,
   DOCUMENT_STATUS_OPTIONS_BY_TYPE, INVOICE_PURPOSE_LABELS, DOCUMENT_PAYMENT_STATE_LABELS,
@@ -52,6 +53,12 @@ interface Props {
   clientId: string | null
   orderId?: string | null
   montageProjectId?: string | null
+  // Вызывается перед открытием редактора приложения (вложенный Dialog поверх
+  // текущей карточки) — родительские модалки с автосохранением передают сюда
+  // autosave.flush (тот же приём, что уже используют кнопки "Открыть карточку
+  // клиента"/"Создать нового клиента" в OrderFormModal/EventCardModal).
+  // MontageProjectModal автосохранения не имеет — там проп просто не передаётся.
+  onBeforeEditRelated?: () => unknown | Promise<unknown>
 }
 
 // Общий блок "Документы" для карточки заказа (OrderFormModal/EventCardModal)
@@ -60,7 +67,7 @@ interface Props {
 // самодостаточен: сам загружает данные и сохраняет изменения по месту, не
 // встроен в Save родительской формы (тот же принцип, что overlay-действия
 // MontageProjectModal — пауза/отмена/архив).
-export default function WorkDocumentsSection({ clientId, orderId, montageProjectId }: Props) {
+export default function WorkDocumentsSection({ clientId, orderId, montageProjectId, onBeforeEditRelated }: Props) {
   const [documents, setDocuments] = useState<DocumentDTO[] | null>(null)
   const [contractSummary, setContractSummary] = useState<ClientContractSummary | null>(null)
   const [flowType, setFlowType] = useState<DocumentFlowType>('UNKNOWN')
@@ -70,6 +77,9 @@ export default function WorkDocumentsSection({ clientId, orderId, montageProject
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [appendixExpanded, setAppendixExpanded] = useState(false)
+  const [canEditAppendix, setCanEditAppendix] = useState(false)
+  const [appendixEditOpen, setAppendixEditOpen] = useState(false)
+  const [appendixUpdatedFlash, setAppendixUpdatedFlash] = useState(false)
 
   const workRef = orderId ? { orderId } : montageProjectId ? { montageProjectId } : null
 
@@ -93,10 +103,26 @@ export default function WorkDocumentsSection({ clientId, orderId, montageProject
         const result = await getClientContractSummary(clientId)
         if (!cancelled && result.ok) setContractSummary(result.data)
       }
+      // Кнопка "Редактировать" у приложения — только OWNER/ADMIN (см.
+      // AGENTS.md). Реальная проверка всё равно на сервере в updateDocument —
+      // это только скрытие кнопки, не единственная защита.
+      const role = await getCurrentUserRole()
+      if (!cancelled) setCanEditAppendix(role === 'OWNER' || role === 'ADMIN')
     }
     load()
     return () => { cancelled = true }
   }, [orderId, montageProjectId, clientId])
+
+  function handleAppendixUpdated(doc: DocumentDTO) {
+    setDocuments(prev => prev?.map(d => (d.id === doc.id ? doc : d)) ?? null)
+    setAppendixUpdatedFlash(true)
+    setTimeout(() => setAppendixUpdatedFlash(false), 2000)
+  }
+
+  async function handleOpenAppendixEdit() {
+    await onBeforeEditRelated?.()
+    setAppendixEditOpen(true)
+  }
 
   async function handleFlowTypeChange(next: DocumentFlowType) {
     setFlowType(next)
@@ -161,6 +187,7 @@ export default function WorkDocumentsSection({ clientId, orderId, montageProject
   const invoiceWithDescription = invoices.find(i => i.serviceDescription) ?? null
 
   return (
+    <>
     <div className="space-y-4">
       <h3 className="text-white font-semibold text-sm flex items-center gap-2">
         <FileText className="w-4 h-4 text-zinc-500" />
@@ -227,9 +254,19 @@ export default function WorkDocumentsSection({ clientId, orderId, montageProject
             {appendix && (
               <div className="bg-zinc-800/40 rounded-lg px-3 py-2 space-y-1">
                 <div className="flex items-center justify-between gap-2 flex-wrap">
-                  <p className="text-zinc-200 text-xs">{appendix.displayNumber}</p>
-                  <p className="text-zinc-500 text-[11px]">{formatDate(appendix.issueDate)} · {formatMoney(appendix.amount)}</p>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <p className="text-zinc-200 text-xs flex-shrink-0">{appendix.displayNumber}</p>
+                    <p className="text-zinc-500 text-[11px] truncate">{formatDate(appendix.issueDate)} · {formatMoney(appendix.amount)}</p>
+                  </div>
+                  {canEditAppendix && (
+                    <button type="button" onClick={handleOpenAppendixEdit}
+                      title="Редактировать приложение"
+                      className="text-zinc-400 hover:text-[#00c26b] text-[11px] underline underline-offset-2 flex-shrink-0 transition-colors">
+                      Редактировать
+                    </button>
+                  )}
                 </div>
+                {appendixUpdatedFlash && <p className="text-[#00c26b] text-[11px]">Приложение обновлено</p>}
                 {appendix.serviceDescription && (
                   <div>
                     <p className={`text-zinc-400 text-[11px] leading-snug whitespace-pre-wrap break-words ${!appendixExpanded && appendix.serviceDescription.length > 140 ? 'line-clamp-2' : ''}`}>
@@ -392,6 +429,16 @@ export default function WorkDocumentsSection({ clientId, orderId, montageProject
         <p className="text-zinc-500 text-xs">Документы для этого проекта не требуются.</p>
       )}
     </div>
+    {appendix && (
+      <AppendixEditDialog
+        open={appendixEditOpen}
+        onOpenChange={setAppendixEditOpen}
+        appendix={appendix}
+        clientId={clientId}
+        onUpdated={handleAppendixUpdated}
+      />
+    )}
+    </>
   )
 }
 

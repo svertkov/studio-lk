@@ -584,8 +584,14 @@ model Document {
   id   String       @id @default(cuid())
   type DocumentType
 
-  // Сквозной номер — только CONTRACT, из DocumentCounter("contract_number").
-  number       Int?    @map("number")
+  // Сквозной номер — CONTRACT (из DocumentCounter("contract_number")) и
+  // APPENDIX (getNextAppendixNumber, счёт в рамках своего договора). Строка,
+  // не Int — APPENDIX редактируется вручную и должен поддерживать составные
+  // форматы ("1/1", "1-А", "01" с ведущим нулём), которые Int не может
+  // хранить. Сортировка по этому полю — ТОЛЬКО через compareDocumentNumbers
+  // (document-model.ts), не через ORDER BY/лексикографическое сравнение (см.
+  // getContractsList/getClientContractSummary, actions/documents.ts).
+  number       String? @map("number")
   // "1"/"2" при нескольких счетах одной работы (аванс/окончательный) — только
   // INVOICE. Отображаемый номер собирается функцией getDocumentDisplayNumber
   // (document-model.ts) из parent.documentPackageNumber + suffix, само число
@@ -639,10 +645,19 @@ model Document {
   // CONTRACT продолжают использовать amount/serviceDescription как раньше.
   lineItems      InvoiceLineItem[]
 
-  @@unique([type, number])
+  // Глобальная уникальность number для CONTRACT реализована ОТДЕЛЬНО как
+  // частичный индекс на уровне БД (prisma/manual-sql/contract-number-unique-index.sql),
+  // а не через @@unique([type, number]) здесь: такое ограничение раньше
+  // (до 2026-07-22) непреднамеренно требовало ГЛОБАЛЬНОЙ уникальности номера
+  // и для APPENDIX тоже — Договор №2 не смог бы завести Приложение №1, если
+  // оно уже есть у Договора №1, хотя это должно быть разрешено. Prisma не
+  // умеет декларативно выразить "уникально только когда type=CONTRACT"
+  // (partial index), поэтому это вынесено в ручной SQL — тот же приём, что
+  // уже используется для append-only триггера audit log.
+  //
   // Номер приложения уникален в рамках одного договора (CONTRACT никогда не
   // ссылается сам на себя через contractId, INVOICE/ACT не используют поле
-  // number вообще — коллизий с @@unique([type, number]) договора нет).
+  // number вообще).
   @@unique([contractId, number])
   @@index([clientId])
   @@index([orderId])

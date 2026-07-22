@@ -686,7 +686,7 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
             {order?.id && (
               <>
                 <p className={SECTION}>Документы</p>
-                <WorkDocumentsSection orderId={order.id} clientId={order.clientId} />
+                <WorkDocumentsSection orderId={order.id} clientId={order.clientId} onBeforeEditRelated={() => autosave.flush()} />
               </>
             )}
 

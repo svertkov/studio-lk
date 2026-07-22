@@ -64,7 +64,7 @@ type OrderScheduleEvent = Pick<ScheduleEvent,
     nasNotRequiredConfirmedBy: { name: string | null; email: string } | null
   }
 type OrderDocument = {
-  type: DocumentType; number: number | null; suffix: string | null; status: DocumentStatus
+  type: DocumentType; number: string | null; suffix: string | null; status: DocumentStatus
   amount: number | null; issueDate: Date; serviceDescription: string | null
 }
 // Только денежные поля + статус — для расчёта выплаты монтажёру в
