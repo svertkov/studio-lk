@@ -355,7 +355,7 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
   return (
     <>
       <Dialog open onOpenChange={onOpenChange}>
-        <DialogContent className="bg-zinc-900 border-zinc-800 text-white max-w-xl sm:max-w-[662px] max-h-[88vh] flex flex-col p-0">
+        <DialogContent className="bg-zinc-900 border-zinc-800 text-white max-w-xl sm:max-w-[min(1040px,94vw)] max-h-[88vh] flex flex-col p-0">
           <DialogHeader className="px-6 pt-6 pb-4 border-b border-zinc-800 flex-shrink-0">
             <DialogTitle className="text-white text-lg font-semibold">
               {isEdit ? 'Заказ' : 'Новый заказ'}

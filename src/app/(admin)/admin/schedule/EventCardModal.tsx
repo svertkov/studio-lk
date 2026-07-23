@@ -396,7 +396,7 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
   return (
     <>
     <Dialog open onOpenChange={onOpenChange}>
-      <DialogContent className="bg-zinc-900 border-zinc-800 text-white max-w-xl sm:max-w-[662px] max-h-[88vh] flex flex-col p-0">
+      <DialogContent className="bg-zinc-900 border-zinc-800 text-white max-w-xl sm:max-w-[min(1040px,94vw)] max-h-[88vh] flex flex-col p-0">
         <DialogHeader className="px-6 pt-6 pb-4 border-b border-zinc-800 flex-shrink-0">
           <div className="flex items-center gap-2">
             <span
@@ -660,6 +660,43 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
           ) : (
             <p className="text-zinc-500 text-xs">Оплата через абонемент доступна после привязки клиента к записи.</p>
           )}
+          {/* Переставлено ВЫШЕ OrderFinanceBlock (2026-07-23) — раньше блок
+              "Финансы монтажа" внутри OrderFinanceBlock отображался ДО того,
+              как администратор вообще решал, нужен ли монтаж, что было
+              нелогично (в OrderFormModal/CRM переключатель и так уже стоял
+              раньше — реордеринг требовался только здесь). Сама видимость
+              финансов монтажа по-прежнему определяется внутри OrderFinanceBlock
+              условием editingRequired — здесь только позиция самого переключателя. */}
+          <div>
+            <label className={LABEL}>Монтаж</label>
+            {/* Восстановлен прежний вид (две крупные кнопки-переключатели) по
+                просьбе пользователя 2026-07-19 — выпадающий список, введённый
+                этой доработкой ранее, оказался менее удобным для бинарного
+                выбора. Гейтинг по isBookingPast сознательно НЕ восстановлен:
+                это было отдельное самостоятельное решение (позволить
+                администратору указывать монтаж независимо от даты записи),
+                пользователь его не просил отменять. */}
+            <div className="flex gap-2">
+              <button type="button" onClick={() => handleEditingRequiredChange(true)}
+                className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00c26b] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 ${
+                  editingRequired === true ? 'bg-[#FACC15] text-black' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-white'
+                }`}>
+                Монтаж требуется
+              </button>
+              <button type="button" onClick={() => handleEditingRequiredChange(false)}
+                className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00c26b] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 ${
+                  editingRequired === false ? 'bg-[#00c26b] text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-white'
+                }`}>
+                Монтаж не требуется
+              </button>
+            </div>
+            <p className="text-zinc-500 text-xs mt-1.5">
+              {editingRequired === null
+                ? 'Выберите, нужен ли монтаж, прежде чем прикладывать материалы — так администратор не забудет это сделать.'
+                : 'После сохранения заказ автоматически перейдёт в «Монтаж», если монтаж требуется, или в «Завершено», если монтаж не требуется.'}
+            </p>
+          </div>
+
           {(!hasClient || paymentMode === 'ONE_TIME') && (
             <>
               <OrderFinanceBlock
@@ -690,36 +727,6 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
               <p className="text-zinc-500 text-xs">Оплата будет проверяться после завершения записи.</p>
             )
           )}
-
-          <div>
-            <label className={LABEL}>Монтаж</label>
-            {/* Восстановлен прежний вид (две крупные кнопки-переключатели) по
-                просьбе пользователя 2026-07-19 — выпадающий список, введённый
-                этой доработкой ранее, оказался менее удобным для бинарного
-                выбора. Гейтинг по isBookingPast сознательно НЕ восстановлен:
-                это было отдельное самостоятельное решение (позволить
-                администратору указывать монтаж независимо от даты записи),
-                пользователь его не просил отменять. */}
-            <div className="flex gap-2">
-              <button type="button" onClick={() => handleEditingRequiredChange(true)}
-                className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00c26b] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 ${
-                  editingRequired === true ? 'bg-[#FACC15] text-black' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-white'
-                }`}>
-                Монтаж требуется
-              </button>
-              <button type="button" onClick={() => handleEditingRequiredChange(false)}
-                className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00c26b] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 ${
-                  editingRequired === false ? 'bg-[#00c26b] text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-white'
-                }`}>
-                Монтаж не требуется
-              </button>
-            </div>
-            <p className="text-zinc-500 text-xs mt-1.5">
-              {editingRequired === null
-                ? 'Выберите, нужен ли монтаж, прежде чем прикладывать материалы — так администратор не забудет это сделать.'
-                : 'После сохранения заказ автоматически перейдёт в «Монтаж», если монтаж требуется, или в «Завершено», если монтаж не требуется.'}
-            </p>
-          </div>
 
           <p className={SECTION}>Материалы</p>
           {shouldShowMaterialsBadge(vm) && (

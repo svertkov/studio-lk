@@ -28,11 +28,16 @@ import { writeAuditLog } from '@/lib/audit'
 // как и все остальные админ-разделы (см. src/app/(admin)/layout.tsx).
 // ============================================================
 
-async function requireStaffSession(): Promise<{ ok: true; userId: string | null } | { ok: false; error: string }> {
+// role добавлен 2026-07-23 (тот же аддитивный приём, что уже применялся для
+// userId в этой сессии) — нужен для назначения ответственного монтажёра
+// (assignMontageEditor ниже), которое гейтится тем же ['OWNER','ADMIN'],
+// что уже используется для редактирования приложения в actions/documents.ts —
+// не новая система прав, тот же существующий паттерн.
+async function requireStaffSession(): Promise<{ ok: true; userId: string | null; role: string | null } | { ok: false; error: string }> {
   try {
     const session = await auth()
     if (!session?.user) return { ok: false, error: 'Требуется авторизация' }
-    return { ok: true, userId: session.user.id ?? null }
+    return { ok: true, userId: session.user.id ?? null, role: session.user.role ?? null }
   } catch {
     return { ok: false, error: 'Требуется авторизация' }
   }
@@ -669,10 +674,34 @@ export async function updateMontageProject(
 // исчезает из причин "Требует внимания" (NO_EDITOR, см. montage-model.ts) само
 // по себе, как только editorId задан; переход в "В работе" — отдельное
 // осознанное действие пользователя.
+//
+// 2026-07-23: добавлена роль (OWNER/ADMIN — тот же паттерн, что редактирование
+// приложения в documents.ts) и audit-лог — раньше назначение/смена монтажёра
+// нигде не логировались (проверено: ни один writeAuditLog в этом файле не
+// покрывал editorId). Разные события для "назначили впервые" и "сменили" —
+// тот же принцип, что APPENDIX_NUMBER_CHANGED vs обычный DOCUMENT_UPDATED.
 export async function assignMontageEditor(
   id: string, editorId: string | null
 ): Promise<{ ok: true; data: MontageProjectDTO } | { ok: false; error: string }> {
-  return updateMontageProject(id, { editorId })
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, error: authResult.error }
+  if (authResult.role !== 'OWNER' && authResult.role !== 'ADMIN') {
+    return { ok: false, error: 'Недостаточно прав для назначения ответственного монтажёра' }
+  }
+
+  const existing = await prisma.montageProject.findUnique({ where: { id }, select: { editorId: true } })
+  if (!existing) return { ok: false, error: 'Проект монтажа не найден' }
+
+  const result = await updateMontageProject(id, { editorId })
+  if (result.ok && existing.editorId !== editorId) {
+    await writeAuditLog({
+      userId: authResult.userId,
+      action: existing.editorId ? 'MONTAGE_PROJECT_EDITOR_CHANGED' : 'MONTAGE_PROJECT_EDITOR_ASSIGNED',
+      entityType: 'MontageProject', entityId: id,
+      metadata: { oldEditorId: existing.editorId, newEditorId: editorId },
+    })
+  }
+  return result
 }
 
 // ============================================================
