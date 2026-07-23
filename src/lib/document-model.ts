@@ -8,20 +8,40 @@ export type { DocumentType, DocumentStatus, InvoicePurpose, ClientContractState,
 
 export const INVOICE_LINE_ITEM_UNIT_LABELS: Record<InvoiceLineItemUnit, string> = {
   PIECE: 'шт.',
-  HOUR: 'ч.',
+  HOUR: 'час',
   DAY: 'дн.',
-  SERVICE: 'услуга',
+  SERVICE: 'усл. ед.',
   SHIFT: 'смена',
   PROJECT: 'проект',
   EPISODE: 'выпуск',
   CLIP: 'ролик',
   SET: 'комплект',
   MONTH: 'месяц',
+  OTHER: 'прочее',
+}
+
+export interface InvoiceLineItemUnitLabelInput {
+  unit: InvoiceLineItemUnit
+  customUnitLabel: string | null
+}
+
+// Единая точка "как показать единицу измерения строки счёта" — не читать
+// item.unit напрямую там, где нужно отобразить текст (см. AGENTS.md, "Единый
+// источник данных", п.4). OTHER без заполненного customUnitLabel молча
+// падает обратно на INVOICE_LINE_ITEM_UNIT_LABELS.OTHER ("прочее").
+export function getLineItemUnitLabel(item: InvoiceLineItemUnitLabelInput): string {
+  if (item.unit === 'OTHER') {
+    const custom = item.customUnitLabel?.trim()
+    return custom || INVOICE_LINE_ITEM_UNIT_LABELS.OTHER
+  }
+  return INVOICE_LINE_ITEM_UNIT_LABELS[item.unit]
 }
 
 export const VAT_RATE_LABELS: Record<VatRate, string> = {
   NOT_APPLICABLE: 'Без НДС',
   ZERO: 'НДС 0%',
+  RATE_5: 'НДС 5%',
+  RATE_7: 'НДС 7%',
   RATE_10: 'НДС 10%',
   RATE_20: 'НДС 20%',
 }

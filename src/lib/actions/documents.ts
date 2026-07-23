@@ -154,6 +154,8 @@ export interface InvoiceLineItemDTO {
   description: string
   quantity: number
   unit: InvoiceLineItemUnit
+  // Значим только когда unit === 'OTHER' (см. getLineItemUnitLabel, document-model.ts).
+  customUnitLabel: string | null
   unitPrice: number
   vatRate: VatRate
   total: number
@@ -245,6 +247,7 @@ function toDocumentDTO(row: DocumentRow): DocumentDTO {
       description: li.description,
       quantity: li.quantity,
       unit: li.unit,
+      customUnitLabel: li.customUnitLabel,
       unitPrice: li.unitPrice,
       vatRate: li.vatRate,
       total: computeLineItemTotal(li),
@@ -438,6 +441,7 @@ export async function createActFromInvoice(invoiceId: string): Promise<
             description: li.description,
             quantity: li.quantity,
             unit: li.unit,
+            customUnitLabel: li.customUnitLabel,
             unitPrice: li.unitPrice,
             vatRate: li.vatRate,
           })),
@@ -649,6 +653,8 @@ export interface AddInvoiceLineItemInput {
   description: string
   quantity: number
   unit: InvoiceLineItemUnit
+  // Значим только когда unit === 'OTHER' — см. getLineItemUnitLabel (document-model.ts).
+  customUnitLabel?: string | null
   unitPrice: number
   vatRate: VatRate
 }
@@ -663,6 +669,8 @@ export async function addInvoiceLineItem(input: AddInvoiceLineItemInput): Promis
   if (!description) return { ok: false, error: 'Укажите наименование услуги' }
   if (!(input.quantity > 0)) return { ok: false, error: 'Количество должно быть больше нуля' }
   if (!(input.unitPrice >= 0)) return { ok: false, error: 'Цена не может быть отрицательной' }
+  const customUnitLabel = input.unit === 'OTHER' ? (input.customUnitLabel?.trim() || null) : null
+  if (input.unit === 'OTHER' && !customUnitLabel) return { ok: false, error: 'Укажите название единицы измерения' }
 
   try {
     const doc = await prisma.$transaction(async tx => {
@@ -677,6 +685,7 @@ export async function addInvoiceLineItem(input: AddInvoiceLineItemInput): Promis
           description,
           quantity: input.quantity,
           unit: input.unit,
+          customUnitLabel,
           unitPrice: input.unitPrice,
           vatRate: input.vatRate,
         },
@@ -703,9 +712,13 @@ export interface UpdateInvoiceLineItemInput {
   description?: string
   quantity?: number
   unit?: InvoiceLineItemUnit
+  // Значим только когда итоговый unit === 'OTHER' — см. getLineItemUnitLabel.
+  customUnitLabel?: string | null
   unitPrice?: number
   vatRate?: VatRate
 }
+
+const CUSTOM_UNIT_LABEL_REQUIRED = 'CUSTOM_UNIT_LABEL_REQUIRED'
 
 export async function updateInvoiceLineItem(input: UpdateInvoiceLineItemInput): Promise<
   { ok: true; data: DocumentDTO } | { ok: false; error: string }
@@ -721,6 +734,19 @@ export async function updateInvoiceLineItem(input: UpdateInvoiceLineItemInput): 
     const doc = await prisma.$transaction(async tx => {
       const existing = await tx.invoiceLineItem.findUnique({ where: { id: input.id } })
       if (!existing) return null
+      // Единица могла не меняться в этом вызове (правится только цена/кол-во
+      // и т.п.) — итоговый unit тогда берём из уже сохранённой строки, не из
+      // input, иначе OTHER-строка потеряла бы customUnitLabel при любой
+      // несвязанной правке.
+      const finalUnit = input.unit ?? existing.unit
+      let customUnitLabel: string | null
+      if (finalUnit === 'OTHER') {
+        const label = (input.customUnitLabel !== undefined ? input.customUnitLabel : existing.customUnitLabel)?.trim()
+        if (!label) throw new Error(CUSTOM_UNIT_LABEL_REQUIRED)
+        customUnitLabel = label
+      } else {
+        customUnitLabel = null
+      }
       const validUserId = await resolveValidUserId(tx, authResult.userId)
       await tx.invoiceLineItem.update({
         where: { id: input.id },
@@ -728,6 +754,7 @@ export async function updateInvoiceLineItem(input: UpdateInvoiceLineItemInput): 
           description: input.description !== undefined ? input.description.trim() : undefined,
           quantity: input.quantity,
           unit: input.unit,
+          customUnitLabel,
           unitPrice: input.unitPrice,
           vatRate: input.vatRate,
         },
@@ -744,6 +771,7 @@ export async function updateInvoiceLineItem(input: UpdateInvoiceLineItemInput): 
     revalidateDocumentPaths({ clientId: doc.clientId, orderId: doc.orderId, montageProjectId: doc.montageProjectId })
     return { ok: true, data: toDocumentDTO(doc) }
   } catch (e) {
+    if (e instanceof Error && e.message === CUSTOM_UNIT_LABEL_REQUIRED) return { ok: false, error: 'Укажите название единицы измерения' }
     console.error('[updateInvoiceLineItem]', e)
     return { ok: false, error: 'Не удалось изменить строку счёта' }
   }

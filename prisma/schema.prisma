@@ -682,28 +682,33 @@ model Document {
 }
 
 // Единица измерения строки счёта — небольшой закрытый список (как формат/зал
-// съёмки, см. AliasEntry-словари в src/lib/import/normalize.ts), не свободный
-// текст: нужен предсказуемый набор для отображения "x2 шт." / "x3 ч." и т.п.
+// съёмки, см. AliasEntry-словари в src/lib/import/normalize.ts) с одним
+// явным выходом в свободный текст (OTHER — см. InvoiceLineItem.customUnitLabel,
+// 2026-07-23) для редких случаев, не покрытых списком.
 enum InvoiceLineItemUnit {
   PIECE   // шт.
-  HOUR    // ч.
+  HOUR    // час
   DAY     // дн.
-  SERVICE // услуга — по умолчанию, количество обычно 1
+  SERVICE // усл. ед. — по умолчанию, количество обычно 1
   SHIFT   // смена
   PROJECT // проект
   EPISODE // выпуск
   CLIP    // ролик
   SET     // комплект
   MONTH   // месяц
+  OTHER   // прочее — см. InvoiceLineItem.customUnitLabel
 }
 
 // НДС — фиксированный небольшой набор ставок РФ, не произвольный процент.
 // NOT_APPLICABLE ("без НДС") — значение по умолчанию, соответствует текущей
-// деятельности студии; расширять список ставок без явного запроса пользователя
-// не нужно (см. ТЗ раздел 23).
+// деятельности студии. RATE_5/RATE_7 добавлены 2026-07-23 по прямому запросу
+// пользователя — расширять этот список дальше по-прежнему только по явному
+// запросу, не самостоятельно.
 enum VatRate {
   NOT_APPLICABLE
   ZERO
+  RATE_5
+  RATE_7
   RATE_10
   RATE_20
 }
@@ -723,6 +728,11 @@ model InvoiceLineItem {
   description String
   quantity    Float               @default(1)
   unit        InvoiceLineItemUnit @default(SERVICE)
+  // Свободный текст единицы измерения — значим ТОЛЬКО когда unit = OTHER
+  // (см. getLineItemUnitLabel, document-model.ts); при любом другом unit
+  // должен быть null (addInvoiceLineItem/updateInvoiceLineItem обнуляют его
+  // сами при смене unit, чтобы не оставался "осиротевший" текст).
+  customUnitLabel String?         @map("custom_unit_label")
   unitPrice   Float               @map("unit_price")
   vatRate     VatRate             @default(NOT_APPLICABLE) @map("vat_rate")
   // Пометка одноразовой миграции существующих однострочных счетов (см.

@@ -3,6 +3,7 @@ import {
   getDocumentDisplayNumber, suggestDocumentFlowType, getDocumentPaymentState,
   getWorkDocumentAttentionReasons, getClientContractAttentionReasons,
   computeLineItemTotal, computeLineItemsTotal, compareDocumentNumbers,
+  getLineItemUnitLabel, INVOICE_LINE_ITEM_UNIT_LABELS, VAT_RATE_LABELS,
 } from '@/lib/document-model'
 
 describe('getDocumentDisplayNumber', () => {
@@ -226,5 +227,33 @@ describe('computeLineItemTotal / computeLineItemsTotal', () => {
 
   it('an empty list of line items totals to zero', () => {
     expect(computeLineItemsTotal([])).toBe(0)
+  })
+})
+
+describe('INVOICE_LINE_ITEM_UNIT_LABELS / VAT_RATE_LABELS', () => {
+  it('uses real invoicing terminology for SERVICE/HOUR and adds OTHER', () => {
+    expect(INVOICE_LINE_ITEM_UNIT_LABELS.SERVICE).toBe('усл. ед.')
+    expect(INVOICE_LINE_ITEM_UNIT_LABELS.HOUR).toBe('час')
+    expect(INVOICE_LINE_ITEM_UNIT_LABELS.OTHER).toBe('прочее')
+  })
+
+  it('adds RATE_5/RATE_7 alongside the existing VAT rates', () => {
+    expect(VAT_RATE_LABELS.RATE_5).toBe('НДС 5%')
+    expect(VAT_RATE_LABELS.RATE_7).toBe('НДС 7%')
+  })
+})
+
+describe('getLineItemUnitLabel', () => {
+  it('returns the plain label for a non-OTHER unit', () => {
+    expect(getLineItemUnitLabel({ unit: 'HOUR', customUnitLabel: null })).toBe('час')
+  })
+
+  it('returns the trimmed custom label when unit is OTHER', () => {
+    expect(getLineItemUnitLabel({ unit: 'OTHER', customUnitLabel: '  лицензия  ' })).toBe('лицензия')
+  })
+
+  it('falls back to the generic "прочее" label when OTHER has no usable custom label', () => {
+    expect(getLineItemUnitLabel({ unit: 'OTHER', customUnitLabel: null })).toBe('прочее')
+    expect(getLineItemUnitLabel({ unit: 'OTHER', customUnitLabel: '   ' })).toBe('прочее')
   })
 })
