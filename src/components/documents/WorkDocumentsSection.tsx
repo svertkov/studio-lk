@@ -8,7 +8,7 @@ import {
   getDocumentsForOrder, getDocumentsForMontageProject, getClientContractSummary, getCurrentUserRole,
   getOrderDocumentFlowType, getMontageDocumentMode,
   createDocument, updateDocument, updateOrderDocumentFlowType, updateMontageDocumentMode,
-  addInvoiceLineItem, updateInvoiceLineItem, removeInvoiceLineItem, reorderInvoiceLineItems,
+  addInvoiceLineItem, updateInvoiceLineItem, removeInvoiceLineItem, reorderInvoiceLineItems, createActFromInvoice,
   type DocumentDTO, type ClientContractSummary, type InvoiceLineItemDTO,
 } from '@/lib/actions/documents'
 import AppendixEditDialog from './AppendixEditDialog'
@@ -86,6 +86,7 @@ export default function WorkDocumentsSection({ clientId, orderId, montageProject
   const [appendixEditOpen, setAppendixEditOpen] = useState(false)
   const [appendixUpdatedFlash, setAppendixUpdatedFlash] = useState(false)
   const [editingNumberDoc, setEditingNumberDoc] = useState<DocumentDTO | null>(null)
+  const [creatingActFromInvoiceId, setCreatingActFromInvoiceId] = useState<string | null>(null)
 
   const workRef = orderId ? { orderId } : montageProjectId ? { montageProjectId } : null
 
@@ -179,6 +180,25 @@ export default function WorkDocumentsSection({ clientId, orderId, montageProject
   async function handleStatusChange(doc: DocumentDTO, status: DocumentStatus) {
     const result = await updateDocument({ id: doc.id, status })
     if (result.ok) setDocuments(prev => prev?.map(d => (d.id === doc.id ? result.data : d)) ?? null)
+  }
+
+  // Одноразовый snapshot (см. createActFromInvoice, actions/documents.ts) —
+  // не живая синхронизация. Полный перезапрос списка, а не просто добавление
+  // локально, по той же причине, что и у handleCreate выше (номер/суффиксы
+  // могут затронуть уже отображённые документы).
+  async function handleCreateActFromInvoice(invoiceId: string) {
+    setCreatingActFromInvoiceId(invoiceId)
+    setError(null)
+    const result = await createActFromInvoice(invoiceId)
+    setCreatingActFromInvoiceId(null)
+    if (!result.ok) { setError(result.error); return }
+    if (orderId) {
+      const refreshed = await getDocumentsForOrder(orderId)
+      setDocuments(refreshed.data)
+    } else if (montageProjectId) {
+      const refreshed = await getDocumentsForMontageProject(montageProjectId)
+      setDocuments(refreshed.data)
+    }
   }
 
   if (documents === null) {
@@ -347,6 +367,12 @@ export default function WorkDocumentsSection({ clientId, orderId, montageProject
                     appendix={appendix}
                     onUpdated={doc => setDocuments(prev => prev?.map(d => (d.id === doc.id ? doc : d)) ?? null)}
                   />
+                  {acts.length === 0 && inv.status !== 'CANCELLED' && (
+                    <button type="button" disabled={creatingActFromInvoiceId === inv.id} onClick={() => handleCreateActFromInvoice(inv.id)}
+                      className="mt-2 flex items-center gap-1 text-[#00c26b] text-[11px] hover:underline disabled:opacity-50">
+                      <Plus className="w-3 h-3" /> {creatingActFromInvoiceId === inv.id ? 'Создаём акт…' : `Создать акт на основании счёта ${inv.displayNumber}`}
+                    </button>
+                  )}
                 </div>
               )
             })}
@@ -415,7 +441,10 @@ export default function WorkDocumentsSection({ clientId, orderId, montageProject
                       </button>
                     )}
                   </p>
-                  <p className="text-zinc-500 text-[11px] mt-0.5">{formatDate(act.issueDate)}</p>
+                  <p className="text-zinc-500 text-[11px] mt-0.5">
+                    {formatDate(act.issueDate)}
+                    {act.sourceInvoiceId && ` · из счёта ${invoices.find(i => i.id === act.sourceInvoiceId)?.displayNumber ?? ''}`}
+                  </p>
                 </div>
                 <select className={`${SELECT} flex-shrink-0`} value={act.status} onChange={e => handleStatusChange(act, e.target.value as DocumentStatus)}>
                   {DOCUMENT_STATUS_OPTIONS_BY_TYPE.ACT.map(s => <option key={s} value={s}>{DOCUMENT_STATUS_LABELS[s]}</option>)}

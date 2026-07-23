@@ -628,6 +628,14 @@ model Document {
   orderId          String? @map("order_id") // INVOICE/ACT к съёмке
   montageProjectId String? @map("montage_project_id") // INVOICE/ACT к монтажу
   contractId       String? @map("contract_id") // опц. ссылка INVOICE/ACT -> Document(CONTRACT) клиента
+  // Акт, созданный кнопкой "Создать акт на основании счёта" (createActFromInvoice,
+  // actions/documents.ts) — ТОЛЬКО у ACT, ссылка на INVOICE. Однократный
+  // snapshot при создании (номер по умолчанию = номер счёта, но независимо
+  // редактируемый дальше; строки (InvoiceLineItem) копируются как новые
+  // записи) — НЕ живая синхронизация: правка счёта после этого не меняет уже
+  // созданный акт. Отдельная self-relation от contractId/"ContractLink" —
+  // разные пары документов (счёт->акт этой же работы, а не документ->договор).
+  sourceInvoiceId  String? @map("source_invoice_id")
 
   createdById String?   @map("created_by_id")
   updatedById String?   @map("updated_by_id")
@@ -640,30 +648,36 @@ model Document {
   montageProject MontageProject? @relation(fields: [montageProjectId], references: [id])
   contract       Document?       @relation("ContractLink", fields: [contractId], references: [id])
   linkedDocs     Document[]      @relation("ContractLink")
+  sourceInvoice  Document?       @relation("ActFromInvoice", fields: [sourceInvoiceId], references: [id])
+  actsFromInvoice Document[]     @relation("ActFromInvoice")
   createdBy      User?           @relation("DocumentCreatedBy", fields: [createdById], references: [id])
   updatedBy      User?           @relation("DocumentUpdatedBy", fields: [updatedById], references: [id])
   // Только для type=INVOICE в этой версии (см. InvoiceLineItem) — ACT/APPENDIX/
   // CONTRACT продолжают использовать amount/serviceDescription как раньше.
   lineItems      InvoiceLineItem[]
 
-  // Глобальная уникальность number для CONTRACT реализована ОТДЕЛЬНО как
+  // Глобальная уникальность number для CONTRACT/INVOICE/ACT (в рамках своего
+  // типа — счёт №5 и акт №5 не конфликтуют) реализована ОТДЕЛЬНО как
   // частичный индекс на уровне БД (prisma/manual-sql/contract-number-unique-index.sql),
   // а не через @@unique([type, number]) здесь: такое ограничение раньше
   // (до 2026-07-22) непреднамеренно требовало ГЛОБАЛЬНОЙ уникальности номера
   // и для APPENDIX тоже — Договор №2 не смог бы завести Приложение №1, если
   // оно уже есть у Договора №1, хотя это должно быть разрешено. Prisma не
-  // умеет декларативно выразить "уникально только когда type=CONTRACT"
+  // умеет декларативно выразить "уникально только когда type IN (...)"
   // (partial index), поэтому это вынесено в ручной SQL — тот же приём, что
   // уже используется для append-only триггера audit log.
   //
   // Номер приложения уникален в рамках одного договора (CONTRACT никогда не
-  // ссылается сам на себя через contractId, INVOICE/ACT не используют поле
-  // number вообще).
+  // ссылается сам на себя через contractId). INVOICE/ACT с 2026-07-23 тоже
+  // поддерживают ручной number (см. getDocumentDisplayNumber) — их
+  // уникальность идёт через частичный индекс выше, а не через это поле,
+  // contractId у них почти всегда null (опциональная ссылка на договор).
   @@unique([contractId, number])
   @@index([clientId])
   @@index([orderId])
   @@index([montageProjectId])
   @@index([status])
+  @@index([sourceInvoiceId])
   @@map("cms_document")
 }
 

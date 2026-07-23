@@ -177,6 +177,11 @@ export interface DocumentDTO {
   orderId: string | null
   montageProjectId: string | null
   contractId: string | null
+  // Только у ACT, созданного кнопкой "Создать акт на основании счёта" (см.
+  // createActFromInvoice) — ссылка на исходный INVOICE, для UI-проверки "уже
+  // есть акт из этого счёта" и для отображения происхождения. Однократный
+  // snapshot-указатель, не живая связь (см. AGENTS.md, "Реестр документов").
+  sourceInvoiceId: string | null
   createdAt: string
   updatedAt: string
   archivedAt: string | null
@@ -226,6 +231,7 @@ function toDocumentDTO(row: DocumentRow): DocumentDTO {
     orderId: row.orderId,
     montageProjectId: row.montageProjectId,
     contractId: row.contractId,
+    sourceInvoiceId: row.sourceInvoiceId,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
     archivedAt: row.archivedAt ? row.archivedAt.toISOString() : null,
@@ -371,6 +377,90 @@ export async function createDocument(input: CreateDocumentInput): Promise<
     }
     console.error('[createDocument]', e)
     return { ok: false, error: 'Не удалось создать документ' }
+  }
+}
+
+// "Создать акт на основании счёта" — ОДНОРАЗОВЫЙ snapshot, не живая
+// синхронизация (см. AGENTS.md, "Реестр документов", п.7): номер и строки
+// копируются один раз в момент создания; последующая правка номера счёта или
+// его строк НЕ меняет уже созданный акт задним числом. sourceInvoiceId —
+// только для истории происхождения (audit/UI), не для повторной сверки.
+// Переиспользует существующий InvoiceLineItem (комментарий "только INVOICE"
+// в схеме — соглашение кода, не ограничение) вместо новой сущности.
+export async function createActFromInvoice(invoiceId: string): Promise<
+  { ok: true; data: DocumentDTO } | { ok: false; error: string }
+> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, error: authResult.error }
+
+  try {
+    const invoice = await prisma.document.findUnique({
+      where: { id: invoiceId },
+      include: { lineItems: { orderBy: { sortOrder: 'asc' } } },
+    })
+    if (!invoice) return { ok: false, error: 'Счёт не найден' }
+    if (invoice.type !== 'INVOICE') return { ok: false, error: 'Акт можно создать только на основании счёта' }
+
+    const created = await prisma.$transaction(async tx => {
+      const work = invoice.orderId ? { orderId: invoice.orderId } : invoice.montageProjectId ? { montageProjectId: invoice.montageProjectId } : null
+      const workPackageNumber = work ? await ensureDocumentPackageNumber(tx, work) : null
+      const invoiceDisplayNumber = getDocumentDisplayNumber(invoice, workPackageNumber)
+      const defaultActNumber = invoiceDisplayNumber === 'Без номера' ? null : invoiceDisplayNumber.replace(/^№/, '')
+
+      const validUserId = await resolveValidUserId(tx, authResult.userId)
+      const act = await tx.document.create({
+        data: {
+          type: 'ACT',
+          number: defaultActNumber,
+          isHistorical: false,
+          issueDate: new Date(),
+          // "Подготовлен" — акт создаётся уже с реальными строками/суммой из
+          // счёта, а не пустым (в отличие от NOT_PREPARED у "Добавить акт" с
+          // чистого листа).
+          status: 'PREPARED',
+          amount: invoice.amount,
+          serviceDescription: invoice.serviceDescription,
+          clientId: null,
+          orderId: invoice.orderId,
+          montageProjectId: invoice.montageProjectId,
+          contractId: invoice.contractId,
+          sourceInvoiceId: invoice.id,
+          createdById: validUserId,
+          updatedById: validUserId,
+        },
+      })
+
+      if (invoice.lineItems.length > 0) {
+        await tx.invoiceLineItem.createMany({
+          data: invoice.lineItems.map(li => ({
+            documentId: act.id,
+            sortOrder: li.sortOrder,
+            description: li.description,
+            quantity: li.quantity,
+            unit: li.unit,
+            unitPrice: li.unitPrice,
+            vatRate: li.vatRate,
+          })),
+        })
+        await recomputeDocumentAmount(tx, act.id)
+      }
+
+      return tx.document.findUniqueOrThrow({ where: { id: act.id }, include: DOCUMENT_INCLUDE })
+    })
+
+    await writeAuditLog({
+      userId: authResult.userId, action: 'ACT_CREATED_FROM_INVOICE', entityType: 'Document', entityId: created.id,
+      metadata: { sourceInvoiceId: invoice.id, actId: created.id, copiedLineItemsCount: invoice.lineItems.length, number: created.number },
+    })
+
+    revalidateDocumentPaths({ clientId: invoice.clientId, orderId: invoice.orderId, montageProjectId: invoice.montageProjectId })
+    return { ok: true, data: toDocumentDTO(created) }
+  } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+      return { ok: false, error: 'Такой номер документа уже занят — проверьте уникальность' }
+    }
+    console.error('[createActFromInvoice]', e)
+    return { ok: false, error: 'Не удалось создать акт на основании счёта' }
   }
 }
 
