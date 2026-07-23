@@ -266,6 +266,12 @@ export interface CreateDocumentInput {
   serviceDescription?: string | null
   isHistorical?: boolean
   historicalNumber?: number | null
+  // Ручной номер счёта/акта (см. AGENTS.md, "Реестр документов") —
+  // необязателен: без него номер по-прежнему вычисляется из
+  // workPackageNumber+suffix, как раньше (getDocumentDisplayNumber).
+  // Уникален в рамках своего типа (CONTRACT/INVOICE/ACT) — см. частичный
+  // индекс prisma/manual-sql/contract-number-unique-index.sql.
+  number?: string | null
 }
 
 export async function createDocument(input: CreateDocumentInput): Promise<
@@ -305,6 +311,14 @@ export async function createDocument(input: CreateDocumentInput): Promise<
         await ensureDocumentPackageNumber(tx, work)
         if (input.type === 'INVOICE') {
           suffix = await assignInvoiceSuffixIfNeeded(tx, work)
+        }
+        // Ручной номер (см. AGENTS.md, "Реестр документов") — необязателен,
+        // без него displayNumber по-прежнему вычисляется из
+        // workPackageNumber+suffix (getDocumentDisplayNumber). suffix выше
+        // всё равно присваивается — не мешает, просто не используется для
+        // отображения, пока задан ручной number.
+        if (input.number?.trim()) {
+          number = input.number.trim()
         }
       }
 
@@ -369,10 +383,12 @@ export interface UpdateDocumentInput {
   dueDate?: string | null
   comment?: string | null
   serviceDescription?: string | null
-  // Ниже — только для APPENDIX (см. AGENTS.md, "документные реквизиты").
-  // Требуют роль OWNER/ADMIN (проверяется внутри, не только скрытием кнопки
-  // в UI) и пишут отдельное audit-событие APPENDIX_NUMBER_CHANGED, если
-  // реально меняется number.
+  // number — для APPENDIX (обязателен, см. AGENTS.md, "документные
+  // реквизиты") И для INVOICE/ACT (необязателен — пустая строка/undefined
+  // очищает ручной номер обратно к вычисляемому workPackageNumber+suffix,
+  // см. getDocumentDisplayNumber). В обоих случаях требует роль OWNER/ADMIN
+  // (проверяется внутри, не только скрытием кнопки в UI) и пишет отдельное
+  // audit-событие *_NUMBER_CHANGED, если реально меняется number.
   number?: string | null
   // Переподключение только на ДРУГОЙ договор ТОГО ЖЕ клиента — проверяется
   // на сервере. Заказ/проект монтажа приложения не меняются в этой версии
@@ -396,6 +412,10 @@ export async function updateDocument(input: UpdateDocumentInput): Promise<
         || input.issueDate !== undefined || input.comment !== undefined || input.serviceDescription !== undefined)
     if (isAppendixEdit && authResult.role !== 'OWNER' && authResult.role !== 'ADMIN') {
       return { ok: false, error: 'Недостаточно прав для редактирования приложения' }
+    }
+    const isInvoiceOrActNumberEdit = (before.type === 'INVOICE' || before.type === 'ACT') && input.number !== undefined
+    if (isInvoiceOrActNumberEdit && authResult.role !== 'OWNER' && authResult.role !== 'ADMIN') {
+      return { ok: false, error: 'Недостаточно прав для изменения номера документа' }
     }
 
     // Переподключение к другому договору — только тот же клиент (см. план).
@@ -424,7 +444,7 @@ export async function updateDocument(input: UpdateDocumentInput): Promise<
       effectiveClientId = newContract.clientId
     }
 
-    let normalizedNumber: string | undefined
+    let normalizedNumber: string | null | undefined
     if (before.type === 'APPENDIX' && input.number !== undefined) {
       const trimmed = input.number?.trim() ?? ''
       if (!trimmed) return { ok: false, error: 'Укажите номер приложения' }
@@ -438,6 +458,24 @@ export async function updateDocument(input: UpdateDocumentInput): Promise<
         })
         if (conflict) {
           return { ok: false, error: `У договора уже существует приложение с номером №${normalizedNumber}` }
+        }
+      }
+    } else if (isInvoiceOrActNumberEdit) {
+      // В отличие от APPENDIX, ручной номер INVOICE/ACT необязателен —
+      // пустая строка ЯВНО очищает его обратно к вычисляемому
+      // workPackageNumber+suffix (см. getDocumentDisplayNumber), а не
+      // считается ошибкой ввода.
+      const trimmed = input.number?.trim() ?? ''
+      normalizedNumber = trimmed || null
+      if (normalizedNumber && normalizedNumber !== before.number) {
+        // Уникальность в рамках типа (не работы) — см. частичный индекс
+        // cms_document_numbered_type_unique. Аннулированные документы не
+        // занимают номер (та же логика, что у приложения выше).
+        const conflict = await prisma.document.findFirst({
+          where: { type: before.type, number: normalizedNumber, status: { not: 'CANCELLED' }, id: { not: before.id } },
+        })
+        if (conflict) {
+          return { ok: false, error: `Номер №${normalizedNumber} уже используется другим документом этого типа` }
         }
       }
     }
@@ -463,8 +501,11 @@ export async function updateDocument(input: UpdateDocumentInput): Promise<
 
     const numberChanged = normalizedNumber !== undefined && normalizedNumber !== before.number
     if (numberChanged) {
+      const numberChangedAction: Record<string, string> = {
+        APPENDIX: 'APPENDIX_NUMBER_CHANGED', INVOICE: 'INVOICE_NUMBER_CHANGED', ACT: 'ACT_NUMBER_CHANGED',
+      }
       await writeAuditLog({
-        userId: authResult.userId, action: 'APPENDIX_NUMBER_CHANGED', entityType: 'Document', entityId: updated.id,
+        userId: authResult.userId, action: numberChangedAction[before.type] ?? 'DOCUMENT_NUMBER_CHANGED', entityType: 'Document', entityId: updated.id,
         metadata: {
           oldNumber: before.number, newNumber: normalizedNumber,
           otherChangedFields: Object.keys(input).filter(k => !['id', 'number', 'reason'].includes(k)),

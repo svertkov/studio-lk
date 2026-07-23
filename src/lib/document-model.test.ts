@@ -28,6 +28,11 @@ describe('getDocumentDisplayNumber', () => {
     expect(getDocumentDisplayNumber({ type: 'INVOICE', number: null, suffix: null }, null)).toBe('Без номера')
   })
 
+  it('prefers a manually-set number over the computed work-package number for invoices/acts', () => {
+    expect(getDocumentDisplayNumber({ type: 'INVOICE', number: '2026-014', suffix: '1' }, 127)).toBe('№2026-014')
+    expect(getDocumentDisplayNumber({ type: 'ACT', number: '2026-014', suffix: null }, null)).toBe('№2026-014')
+  })
+
   it('formats an appendix by its own per-contract number, ignoring workPackageNumber', () => {
     expect(getDocumentDisplayNumber({ type: 'APPENDIX', number: '1', suffix: null }, 127)).toBe('№1')
     expect(getDocumentDisplayNumber({ type: 'APPENDIX', number: '3', suffix: null }, null)).toBe('№3')

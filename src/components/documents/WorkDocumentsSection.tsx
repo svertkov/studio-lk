@@ -12,6 +12,10 @@ import {
   type DocumentDTO, type ClientContractSummary, type InvoiceLineItemDTO,
 } from '@/lib/actions/documents'
 import AppendixEditDialog from './AppendixEditDialog'
+import DocumentNumberEditDialog from './DocumentNumberEditDialog'
+import { getOrder } from '@/lib/actions/orders'
+import { getMontageProjectsForOrder } from '@/lib/actions/montage'
+import { orderShootDisplay } from '@/lib/order-model'
 import {
   DOCUMENT_FLOW_TYPE_LABELS, MONTAGE_DOCUMENT_MODE_LABELS, DOCUMENT_STATUS_LABELS,
   DOCUMENT_STATUS_OPTIONS_BY_TYPE, INVOICE_PURPOSE_LABELS, DOCUMENT_PAYMENT_STATE_LABELS,
@@ -41,10 +45,11 @@ interface CreateFormState {
   dueDate: string
   comment: string
   serviceDescription: string
+  number: string
 }
 
 function defaultCreateForm(): CreateFormState {
-  return { issueDate: new Date().toISOString().slice(0, 10), purpose: 'FULL_PAYMENT', amount: '', dueDate: '', comment: '', serviceDescription: '' }
+  return { issueDate: new Date().toISOString().slice(0, 10), purpose: 'FULL_PAYMENT', amount: '', dueDate: '', comment: '', serviceDescription: '', number: '' }
 }
 
 const TEXTAREA = 'bg-zinc-800 border border-zinc-700 text-zinc-100 placeholder-zinc-600 rounded-lg px-2.5 py-2 text-xs outline-none focus:border-[#00c26b] transition-colors w-full resize-none'
@@ -80,6 +85,7 @@ export default function WorkDocumentsSection({ clientId, orderId, montageProject
   const [canEditAppendix, setCanEditAppendix] = useState(false)
   const [appendixEditOpen, setAppendixEditOpen] = useState(false)
   const [appendixUpdatedFlash, setAppendixUpdatedFlash] = useState(false)
+  const [editingNumberDoc, setEditingNumberDoc] = useState<DocumentDTO | null>(null)
 
   const workRef = orderId ? { orderId } : montageProjectId ? { montageProjectId } : null
 
@@ -150,6 +156,7 @@ export default function WorkDocumentsSection({ clientId, orderId, montageProject
       dueDate: type === 'INVOICE' && form.dueDate ? form.dueDate : null,
       serviceDescription: form.serviceDescription.trim() || null,
       comment: form.comment.trim() || null,
+      number: (type === 'INVOICE' || type === 'ACT') && form.number.trim() ? form.number.trim() : undefined,
     })
     setSaving(false)
     if (!result.ok) { setError(result.error); return }
@@ -320,14 +327,26 @@ export default function WorkDocumentsSection({ clientId, orderId, montageProject
                 <div key={inv.id} className="bg-zinc-800/40 rounded-lg px-3 py-2">
                   <div className="flex items-center justify-between gap-2">
                     <div className="min-w-0">
-                      <p className="text-zinc-200 text-xs">{inv.displayNumber} {inv.purpose && `· ${INVOICE_PURPOSE_LABELS[inv.purpose]}`}</p>
+                      <p className="text-zinc-200 text-xs flex items-center gap-1.5">
+                        {inv.displayNumber} {inv.purpose && `· ${INVOICE_PURPOSE_LABELS[inv.purpose]}`}
+                        {canEditAppendix && (
+                          <button type="button" onClick={() => setEditingNumberDoc(inv)} className="text-zinc-500 hover:text-[#00c26b] text-[11px] underline underline-offset-2 transition-colors">
+                            Изменить номер
+                          </button>
+                        )}
+                      </p>
                       <p className="text-zinc-500 text-[11px] mt-0.5">{formatDate(inv.issueDate)} · {formatMoney(inv.amount)} · {DOCUMENT_PAYMENT_STATE_LABELS[paymentState]}</p>
                     </div>
                     <select className={`${SELECT} flex-shrink-0`} value={inv.status} onChange={e => handleStatusChange(inv, e.target.value as DocumentStatus)}>
                       {DOCUMENT_STATUS_OPTIONS_BY_TYPE.INVOICE.map(s => <option key={s} value={s}>{DOCUMENT_STATUS_LABELS[s]}</option>)}
                     </select>
                   </div>
-                  <InvoiceLineItemsEditor invoice={inv} onUpdated={doc => setDocuments(prev => prev?.map(d => (d.id === doc.id ? doc : d)) ?? null)} />
+                  <InvoiceLineItemsEditor
+                    invoice={inv}
+                    orderId={orderId ?? null}
+                    appendix={appendix}
+                    onUpdated={doc => setDocuments(prev => prev?.map(d => (d.id === doc.id ? doc : d)) ?? null)}
+                  />
                 </div>
               )
             })}
@@ -335,14 +354,24 @@ export default function WorkDocumentsSection({ clientId, orderId, montageProject
             {creatingType === 'INVOICE' && (
               <div className="bg-zinc-800/60 border border-zinc-700 rounded-lg p-3 space-y-2">
                 <div className="grid grid-cols-2 gap-2">
-                  <input type="date" className={INPUT} value={form.issueDate} onChange={e => setForm(f => ({ ...f, issueDate: e.target.value }))} />
+                  <div className="space-y-1">
+                    <label className="text-zinc-500 text-[11px]">Дата счёта</label>
+                    <input type="date" className={`${INPUT} w-full`} value={form.issueDate} onChange={e => setForm(f => ({ ...f, issueDate: e.target.value }))} />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-zinc-500 text-[11px]">Оплатить до</label>
+                    <input type="date" className={`${INPUT} w-full`} value={form.dueDate} onChange={e => setForm(f => ({ ...f, dueDate: e.target.value }))} />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
                   <select className={SELECT} value={form.purpose} onChange={e => setForm(f => ({ ...f, purpose: e.target.value as InvoicePurpose }))}>
                     {(Object.keys(INVOICE_PURPOSE_LABELS) as InvoicePurpose[]).map(p => <option key={p} value={p}>{INVOICE_PURPOSE_LABELS[p]}</option>)}
                   </select>
-                </div>
-                <div className="grid grid-cols-2 gap-2">
                   <input type="number" placeholder="Сумма" className={INPUT} value={form.amount} onChange={e => setForm(f => ({ ...f, amount: e.target.value }))} />
-                  <input type="date" placeholder="Срок оплаты" className={INPUT} value={form.dueDate} onChange={e => setForm(f => ({ ...f, dueDate: e.target.value }))} />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-zinc-500 text-[11px]">Номер счёта (необязательно — иначе №{'{комплект}'})</label>
+                  <input placeholder="напр. 2026-014" className={`${INPUT} w-full`} value={form.number} onChange={e => setForm(f => ({ ...f, number: e.target.value }))} />
                 </div>
                 <div className="space-y-1">
                   <div className="flex items-center justify-between">
@@ -378,7 +407,14 @@ export default function WorkDocumentsSection({ clientId, orderId, montageProject
             {acts.map(act => (
               <div key={act.id} className="flex items-center justify-between gap-2 bg-zinc-800/40 rounded-lg px-3 py-2">
                 <div className="min-w-0">
-                  <p className="text-zinc-200 text-xs">{act.displayNumber}</p>
+                  <p className="text-zinc-200 text-xs flex items-center gap-1.5">
+                    {act.displayNumber}
+                    {canEditAppendix && (
+                      <button type="button" onClick={() => setEditingNumberDoc(act)} className="text-zinc-500 hover:text-[#00c26b] text-[11px] underline underline-offset-2 transition-colors">
+                        Изменить номер
+                      </button>
+                    )}
+                  </p>
                   <p className="text-zinc-500 text-[11px] mt-0.5">{formatDate(act.issueDate)}</p>
                 </div>
                 <select className={`${SELECT} flex-shrink-0`} value={act.status} onChange={e => handleStatusChange(act, e.target.value as DocumentStatus)}>
@@ -389,7 +425,16 @@ export default function WorkDocumentsSection({ clientId, orderId, montageProject
             {acts.length === 0 && creatingType !== 'ACT' && <p className="text-zinc-600 text-xs">Актов нет</p>}
             {creatingType === 'ACT' && (
               <div className="bg-zinc-800/60 border border-zinc-700 rounded-lg p-3 space-y-2">
-                <input type="date" className={`${INPUT} w-full`} value={form.issueDate} onChange={e => setForm(f => ({ ...f, issueDate: e.target.value }))} />
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="space-y-1">
+                    <label className="text-zinc-500 text-[11px]">Дата акта</label>
+                    <input type="date" className={`${INPUT} w-full`} value={form.issueDate} onChange={e => setForm(f => ({ ...f, issueDate: e.target.value }))} />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-zinc-500 text-[11px]">Номер акта (необязательно)</label>
+                    <input placeholder="напр. 2026-014" className={`${INPUT} w-full`} value={form.number} onChange={e => setForm(f => ({ ...f, number: e.target.value }))} />
+                  </div>
+                </div>
                 <div className="space-y-1">
                   <div className="flex items-center justify-between gap-2 flex-wrap">
                     <label className="text-zinc-500 text-[11px]">Описание услуги</label>
@@ -438,20 +483,35 @@ export default function WorkDocumentsSection({ clientId, orderId, montageProject
         onUpdated={handleAppendixUpdated}
       />
     )}
+    {editingNumberDoc && (
+      <DocumentNumberEditDialog
+        open={!!editingNumberDoc}
+        onOpenChange={next => { if (!next) setEditingNumberDoc(null) }}
+        document={editingNumberDoc}
+        onUpdated={doc => { setDocuments(prev => prev?.map(d => (d.id === doc.id ? doc : d)) ?? null); setEditingNumberDoc(null) }}
+      />
+    )}
     </>
   )
 }
 
 type LineItemPatch = Partial<{ description: string; quantity: number; unit: InvoiceLineItemUnit; unitPrice: number; vatRate: VatRate }>
 
-// Строки счёта — только первый список (добавить/убрать/переставить), без
-// "умных" кнопок автозаполнения (отложено по решению пользователя). Полностью
-// самодостаточный overlay поверх одного конкретного счёта: сохраняет каждое
-// изменение сразу через свои собственные действия, возвращая родителю
-// обновлённый DocumentDTO целиком (amount пересчитан сервером — см.
-// recomputeDocumentAmount, actions/documents.ts), а не патчит локальный стейт
-// вручную, чтобы не разойтись с сервером.
-function InvoiceLineItemsEditor({ invoice, onUpdated }: { invoice: DocumentDTO; onUpdated: (doc: DocumentDTO) => void }) {
+// Строки счёта — список (добавить/убрать/переставить) + кнопки быстрого
+// заполнения (ТЗ, ранее отложено пользователем — см. AGENTS.md/память,
+// теперь запрошено явно). Полностью самодостаточный overlay поверх одного
+// конкретного счёта: сохраняет каждое изменение сразу через свои собственные
+// действия, возвращая родителю обновлённый DocumentDTO целиком (amount
+// пересчитан сервером — см. recomputeDocumentAmount, actions/documents.ts),
+// а не патчит локальный стейт вручную, чтобы не разойтись с сервером.
+function InvoiceLineItemsEditor({
+  invoice, orderId, appendix, onUpdated,
+}: {
+  invoice: DocumentDTO
+  orderId: string | null
+  appendix: DocumentDTO | null
+  onUpdated: (doc: DocumentDTO) => void
+}) {
   const [adding, setAdding] = useState(false)
   const [newDescription, setNewDescription] = useState('')
   const [newQuantity, setNewQuantity] = useState('1')
@@ -461,6 +521,66 @@ function InvoiceLineItemsEditor({ invoice, onUpdated }: { invoice: DocumentDTO; 
   const [savingNew, setSavingNew] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
+  const [quickFilling, setQuickFilling] = useState(false)
+
+  // Все три кнопки переиспользуют уже существующие данные (заказ/монтаж/
+  // приложение) — ничего не дублируется и не хранится отдельным полем "только
+  // для этой кнопки" (см. AGENTS.md, единый источник данных). Съёмка — только
+  // когда счёт привязан к заказу (montageProjectId-контекст уже показывает
+  // собственные финансы монтажа без снимка съёмки, самостоятельно её не
+  // добавляем — не тот сценарий использования).
+  async function handleQuickFillShoot() {
+    if (!orderId) return
+    setQuickFilling(true)
+    const result = await getOrder(orderId)
+    setQuickFilling(false)
+    if (!result.ok) return
+    const order = result.data
+    const shoot = orderShootDisplay(order)
+    const durationLabel = order.durationMinutes ? `${Math.round(order.durationMinutes / 6) / 10} ч.` : null
+    const dateLabel = order.plannedStartTime ? formatDate(order.plannedStartTime) : null
+    const description = [
+      'Видеосъёмка', dateLabel,
+      shoot.room && shoot.room !== 'Не указан' ? shoot.room : null,
+      shoot.format !== 'Не указан' ? shoot.format : null,
+      order.camerasCount ? `${order.camerasCount} кам.` : null,
+      durationLabel,
+    ].filter(Boolean).join(', ')
+    await submitQuickFill(description, order.preliminaryAmount ?? 0)
+  }
+
+  // Клиентская стоимость монтажа (НЕ выплата монтажёру — та же граница, что
+  // уже проведена в OrderFinanceBlock между "Клиент платит"/"Выплата
+  // монтажёру"). Проект без активного (не CANCELLED) монтажа — кнопка просто
+  // ничего не делает молча не показываясь (см. условие рендера ниже).
+  async function handleQuickFillMontage() {
+    if (!orderId) return
+    setQuickFilling(true)
+    const result = await getMontageProjectsForOrder(orderId)
+    setQuickFilling(false)
+    const active = result.data.find(p => p.status !== 'CANCELLED')
+    if (!active) return
+    await submitQuickFill('Монтаж', active.clientAmount ?? 0)
+  }
+
+  // Идемпотентно (ТЗ): повторный клик не дублирует строку, если описание уже
+  // совпадает с уже добавленной ранее из приложения строкой.
+  async function handleQuickFillFromAppendix() {
+    if (!appendix?.serviceDescription) return
+    if (invoice.lineItems.some(li => li.description === appendix.serviceDescription)) return
+    await submitQuickFill(appendix.serviceDescription, appendix.amount ?? 0)
+  }
+
+  async function handleQuickFillExtra() {
+    await submitQuickFill('Дополнительная услуга', 0)
+  }
+
+  async function submitQuickFill(description: string, unitPrice: number) {
+    setQuickFilling(true)
+    const result = await addInvoiceLineItem({ documentId: invoice.id, description, quantity: 1, unit: 'SERVICE', unitPrice, vatRate: 'NOT_APPLICABLE' })
+    setQuickFilling(false)
+    if (result.ok) onUpdated(result.data)
+  }
 
   async function handleAdd() {
     if (!newDescription.trim() || !newUnitPrice) return
@@ -527,6 +647,28 @@ function InvoiceLineItemsEditor({ invoice, onUpdated }: { invoice: DocumentDTO; 
       ))}
       {invoice.lineItems.length > 0 && (
         <p className="text-zinc-500 text-[11px] text-right pr-1">Итого по позициям: {formatMoney(computeLineItemsTotal(invoice.lineItems))}</p>
+      )}
+      {!adding && (
+        <div className="flex items-center gap-2 flex-wrap">
+          {orderId && (
+            <button type="button" disabled={quickFilling} onClick={handleQuickFillShoot} className="text-zinc-400 hover:text-[#00c26b] disabled:opacity-50 text-[11px] hover:underline transition-colors">
+              + Добавить съёмку
+            </button>
+          )}
+          {orderId && (
+            <button type="button" disabled={quickFilling} onClick={handleQuickFillMontage} className="text-zinc-400 hover:text-[#00c26b] disabled:opacity-50 text-[11px] hover:underline transition-colors">
+              + Добавить монтаж
+            </button>
+          )}
+          {appendix?.serviceDescription && (
+            <button type="button" disabled={quickFilling} onClick={handleQuickFillFromAppendix} className="text-zinc-400 hover:text-[#00c26b] disabled:opacity-50 text-[11px] hover:underline transition-colors">
+              Заполнить из приложения
+            </button>
+          )}
+          <button type="button" disabled={quickFilling} onClick={handleQuickFillExtra} className="text-zinc-400 hover:text-[#00c26b] disabled:opacity-50 text-[11px] hover:underline transition-colors">
+            + Добавить доп. услугу
+          </button>
+        </div>
       )}
       {adding ? (
         <div className="bg-zinc-900/60 border border-zinc-700 rounded-lg p-2 space-y-1.5">

@@ -549,6 +549,7 @@ enum DocumentType {
 enum DocumentStatus {
   DRAFT // счёт: черновик
   ISSUED // счёт: выставлен
+  SENT // счёт: отправлен клиенту (между ISSUED и оплатой — см. DOCUMENT_STATUS_OPTIONS_BY_TYPE, только для INVOICE)
   NOT_PREPARED // акт: не подготовлен
   PREPARED // акт: подготовлен
   DELIVERED // акт: передан клиенту
@@ -674,6 +675,12 @@ enum InvoiceLineItemUnit {
   HOUR    // ч.
   DAY     // дн.
   SERVICE // услуга — по умолчанию, количество обычно 1
+  SHIFT   // смена
+  PROJECT // проект
+  EPISODE // выпуск
+  CLIP    // ролик
+  SET     // комплект
+  MONTH   // месяц
 }
 
 // НДС — фиксированный небольшой набор ставок РФ, не произвольный процент.

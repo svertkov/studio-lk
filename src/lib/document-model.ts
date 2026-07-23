@@ -11,6 +11,12 @@ export const INVOICE_LINE_ITEM_UNIT_LABELS: Record<InvoiceLineItemUnit, string> 
   HOUR: 'ч.',
   DAY: 'дн.',
   SERVICE: 'услуга',
+  SHIFT: 'смена',
+  PROJECT: 'проект',
+  EPISODE: 'выпуск',
+  CLIP: 'ролик',
+  SET: 'комплект',
+  MONTH: 'месяц',
 }
 
 export const VAT_RATE_LABELS: Record<VatRate, string> = {
@@ -39,13 +45,14 @@ export const DOCUMENT_TYPE_LABELS: Record<DocumentType, string> = {
 export const DOCUMENT_STATUS_OPTIONS_BY_TYPE: Record<DocumentType, DocumentStatus[]> = {
   CONTRACT: ['ACTIVE', 'ARCHIVED', 'CANCELLED'],
   APPENDIX: ['ACTIVE', 'ARCHIVED', 'CANCELLED'],
-  INVOICE: ['DRAFT', 'ISSUED', 'CANCELLED'],
+  INVOICE: ['DRAFT', 'ISSUED', 'SENT', 'CANCELLED'],
   ACT: ['NOT_PREPARED', 'PREPARED', 'DELIVERED', 'SIGNED', 'NEEDS_CORRECTION', 'ARCHIVED', 'CANCELLED'],
 }
 
 export const DOCUMENT_STATUS_LABELS: Record<DocumentStatus, string> = {
   DRAFT: 'Черновик',
   ISSUED: 'Выставлен',
+  SENT: 'Отправлен',
   NOT_PREPARED: 'Не подготовлен',
   PREPARED: 'Подготовлен',
   DELIVERED: 'Передан клиенту',
@@ -181,6 +188,11 @@ export function getDocumentDisplayNumber(document: DocumentNumberInput, workPack
   if (document.type === 'CONTRACT' || document.type === 'APPENDIX') {
     return document.number != null ? `№${document.number}` : 'Без номера'
   }
+  // INVOICE/ACT: ручной number (если администратор его задал, см.
+  // updateDocument/createDocument) побеждает вычисляемый workPackageNumber+
+  // suffix — обратная совместимость: старые документы без ручного номера
+  // продолжают показывать прежний вычисляемый номер как раньше.
+  if (document.number != null) return `№${document.number}`
   if (workPackageNumber == null) return 'Без номера'
   return document.suffix ? `№${workPackageNumber}-${document.suffix}` : `№${workPackageNumber}`
 }
