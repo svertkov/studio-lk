@@ -10,7 +10,7 @@ import {
   type PendingScheduleEventDTO, type SimilarClientMatch,
 } from '@/lib/actions/schedule'
 import { mergeScheduleEvent, type ScheduleEventVM } from '@/lib/schedule-model'
-import { classifyEventType } from '@/lib/event-type'
+import { classifyEventType, requiresFullBookingForm } from '@/lib/event-type'
 import { parseEventTitle } from '@/lib/event-category'
 import type { CalendarEvent } from '@/lib/google-calendar'
 import AddClientModal from './AddClientModal'
@@ -71,7 +71,7 @@ export default function PendingScheduleClients({ events, onChanged }: Props) {
           if (annotation?.clientId) continue
 
           const effectiveType = annotation?.eventType ?? classifyEventType(ce.title)
-          if (effectiveType !== 'STUDIO_BOOKING') continue
+          if (!requiresFullBookingForm(effectiveType)) continue
 
           const parsed = parseEventTitle(ce.title, ce.description)
           if (!parsed.client) continue

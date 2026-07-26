@@ -166,6 +166,7 @@ function buildPastBookingVm(overrides: Partial<ScheduleEventDTO> = {}): Schedule
     id: 'evt1', calendarEventId: 'cal1', title: 'Съёмка', description: '',
     startAt: null, endAt: null, clientId: null, clientName: null, clientNameRaw: null,
     contactRaw: null, companyRaw: null, room: null, format: null, camerasCount: null,
+    shootAddress: null, venueName: null, venueContact: null, logisticsComment: null,
     estimatedPrice: 15000, paymentMethod: 'CARD', notes: null, promotionType: null,
     yandexDiskUrl: null, yandexDiskUrlAddedAt: null, yandexDiskUrlExpiresAt: null,
     nasBackupUrl: null, materialsComment: null, materialsStatus: 'NO_LINKS',

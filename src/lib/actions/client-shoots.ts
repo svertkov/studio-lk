@@ -106,7 +106,7 @@ async function loadShootRows(clientId: string): Promise<ShootRow[]> {
       select: { id: true, date: true, startAt: true, endAt: true, room: true, format: true, durationHours: true, grossAmount: true, netAmount: true, comment: true },
     }),
     prisma.scheduleEvent.findMany({
-      where: { clientId, eventType: 'STUDIO_BOOKING' },
+      where: { clientId, eventType: { in: ['STUDIO_BOOKING', 'OFFSITE_SHOOT'] } },
       select: {
         id: true, calendarEventId: true, startAt: true, endAt: true, room: true, format: true,
         estimatedPrice: true, paymentMethod: true, yandexDiskUrl: true, yandexDiskUrlExpiresAt: true,

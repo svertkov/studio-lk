@@ -9,6 +9,7 @@ import {
   mergeScheduleEvent, getEffectiveEventType, getBookingAttentionInfo,
   type ScheduleEventDTO, type ScheduleEventVM,
 } from '@/lib/schedule-model'
+import { requiresFullBookingForm } from '@/lib/event-type'
 import EventCardModal from '../schedule/EventCardModal'
 import AttentionSubsection, { type AttentionRecord } from './AttentionSubsection'
 
@@ -18,7 +19,8 @@ function byStart(a: AttentionRecord, b: AttentionRecord) {
   return new Date(a.vm.calendarEvent.start).getTime() - new Date(b.vm.calendarEvent.start).getTime()
 }
 
-// Проверяет прошедшие STUDIO_BOOKING за последние 30 дней и делит проблемные
+// Проверяет прошедшие STUDIO_BOOKING/OFFSITE_SHOOT (см. requiresFullBookingForm)
+// за последние 30 дней и делит проблемные
 // на critical (карточка практически не заполнена) и warning (частично
 // заполнена); полностью заполненные записи сюда вообще не попадают — см.
 // getBookingAttentionInfo в schedule-model.ts, единственный источник правды
@@ -65,7 +67,7 @@ export default function BookingIssuesBlock() {
 
   const attentionRecords: AttentionRecord[] = events
     .map(ce => mergeScheduleEvent(ce, annotations[ce.id] ?? null))
-    .filter(vm => !vm.calendarEvent.allDay && getEffectiveEventType(vm) === 'STUDIO_BOOKING')
+    .filter(vm => !vm.calendarEvent.allDay && requiresFullBookingForm(getEffectiveEventType(vm)))
     .map(vm => ({ vm, attention: getBookingAttentionInfo(vm) }))
     // 'complete' (все ключевые поля заполнены) не показываем вообще.
     .filter(r => r.attention.severity !== 'complete')

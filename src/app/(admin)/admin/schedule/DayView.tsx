@@ -7,7 +7,7 @@ import {
   getEffectiveEventType, getBookingAttentionInfo, shouldShowMaterialsBadge,
   CRITICAL_GLOW_CARD_CLASS, WARNING_GLOW_CARD_CLASS,
 } from '@/lib/schedule-model'
-import { EVENT_TYPE_LABELS } from '@/lib/event-type'
+import { EVENT_TYPE_LABELS, requiresFullBookingForm } from '@/lib/event-type'
 import MaterialsStatusBadge from './MaterialsStatusBadge'
 import StaffAbsenceBadge from './StaffAbsenceBadge'
 
@@ -51,7 +51,7 @@ export default function DayView({ day, events, onSelectEvent }: Props) {
         bookings.map(vm => {
           const { calendarEvent: ce, annotation: a } = vm
           const effectiveType = getEffectiveEventType(vm)
-          const isBooking = effectiveType === 'STUDIO_BOOKING'
+          const isBooking = requiresFullBookingForm(effectiveType)
           const attention = getBookingAttentionInfo(vm)
           const isProblem = attention.severity === 'critical'
           const isWarning = attention.severity === 'warning'
@@ -106,6 +106,7 @@ export default function DayView({ day, events, onSelectEvent }: Props) {
                 <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1.5 text-sm text-zinc-400">
                   {a?.clientName && <p><span className="text-zinc-500">Клиент: </span>{a.clientName}</p>}
                   {a?.room && <p><span className="text-zinc-500">Зал: </span>{a.room}</p>}
+                  {a?.shootAddress && <p><span className="text-zinc-500">Адрес: </span>{a.shootAddress}</p>}
                   {a?.format && <p><span className="text-zinc-500">Формат: </span>{a.format}</p>}
                   {a?.camerasCount != null && <p><span className="text-zinc-500">Камер: </span>{a.camerasCount}</p>}
                   {price && <p><span className="text-zinc-500">Стоимость: </span>{price}</p>}

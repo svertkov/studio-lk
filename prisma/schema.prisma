@@ -85,6 +85,11 @@ enum SubscriptionStatus {
 
 enum EventType {
   STUDIO_BOOKING
+  // 2026-07-27: коммерческая съёмка вне студии — тот же полный набор полей
+  // (клиент/оплата/монтаж/материалы/документы), что у STUDIO_BOOKING, см.
+  // requiresFullBookingForm (event-type.ts), но без зала и не считается
+  // студийным часом (см. isStudioBooking, event-category.ts).
+  OFFSITE_SHOOT
   MEETING
   STAFF_UNAVAILABILITY
   SERVICE_NOTE
@@ -765,11 +770,13 @@ model ScheduleEvent {
   description              String?
   startAt                  DateTime?                @map("start_at")
   endAt                    DateTime?                @map("end_at")
-  // Тип события: студийная запись / встреча / отсутствие сотрудника / служебная
-  // пометка / прочее. Проверки материалов и оплаты применяются только к
-  // STUDIO_BOOKING. Пока аннотации нет — тип определяется на лету по названию
-  // события (classifyEventType), сюда он попадает только после первого
-  // сохранения карточки (авто или вручную выбранный).
+  // Тип события: студийная запись / выездная съёмка / встреча / отсутствие
+  // сотрудника / служебная пометка / прочее. Проверки материалов и оплаты
+  // применяются к обоим коммерческим типам (см. requiresFullBookingForm,
+  // event-type.ts) — STUDIO_BOOKING и OFFSITE_SHOOT, не только к первому.
+  // Пока аннотации нет — тип определяется на лету по названию события
+  // (classifyEventType), сюда он попадает только после первого сохранения
+  // карточки (авто или вручную выбранный).
   eventType                EventType                @default(STUDIO_BOOKING) @map("event_type")
   clientId                 String?                  @map("client_id")
   clientNameRaw            String?                  @map("client_name_raw")
@@ -778,6 +785,13 @@ model ScheduleEvent {
   room                     String?
   format                   String?
   camerasCount             Int?                     @map("cameras_count")
+  // Блок "ВЫЕЗД" — только для eventType=OFFSITE_SHOOT (см. EventCardModal.tsx).
+  // Живут только на ScheduleEvent, не дублируются на Order — тот же принцип
+  // единого источника, что у room/notes (см. AGENTS.md, п.3).
+  shootAddress             String?                  @map("shoot_address")
+  venueName                String?                  @map("venue_name")
+  venueContact             String?                  @map("venue_contact")
+  logisticsComment         String?                  @map("logistics_comment")
   estimatedPrice           Float?                   @map("estimated_price")
   paymentMethod            PaymentMethod?           @map("payment_method")
   notes                    String?

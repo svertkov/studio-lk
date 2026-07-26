@@ -12,7 +12,7 @@ import {
   computeMaterialsStatus, computeYandexLinkExpiry,
   type ScheduleEventDTO,
 } from '@/lib/schedule-model'
-import { classifyEventType } from '@/lib/event-type'
+import { classifyEventType, requiresFullBookingForm } from '@/lib/event-type'
 import { normalizePhone, normalizeEmail, normalizeTelegram } from '@/lib/import/normalize'
 import { ensureOrderForNewBooking, updateOrderStatus } from '@/lib/actions/orders'
 import { ensureMontageProjectForOrder } from '@/lib/actions/montage'
@@ -78,6 +78,10 @@ function toDTO(row: ScheduleEventWithClient): ScheduleEventDTO {
     room: row.room,
     format: row.format,
     camerasCount: row.camerasCount,
+    shootAddress: row.shootAddress,
+    venueName: row.venueName,
+    venueContact: row.venueContact,
+    logisticsComment: row.logisticsComment,
     estimatedPrice: row.estimatedPrice,
     paymentMethod: row.paymentMethod,
     notes: row.notes,
@@ -163,6 +167,11 @@ export interface UpsertScheduleEventInput {
   room?: string
   format?: string
   camerasCount?: number | null
+  // Блок "ВЫЕЗД" — только для eventType=OFFSITE_SHOOT, см. EventCardModal.tsx.
+  shootAddress?: string
+  venueName?: string
+  venueContact?: string
+  logisticsComment?: string
   estimatedPrice?: number | null
   paymentMethod?: PaymentMethod | null
   notes?: string
@@ -274,7 +283,7 @@ export async function upsertScheduleEvent(
     // ничего не пишется обратно.
     const startsAfterOrdersLaunch = !!input.startAt && new Date(input.startAt) >= ORDERS_AUTO_IMPORT_LAUNCH_DATE
     let orderIdForCreate: string | null = null
-    if (!existing && effectiveEventType === 'STUDIO_BOOKING' && startsAfterOrdersLaunch) {
+    if (!existing && requiresFullBookingForm(effectiveEventType) && startsAfterOrdersLaunch) {
       orderIdForCreate = await ensureOrderForNewBooking({
         calendarEventId: input.calendarEventId,
         title: input.title ?? '',
@@ -300,6 +309,10 @@ export async function upsertScheduleEvent(
         room: input.room?.trim() || null,
         format: input.format?.trim() || null,
         camerasCount: input.camerasCount ?? null,
+        shootAddress: input.shootAddress?.trim() || null,
+        venueName: input.venueName?.trim() || null,
+        venueContact: input.venueContact?.trim() || null,
+        logisticsComment: input.logisticsComment?.trim() || null,
         estimatedPrice: input.estimatedPrice ?? null,
         paymentMethod: input.paymentMethod ?? null,
         notes: input.notes?.trim() || null,
@@ -336,6 +349,10 @@ export async function upsertScheduleEvent(
         ...(input.room !== undefined && { room: input.room?.trim() || null }),
         ...(input.format !== undefined && { format: input.format?.trim() || null }),
         ...(input.camerasCount !== undefined && { camerasCount: input.camerasCount }),
+        ...(input.shootAddress !== undefined && { shootAddress: input.shootAddress?.trim() || null }),
+        ...(input.venueName !== undefined && { venueName: input.venueName?.trim() || null }),
+        ...(input.venueContact !== undefined && { venueContact: input.venueContact?.trim() || null }),
+        ...(input.logisticsComment !== undefined && { logisticsComment: input.logisticsComment?.trim() || null }),
         ...(input.estimatedPrice !== undefined && { estimatedPrice: input.estimatedPrice }),
         ...(input.paymentMethod !== undefined && { paymentMethod: input.paymentMethod }),
         ...(input.notes !== undefined && { notes: input.notes?.trim() || null }),
@@ -399,6 +416,26 @@ export async function upsertScheduleEvent(
       await writeAuditLog({
         userId: authResult.userId, action: 'SCHEDULE_EVENT_NAS_LINK_REQUIRED_CHANGED', entityId: row.id,
         metadata: { before: existing.nasLinkRequired, after: nextNasLinkRequired, reason: nasNotRequiredReason },
+      })
+    }
+    if (existing && existing.eventType !== effectiveEventType) {
+      await writeAuditLog({
+        userId: authResult.userId, action: 'SCHEDULE_EVENT_TYPE_CHANGED', entityId: row.id,
+        metadata: { before: existing.eventType, after: effectiveEventType },
+      })
+    }
+    if (existing && (
+      existing.shootAddress !== row.shootAddress ||
+      existing.venueName !== row.venueName ||
+      existing.venueContact !== row.venueContact
+    )) {
+      await writeAuditLog({
+        userId: authResult.userId, action: 'SCHEDULE_EVENT_OFFSITE_DETAILS_CHANGED', entityId: row.id,
+        metadata: {
+          shootAddress: { before: existing.shootAddress, after: row.shootAddress },
+          venueName: { before: existing.venueName, after: row.venueName },
+          venueContact: { before: existing.venueContact, after: row.venueContact },
+        },
       })
     }
 
@@ -645,7 +682,7 @@ export async function flagPendingClientFromEvent(
         description: input.description,
         startAt: new Date(input.startAt),
         endAt: new Date(input.endAt),
-        eventType: 'STUDIO_BOOKING',
+        eventType: classifyEventType(input.title),
         clientNameRaw: input.clientNameRaw.trim(),
         clientConfirmationStatus: 'PENDING',
       },
@@ -703,7 +740,7 @@ export async function getClientScheduleBookings(clientId: string): Promise<
 
   try {
     const rows = await prisma.scheduleEvent.findMany({
-      where: { clientId, eventType: 'STUDIO_BOOKING' },
+      where: { clientId, eventType: { in: ['STUDIO_BOOKING', 'OFFSITE_SHOOT'] } },
       orderBy: { startAt: 'desc' },
       include: { subscriptionUsage: { include: { subscription: true } } },
     })

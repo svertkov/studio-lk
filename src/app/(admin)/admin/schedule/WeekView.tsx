@@ -8,7 +8,7 @@ import {
   getEffectiveEventType, getBookingAttentionInfo, shouldShowMaterialsBadge,
   CRITICAL_GLOW_CARD_CLASS, WARNING_GLOW_CARD_CLASS,
 } from '@/lib/schedule-model'
-import { EVENT_TYPE_LABELS } from '@/lib/event-type'
+import { EVENT_TYPE_LABELS, requiresFullBookingForm } from '@/lib/event-type'
 import MaterialsStatusBadge from './MaterialsStatusBadge'
 import StaffAbsenceBadge from './StaffAbsenceBadge'
 
@@ -29,7 +29,7 @@ function eventsForDay(events: ScheduleEventVM[], day: Date) {
 }
 
 function shortFormatLine(a: ScheduleEventVM['annotation']) {
-  const parts = [a?.format, a?.room, a?.camerasCount != null ? `${a.camerasCount}к` : null].filter(Boolean)
+  const parts = [a?.format, a?.room ?? a?.shootAddress, a?.camerasCount != null ? `${a.camerasCount}к` : null].filter(Boolean)
   return parts.join(' · ')
 }
 
@@ -74,7 +74,7 @@ export default function WeekView({ weekDays, events, onSelectEvent }: Props) {
               ) : (
                 bookings.map(vm => {
                   const effectiveType = getEffectiveEventType(vm)
-                  const isBooking = effectiveType === 'STUDIO_BOOKING'
+                  const isBooking = requiresFullBookingForm(effectiveType)
                   const attention = getBookingAttentionInfo(vm)
                   const isProblem = attention.severity === 'critical'
                   const isWarning = attention.severity === 'warning'

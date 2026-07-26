@@ -9,7 +9,7 @@
 
 import type { ClientConfirmationStatus, MaterialsStatus, PaymentMethod, OrderPromotionType } from '@prisma/client'
 import type { CalendarEvent } from '@/lib/google-calendar'
-import { type EventType, classifyEventType } from '@/lib/event-type'
+import { type EventType, classifyEventType, requiresFullBookingForm } from '@/lib/event-type'
 
 export type { MaterialsStatus, ClientConfirmationStatus, EventType, PaymentMethod, OrderPromotionType }
 
@@ -186,7 +186,8 @@ export const MATERIALS_TRACKING_LAUNCH_DATE = new Date('2026-07-03T00:00:00')
 // ============================================================
 // "ВНИМАНИЕ К ЗАПИСИ" (booking attention) — единственный источник правды для
 // подсветки мини-карточек в расписании и для блока "Записи требуют внимания"
-// на дашборде. Проверяется только STUDIO_BOOKING (встречи/отсутствия
+// на дашборде. Проверяется для обоих коммерческих типов — STUDIO_BOOKING и
+// OFFSITE_SHOOT (см. requiresFullBookingForm, event-type.ts; встречи/отсутствия
 // сотрудников/служебные пометки никогда не считаются проблемными) и только
 // для уже прошедших записей — будущая запись без материалов/оплаты это норма.
 // ============================================================
@@ -213,7 +214,7 @@ export function isPastBooking(vm: ScheduleEventVM, now: Date = new Date()): bool
 // (с учётом грейс-периода). Всё остальное (встречи/отсутствия, будущие и
 // доисторические записи) не проверяется вообще.
 export function canCheckBookingIssues(vm: ScheduleEventVM, now: Date = new Date()): boolean {
-  if (getEffectiveEventType(vm) !== 'STUDIO_BOOKING') return false
+  if (!requiresFullBookingForm(getEffectiveEventType(vm))) return false
   if (new Date(vm.calendarEvent.start) < MATERIALS_TRACKING_LAUNCH_DATE) return false
   return isPastBooking(vm, now)
 }
@@ -353,6 +354,11 @@ export interface ScheduleEventDTO {
   room: string | null
   format: string | null
   camerasCount: number | null
+  // Блок "ВЫЕЗД" — только для eventType=OFFSITE_SHOOT, см. EventCardModal.tsx.
+  shootAddress: string | null
+  venueName: string | null
+  venueContact: string | null
+  logisticsComment: string | null
   estimatedPrice: number | null
   paymentMethod: PaymentMethod | null
   notes: string | null

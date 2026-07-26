@@ -17,7 +17,7 @@ import {
   type ClientConfirmationStatus,
   MAKEUP_QUICK_OPTIONS, MAKEUP_DURATION_MAX_MINUTES, normalizeMakeupDurationMinutes, computeMakeupInterval, type MakeupInterval,
 } from '@/lib/schedule-model'
-import { EVENT_TYPE_LABELS, type EventType } from '@/lib/event-type'
+import { EVENT_TYPE_LABELS, requiresFullBookingForm, type EventType } from '@/lib/event-type'
 import { PAYMENT_METHOD_LABELS, ONE_TIME_PAYMENT_METHODS, type PaymentMethod } from '@/lib/schedule-model'
 import { ROOM_DICTIONARY, FORMAT_DICTIONARY } from '@/lib/import/normalize'
 import { getOrderPromotion, getVisibleOrderComment, PROMOTION_PILL_LABEL, type OrderPromotionType } from '@/lib/promotion-model'
@@ -77,6 +77,11 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
   const [camerasCount, setCamerasCount] = useState(
     annotation?.camerasCount?.toString() ?? parsedFromCalendar.cameras?.toString() ?? '',
   )
+  // Блок "ВЫЕЗД" — только для eventType=OFFSITE_SHOOT, см. ScheduleEventDTO.
+  const [shootAddress, setShootAddress] = useState(annotation?.shootAddress ?? '')
+  const [venueName, setVenueName] = useState(annotation?.venueName ?? '')
+  const [venueContact, setVenueContact] = useState(annotation?.venueContact ?? '')
+  const [logisticsComment, setLogisticsComment] = useState(annotation?.logisticsComment ?? '')
   const [estimatedPrice, setEstimatedPrice] = useState(annotation?.estimatedPrice?.toString() ?? '')
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | ''>(annotation?.paymentMethod ?? '')
   // Комментарий инициализируется УЖЕ очищенным от текста акции (см.
@@ -161,7 +166,7 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
   // заблокирована помимо самого процесса сохранения — см. disabled на кнопке
   // ниже. Вынесено в переменную, чтобы явно показать причину рядом с кнопкой,
   // а не просто оставить её серой без объяснения.
-  const subscriptionBlocksSave = eventType === 'STUDIO_BOOKING' && hasClient && paymentMode === 'SUBSCRIPTION' && !subscriptionValid
+  const subscriptionBlocksSave = requiresFullBookingForm(eventType) && hasClient && paymentMode === 'SUBSCRIPTION' && !subscriptionValid
 
   // Лучшая догадка об имени клиента: то, что вручную ввели в "Имя из
   // календаря", иначе — разбор названия/описания события Google Calendar
@@ -191,7 +196,7 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
   // из клика "Искать"/"Изменить"; здесь достаточно того, что similarMatches
   // остаётся null, пока запрос не завершится).
   useEffect(() => {
-    if (hasClient || eventType !== 'STUDIO_BOOKING') return
+    if (hasClient || !requiresFullBookingForm(eventType)) return
     if (!guessedClientName && !contactRaw.trim() && !companyRaw.trim()) return
     let cancelled = false
     findSimilarClientsForEvent({
@@ -265,6 +270,10 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
       room,
       format: formatValue,
       camerasCount: camerasCount ? parseInt(camerasCount, 10) : null,
+      shootAddress,
+      venueName,
+      venueContact,
+      logisticsComment,
       // Абонемент оплачивается один раз при покупке — отдельная запись не должна
       // повторно создавать выручку, поэтому очищаем разовую цену.
       estimatedPrice: paymentMode === 'SUBSCRIPTION' ? null : (estimatedPrice ? parseFloat(estimatedPrice) : null),
@@ -319,6 +328,10 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
     setRoom(input.room ?? '')
     setFormatValue(input.format ?? '')
     setCamerasCount(input.camerasCount != null ? String(input.camerasCount) : '')
+    setShootAddress(input.shootAddress ?? '')
+    setVenueName(input.venueName ?? '')
+    setVenueContact(input.venueContact ?? '')
+    setLogisticsComment(input.logisticsComment ?? '')
     setEstimatedPrice(input.estimatedPrice != null ? String(input.estimatedPrice) : '')
     setPaymentMethod(input.paymentMethod ?? '')
     setNotes(input.notes ?? '')
@@ -357,7 +370,7 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
         return
       }
 
-      if (eventType === 'STUDIO_BOOKING' && clientId) {
+      if (requiresFullBookingForm(eventType) && clientId) {
         if (paymentMode === 'ONE_TIME') {
           if (annotation?.subscriptionUsage) {
             const removed = await removeEventSubscriptionCharge(result.data.id)
@@ -461,22 +474,31 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
             </div>
           </div>
 
-          {eventType !== 'STUDIO_BOOKING' && (
+          {!requiresFullBookingForm(eventType) && (
             <p className="text-zinc-500 text-xs">
               Для типа «{EVENT_TYPE_LABELS[eventType]}» материалы и оплата не проверяются.
             </p>
           )}
 
-          {eventType === 'STUDIO_BOOKING' && (
+          {requiresFullBookingForm(eventType) && (
           <>
           <p className={SECTION}>Съёмка</p>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className={LABEL}>Зал</label>
-              <select className={SELECT} value={room} onChange={e => setRoom(e.target.value)}>
-                <option value="">Не указан</option>
-                {selectWithCustom(ROOM_OPTIONS, room).map(o => <option key={o} value={o}>{o}</option>)}
-              </select>
+              {eventType === 'STUDIO_BOOKING' ? (
+                <>
+                  <label className={LABEL}>Зал</label>
+                  <select className={SELECT} value={room} onChange={e => setRoom(e.target.value)}>
+                    <option value="">Не указан</option>
+                    {selectWithCustom(ROOM_OPTIONS, room).map(o => <option key={o} value={o}>{o}</option>)}
+                  </select>
+                </>
+              ) : (
+                <>
+                  <label className={LABEL}>Зал</label>
+                  <p className="text-zinc-400 text-sm px-3 py-2">Локация: выездная</p>
+                </>
+              )}
             </div>
             <div>
               <label className={LABEL}>Формат</label>
@@ -491,6 +513,37 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
             <input className={INPUT} type="number" min="0" placeholder="напр. 3" value={camerasCount}
               onChange={e => setCamerasCount(e.target.value)} />
           </div>
+
+          {eventType === 'OFFSITE_SHOOT' && (
+            <>
+              <p className={SECTION}>Выезд</p>
+              <div>
+                <label className={LABEL}>Адрес съёмки</label>
+                <input className={INPUT} placeholder="напр. ул. Ленина, 10" value={shootAddress}
+                  onChange={e => setShootAddress(e.target.value)} />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={LABEL}>Площадка / локация</label>
+                  <input className={INPUT} value={venueName} onChange={e => setVenueName(e.target.value)} />
+                </div>
+                <div>
+                  <label className={LABEL}>Контакт на площадке</label>
+                  <input className={INPUT} value={venueContact} onChange={e => setVenueContact(e.target.value)} />
+                </div>
+              </div>
+              <div>
+                <label className={LABEL}>Комментарий по логистике</label>
+                <textarea className={`${INPUT} resize-none`} rows={2} value={logisticsComment}
+                  onChange={e => setLogisticsComment(e.target.value)} />
+              </div>
+              {!shootAddress.trim() && (
+                <p className="bg-amber-950/40 border border-amber-900 text-amber-300 text-xs rounded-lg px-3 py-2">
+                  Для выездной съёмки не указан адрес
+                </p>
+              )}
+            </>
+          )}
 
           <p className={SECTION}>Гримёр</p>
           <div>

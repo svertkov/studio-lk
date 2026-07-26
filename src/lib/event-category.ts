@@ -106,13 +106,29 @@ export function parseEventTitle(title: string, description?: string | null): Par
   return { category, hall, cameras, people, client }
 }
 
+// Тот же матчинг, что уже используется в KNOWN_CATEGORIES для ярлыка
+// "Выездная съёмка" (categorizeEvent) — вынесено отдельно, чтобы classifyEventType
+// (event-type.ts) и isStudioBooking ниже могли переиспользовать его, не
+// дублируя регулярку в третьем месте (см. AGENTS.md, п.4).
+export function isOffsiteShootTitle(title: string): boolean {
+  return title.toLowerCase().includes('выезд')
+}
+
 // Отделяем настоящие записи студии от личных пометок в календаре
 // ("Ваня", "не будет Ромы", "выставить счёт" и т.п.) — это не мероприятия
 // студии, а заметки для себя, их не нужно учитывать в часах/отчётах.
 // Запись считаем настоящей, если в названии есть служебная пометка зала/камер/
 // человек (тз, сз, Nк, Nч) или название совпадает с одной из известных категорий.
+//
+// 2026-07-27: выездная съёмка — коммерческая запись, но НЕ студийная (см.
+// requiresFullBookingForm/OFFSITE_SHOOT, event-type.ts) — раньше названия со
+// словом "выезд" ошибочно попадали сюда через KNOWN_CATEGORIES и считались
+// студийными часами на дашборде/в отчёте (HoursReportBody.tsx/DashboardBody.tsx
+// читают эту функцию напрямую по сырому заголовку, не через eventType). Эта
+// одна проверка чинит переучёт часов без изменений в дашборде/отчёте.
 export function isStudioBooking(title: string): boolean {
   const lower = title.toLowerCase()
+  if (isOffsiteShootTitle(lower)) return false
   const tokens = lower.split(/[^а-яёa-z0-9]+/i).filter(Boolean)
   if (KNOWN_CATEGORIES.some(({ test }) => test(lower, tokens))) return true
   const splitTokens = title.split(/[,\s]+/).map(t => t.trim()).filter(Boolean)
