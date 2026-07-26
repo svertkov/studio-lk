@@ -11,6 +11,7 @@ import { writeAuditLog, resolveValidUserId } from '@/lib/audit'
 import {
   getDocumentDisplayNumber, getWorkDocumentAttentionReasons, getClientContractAttentionReasons, getDocumentPaymentState,
   computeLineItemTotal, computeLineItemsTotal, compareDocumentNumbers, FLOW_TYPES_REQUIRING_INVOICE, FLOW_TYPES_REQUIRING_ACT,
+  validateLineItemDraft, type LineItemDraftInput, type ValidatedLineItem,
   type DocumentAttentionReason,
 } from '@/lib/document-model'
 
@@ -281,6 +282,12 @@ export interface CreateDocumentInput {
   // Уникален в рамках своего типа (CONTRACT/INVOICE/ACT) — см. частичный
   // индекс prisma/manual-sql/contract-number-unique-index.sql.
   number?: string | null
+  // Строки товаров/услуг, создаваемые СРАЗУ вместе с документом, одной
+  // транзакцией (2026-07-23) — только для INVOICE/ACT. Позволяет форме
+  // создания счёта/акта не оставлять пустой документ, который потом
+  // отдельно приходится наполнять через addInvoiceLineItem — услуги
+  // становятся частью самого создания, а не последующей донастройкой.
+  lineItems?: LineItemDraftInput[]
 }
 
 export async function createDocument(input: CreateDocumentInput): Promise<
@@ -299,6 +306,18 @@ export async function createDocument(input: CreateDocumentInput): Promise<
     if (!input.orderId && !input.montageProjectId) {
       return { ok: false, error: 'Укажите заказ или проект монтажа' }
     }
+  }
+  if (input.lineItems?.length && input.type !== 'INVOICE' && input.type !== 'ACT') {
+    return { ok: false, error: 'Строки доступны только для счёта и акта' }
+  }
+  // Валидация ВСЕХ строк до открытия транзакции — при ошибке в любой из них
+  // документ не должен даже начинать создаваться (см. AGENTS.md, "Услуги —
+  // обязательная часть счёта/акта", п.2/3).
+  const validatedLineItems: ValidatedLineItem[] = []
+  for (const li of input.lineItems ?? []) {
+    const validated = validateLineItemDraft(li)
+    if (!validated.ok) return validated
+    validatedLineItems.push(validated.data)
   }
 
   try {
@@ -364,12 +383,20 @@ export async function createDocument(input: CreateDocumentInput): Promise<
         await tx.client.update({ where: { id: input.clientId }, data: { contractState: 'ACTIVE' } })
       }
 
+      if (validatedLineItems.length > 0) {
+        await tx.invoiceLineItem.createMany({
+          data: validatedLineItems.map((li, i) => ({ documentId: doc.id, sortOrder: i, ...li })),
+        })
+        await recomputeDocumentAmount(tx, doc.id)
+        return tx.document.findUniqueOrThrow({ where: { id: doc.id }, include: DOCUMENT_INCLUDE })
+      }
+
       return doc
     })
 
     await writeAuditLog({
       userId: authResult.userId, action: 'DOCUMENT_CREATED', entityType: 'Document', entityId: created.id,
-      metadata: { type: created.type, number: created.number, suffix: created.suffix, isHistorical: created.isHistorical },
+      metadata: { type: created.type, number: created.number, suffix: created.suffix, isHistorical: created.isHistorical, lineItemsCount: validatedLineItems.length },
     })
 
     revalidateDocumentPaths({ clientId: input.clientId, orderId: input.orderId, montageProjectId: input.montageProjectId })
@@ -381,6 +408,35 @@ export async function createDocument(input: CreateDocumentInput): Promise<
     console.error('[createDocument]', e)
     return { ok: false, error: 'Не удалось создать документ' }
   }
+}
+
+interface LineItemSourceRow {
+  description: string
+  quantity: number
+  unit: InvoiceLineItemUnit
+  customUnitLabel: string | null
+  unitPrice: number
+  vatRate: VatRate
+}
+
+// Общий маппинг строк при копировании из одного документа в другой (акт из
+// счёта — при создании и при повторном копировании) — не дублировать это
+// перечисление полей в двух местах (см. AGENTS.md, п.4). sortOrder всегда
+// переприсваивается по порядку (0..N-1 + offset), а не переносится из
+// источника — источник и так уже отсортирован (orderBy sortOrder asc), а
+// собственный порядок сортировки нового владельца строк не обязан совпадать
+// с исходным индексом при APPEND.
+function buildLineItemCreateManyData(documentId: string, items: LineItemSourceRow[], sortOrderOffset = 0): Prisma.InvoiceLineItemCreateManyInput[] {
+  return items.map((li, i) => ({
+    documentId,
+    sortOrder: sortOrderOffset + i,
+    description: li.description,
+    quantity: li.quantity,
+    unit: li.unit,
+    customUnitLabel: li.customUnitLabel,
+    unitPrice: li.unitPrice,
+    vatRate: li.vatRate,
+  }))
 }
 
 // "Создать акт на основании счёта" — ОДНОРАЗОВЫЙ snapshot, не живая
@@ -434,18 +490,7 @@ export async function createActFromInvoice(invoiceId: string): Promise<
       })
 
       if (invoice.lineItems.length > 0) {
-        await tx.invoiceLineItem.createMany({
-          data: invoice.lineItems.map(li => ({
-            documentId: act.id,
-            sortOrder: li.sortOrder,
-            description: li.description,
-            quantity: li.quantity,
-            unit: li.unit,
-            customUnitLabel: li.customUnitLabel,
-            unitPrice: li.unitPrice,
-            vatRate: li.vatRate,
-          })),
-        })
+        await tx.invoiceLineItem.createMany({ data: buildLineItemCreateManyData(act.id, invoice.lineItems) })
         await recomputeDocumentAmount(tx, act.id)
       }
 
@@ -465,6 +510,57 @@ export async function createActFromInvoice(invoiceId: string): Promise<
     }
     console.error('[createActFromInvoice]', e)
     return { ok: false, error: 'Не удалось создать акт на основании счёта' }
+  }
+}
+
+// Повторное копирование строк счёта в УЖЕ существующий акт (в отличие от
+// createActFromInvoice, которая всегда создаёт новый Document) — например,
+// когда состав счёта изменился уже после того, как акт был создан пустым или
+// с другими строками. REPLACE стирает текущие строки акта, APPEND дописывает
+// в конец. sourceInvoiceId акта НЕ трогаем — это разовая метка происхождения
+// с момента создания, а не живой указатель "откуда синхронизировано в
+// последний раз" (см. AGENTS.md, "Реестр документов", п.13/17).
+export async function copyInvoiceLineItemsIntoAct(input: {
+  invoiceId: string
+  actId: string
+  mode: 'REPLACE' | 'APPEND'
+}): Promise<{ ok: true; data: DocumentDTO } | { ok: false; error: string }> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, error: authResult.error }
+
+  try {
+    const [invoice, act] = await Promise.all([
+      prisma.document.findUnique({ where: { id: input.invoiceId }, include: { lineItems: { orderBy: { sortOrder: 'asc' } } } }),
+      prisma.document.findUnique({ where: { id: input.actId }, include: { lineItems: true } }),
+    ])
+    if (!invoice) return { ok: false, error: 'Счёт не найден' }
+    if (invoice.type !== 'INVOICE') return { ok: false, error: 'Копировать строки можно только из счёта' }
+    if (!act) return { ok: false, error: 'Акт не найден' }
+    if (act.type !== 'ACT') return { ok: false, error: 'Копировать строки можно только в акт' }
+
+    const updated = await prisma.$transaction(async tx => {
+      const validUserId = await resolveValidUserId(tx, authResult.userId)
+      if (input.mode === 'REPLACE') {
+        await tx.invoiceLineItem.deleteMany({ where: { documentId: act.id } })
+        await tx.invoiceLineItem.createMany({ data: buildLineItemCreateManyData(act.id, invoice.lineItems) })
+      } else {
+        await tx.invoiceLineItem.createMany({ data: buildLineItemCreateManyData(act.id, invoice.lineItems, act.lineItems.length) })
+      }
+      await recomputeDocumentAmount(tx, act.id)
+      await tx.document.update({ where: { id: act.id }, data: { updatedById: validUserId } })
+      return tx.document.findUniqueOrThrow({ where: { id: act.id }, include: DOCUMENT_INCLUDE })
+    })
+
+    await writeAuditLog({
+      userId: authResult.userId, action: 'ACT_LINE_ITEMS_COPIED_FROM_INVOICE', entityType: 'Document', entityId: act.id,
+      metadata: { invoiceId: invoice.id, actId: act.id, mode: input.mode, copiedCount: invoice.lineItems.length },
+    })
+
+    revalidateDocumentPaths({ clientId: updated.clientId, orderId: updated.orderId, montageProjectId: updated.montageProjectId })
+    return { ok: true, data: toDocumentDTO(updated) }
+  } catch (e) {
+    console.error('[copyInvoiceLineItemsIntoAct]', e)
+    return { ok: false, error: 'Не удалось скопировать строки счёта в акт' }
   }
 }
 
@@ -665,12 +761,8 @@ export async function addInvoiceLineItem(input: AddInvoiceLineItemInput): Promis
   const authResult = await requireStaffSession()
   if (!authResult.ok) return { ok: false, error: authResult.error }
 
-  const description = input.description.trim()
-  if (!description) return { ok: false, error: 'Укажите наименование услуги' }
-  if (!(input.quantity > 0)) return { ok: false, error: 'Количество должно быть больше нуля' }
-  if (!(input.unitPrice >= 0)) return { ok: false, error: 'Цена не может быть отрицательной' }
-  const customUnitLabel = input.unit === 'OTHER' ? (input.customUnitLabel?.trim() || null) : null
-  if (input.unit === 'OTHER' && !customUnitLabel) return { ok: false, error: 'Укажите название единицы измерения' }
+  const validated = validateLineItemDraft(input)
+  if (!validated.ok) return validated
 
   try {
     const doc = await prisma.$transaction(async tx => {
@@ -679,16 +771,7 @@ export async function addInvoiceLineItem(input: AddInvoiceLineItemInput): Promis
       const count = await tx.invoiceLineItem.count({ where: { documentId: input.documentId } })
       const validUserId = await resolveValidUserId(tx, authResult.userId)
       await tx.invoiceLineItem.create({
-        data: {
-          documentId: input.documentId,
-          sortOrder: count,
-          description,
-          quantity: input.quantity,
-          unit: input.unit,
-          customUnitLabel,
-          unitPrice: input.unitPrice,
-          vatRate: input.vatRate,
-        },
+        data: { documentId: input.documentId, sortOrder: count, ...validated.data },
       })
       await recomputeDocumentAmount(tx, input.documentId)
       return tx.document.update({ where: { id: input.documentId }, data: { updatedById: validUserId }, include: DOCUMENT_INCLUDE })
@@ -697,7 +780,7 @@ export async function addInvoiceLineItem(input: AddInvoiceLineItemInput): Promis
 
     await writeAuditLog({
       userId: authResult.userId, action: 'DOCUMENT_LINE_ITEM_ADDED', entityType: 'Document', entityId: input.documentId,
-      metadata: { description, quantity: input.quantity, unitPrice: input.unitPrice },
+      metadata: { description: validated.data.description, quantity: validated.data.quantity, unitPrice: validated.data.unitPrice },
     })
     revalidateDocumentPaths({ clientId: doc.clientId, orderId: doc.orderId, montageProjectId: doc.montageProjectId })
     return { ok: true, data: toDocumentDTO(doc) }

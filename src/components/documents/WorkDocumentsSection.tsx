@@ -8,19 +8,21 @@ import {
   getDocumentsForOrder, getDocumentsForMontageProject, getClientContractSummary, getCurrentUserRole,
   getOrderDocumentFlowType, getMontageDocumentMode,
   createDocument, updateDocument, updateOrderDocumentFlowType, updateMontageDocumentMode,
-  addInvoiceLineItem, updateInvoiceLineItem, removeInvoiceLineItem, reorderInvoiceLineItems, createActFromInvoice,
+  addInvoiceLineItem, updateInvoiceLineItem, removeInvoiceLineItem, reorderInvoiceLineItems,
+  createActFromInvoice, copyInvoiceLineItemsIntoAct,
   type DocumentDTO, type ClientContractSummary, type InvoiceLineItemDTO,
 } from '@/lib/actions/documents'
 import AppendixEditDialog from './AppendixEditDialog'
 import DocumentNumberEditDialog from './DocumentNumberEditDialog'
-import { getOrder } from '@/lib/actions/orders'
-import { getMontageProjectsForOrder } from '@/lib/actions/montage'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
+import { getOrder, type OrderDTO } from '@/lib/actions/orders'
+import { getMontageProjectsForOrder, type MontageProjectDTO } from '@/lib/actions/montage'
 import { orderShootDisplay } from '@/lib/order-model'
 import {
   DOCUMENT_FLOW_TYPE_LABELS, MONTAGE_DOCUMENT_MODE_LABELS, DOCUMENT_STATUS_LABELS,
   DOCUMENT_STATUS_OPTIONS_BY_TYPE, INVOICE_PURPOSE_LABELS, DOCUMENT_PAYMENT_STATE_LABELS,
   CLIENT_CONTRACT_STATE_LABELS, getContractStateColor, getDocumentPaymentState,
-  INVOICE_LINE_ITEM_UNIT_LABELS, VAT_RATE_LABELS, computeLineItemsTotal,
+  INVOICE_LINE_ITEM_UNIT_LABELS, VAT_RATE_LABELS, computeLineItemTotal, computeLineItemsTotal,
   type DocumentFlowType, type MontageDocumentMode, type DocumentType, type DocumentStatus, type InvoicePurpose,
   type InvoiceLineItemUnit, type VatRate,
 } from '@/lib/document-model'
@@ -36,6 +38,90 @@ function formatDate(v: string | null) {
 function formatMoney(v: number | null) {
   if (v == null) return '—'
   return new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB', maximumFractionDigits: 0 }).format(v)
+}
+
+// ============================================================
+// ЧЕРНОВИК СТРОК СЧЁТА/АКТА — до 2026-07-23 строки можно было добавлять
+// только к УЖЕ созданному документу (см. addInvoiceLineItem). Теперь форма
+// создания сама держит массив ещё не сохранённых строк в обычном React
+// state (без автосохранения — см. AGENTS.md, тот же принцип, что и у прежних
+// create-форм) и отправляет их вместе с реквизитами одним вызовом
+// createDocument — сервер создаёт документ и все строки одной транзакцией.
+// ============================================================
+
+interface DraftLineItem {
+  key: string
+  description: string
+  quantity: string
+  unit: InvoiceLineItemUnit
+  customUnitLabel: string
+  unitPrice: string
+  vatRate: VatRate
+}
+
+function makeDraftKey(): string {
+  return Math.random().toString(36).slice(2)
+}
+
+function emptyDraftLineItem(): DraftLineItem {
+  return { key: makeDraftKey(), description: '', quantity: '1', unit: 'SERVICE', customUnitLabel: '', unitPrice: '', vatRate: 'NOT_APPLICABLE' }
+}
+
+function lineItemsToDraft(items: InvoiceLineItemDTO[]): DraftLineItem[] {
+  return items.map(li => ({
+    key: makeDraftKey(),
+    description: li.description,
+    quantity: String(li.quantity),
+    unit: li.unit,
+    customUnitLabel: li.customUnitLabel ?? '',
+    unitPrice: String(li.unitPrice),
+    vatRate: li.vatRate,
+  }))
+}
+
+function draftLineItemsTotal(items: DraftLineItem[]): number {
+  return computeLineItemsTotal(items.map(d => ({ quantity: Number(d.quantity) || 0, unitPrice: Number(d.unitPrice) || 0 })))
+}
+
+// Пустые строки (ничего не введено) отбрасываются молча — черновик может
+// содержать "лишнюю" пустую строку, которую пользователь так и не заполнил.
+function draftLineItemsToInput(items: DraftLineItem[]) {
+  return items
+    .filter(d => d.description.trim() || Number(d.unitPrice) > 0)
+    .map(d => ({
+      description: d.description,
+      quantity: Number(d.quantity) || 1,
+      unit: d.unit,
+      customUnitLabel: d.unit === 'OTHER' ? d.customUnitLabel : null,
+      unitPrice: Number(d.unitPrice) || 0,
+      vatRate: d.vatRate,
+    }))
+}
+
+// Общие с существующим (пост-создание) быстрым заполнением построители текста
+// съёмки/монтажа — раньше жили только внутри DocumentLineItemsEditor, теперь
+// нужны и черновику ещё не созданного документа (см. AGENTS.md, единый
+// источник данных, не дублировать).
+function buildShootDescriptionAndPrice(order: OrderDTO): { description: string; unitPrice: number } {
+  const shoot = orderShootDisplay(order)
+  const durationLabel = order.durationMinutes ? `${Math.round(order.durationMinutes / 6) / 10} ч.` : null
+  const dateLabel = order.plannedStartTime ? formatDate(order.plannedStartTime) : null
+  const description = [
+    'Видеосъёмка', dateLabel,
+    shoot.room && shoot.room !== 'Не указан' ? shoot.room : null,
+    shoot.format !== 'Не указан' ? shoot.format : null,
+    order.camerasCount ? `${order.camerasCount} кам.` : null,
+    durationLabel,
+  ].filter(Boolean).join(', ')
+  return { description, unitPrice: order.preliminaryAmount ?? 0 }
+}
+
+// Клиентская стоимость монтажа (НЕ выплата монтажёру) активного (не
+// CANCELLED) проекта — null означает "нет проекта монтажа", кнопка не должна
+// ничего добавлять в этом случае.
+function findActiveMontageClientAmount(projects: MontageProjectDTO[]): number | null {
+  const active = projects.find(p => p.status !== 'CANCELLED')
+  return active ? (active.clientAmount ?? 0) : null
 }
 
 interface CreateFormState {
@@ -92,7 +178,16 @@ export default function WorkDocumentsSection({ clientId, orderId, montageProject
   const [appendixUpdatedFlash, setAppendixUpdatedFlash] = useState(false)
   const [editingNumberDoc, setEditingNumberDoc] = useState<DocumentDTO | null>(null)
   const [creatingActFromInvoiceId, setCreatingActFromInvoiceId] = useState<string | null>(null)
-  const [invoiceExtraExpanded, setInvoiceExtraExpanded] = useState(false)
+  const [createExtraExpanded, setCreateExtraExpanded] = useState(false)
+  const [draftLineItems, setDraftLineItems] = useState<DraftLineItem[]>([])
+  // Подтверждение "заменить/добавить/отмена" при повторном выборе счёта,
+  // когда в черновике акта (ещё не созданного) уже есть непустые строки.
+  const [pendingCopyInvoiceForDraft, setPendingCopyInvoiceForDraft] = useState<DocumentDTO | null>(null)
+  // То же самое, но для УЖЕ существующего акта — здесь нужен реальный
+  // серверный вызов (copyInvoiceLineItemsIntoAct), а не правка локального
+  // массива, поэтому состояние держит и акт, и выбранный счёт.
+  const [copyIntoActState, setCopyIntoActState] = useState<{ act: DocumentDTO; invoice: DocumentDTO } | null>(null)
+  const [copyingIntoActId, setCopyingIntoActId] = useState<string | null>(null)
 
   const workRef = orderId ? { orderId } : montageProjectId ? { montageProjectId } : null
 
@@ -147,6 +242,26 @@ export default function WorkDocumentsSection({ clientId, orderId, montageProject
     if (montageProjectId) await updateMontageDocumentMode(montageProjectId, next)
   }
 
+  // Открытие/закрытие create-формы — один хелпер вместо трёх копий
+  // setCreatingType(...), т.к. теперь нужно параллельно сбрасывать/сеять
+  // черновик строк и выставлять статус по умолчанию для конкретного типа
+  // (NOT_PREPARED для акта, DRAFT для счёта — ACT никогда не наследует
+  // статус-по-умолчанию счёта и наоборот).
+  function handleToggleCreating(type: DocumentType) {
+    if (creatingType === type) {
+      setCreatingType(null)
+      setDraftLineItems([])
+      setCreateExtraExpanded(false)
+      setError(null)
+      return
+    }
+    setCreatingType(type)
+    setDraftLineItems(type === 'INVOICE' || type === 'ACT' ? [emptyDraftLineItem()] : [])
+    setCreateExtraExpanded(false)
+    setError(null)
+    setForm(f => ({ ...f, status: type === 'ACT' ? 'NOT_PREPARED' : type === 'INVOICE' ? 'DRAFT' : f.status }))
+  }
+
   async function handleCreate(type: DocumentType) {
     const activeContractId = contractSummary?.activeContractId ?? null
     if (type === 'APPENDIX' && !activeContractId) return
@@ -159,16 +274,18 @@ export default function WorkDocumentsSection({ clientId, orderId, montageProject
       contractId: type === 'APPENDIX' ? activeContractId : undefined,
       issueDate: form.issueDate,
       purpose: type === 'INVOICE' ? form.purpose : undefined,
-      status: type === 'INVOICE' ? form.status : undefined,
+      status: type === 'INVOICE' || type === 'ACT' ? form.status : undefined,
       // INVOICE больше не принимает ручную сумму при создании — с 2026-07-23
-      // Document.amount для счёта формируется исключительно строками
-      // (InvoiceLineItem) через recomputeDocumentAmount, отдельного ручного
-      // источника-дублёра быть не должно (см. AGENTS.md, "Реестр документов").
-      // APPENDIX по-прежнему без строк — сумма остаётся ручной.
+      // Document.amount для счёта/акта формируется исключительно строками
+      // (InvoiceLineItem, см. lineItems ниже) через recomputeDocumentAmount,
+      // отдельного ручного источника-дублёра быть не должно (см. AGENTS.md,
+      // "Реестр документов"). APPENDIX по-прежнему без строк — сумма
+      // остаётся ручной.
       amount: type === 'APPENDIX' && form.amount ? Number(form.amount) : null,
       serviceDescription: form.serviceDescription.trim() || null,
       comment: form.comment.trim() || null,
       number: (type === 'INVOICE' || type === 'ACT') && form.number.trim() ? form.number.trim() : undefined,
+      lineItems: type === 'INVOICE' || type === 'ACT' ? draftLineItemsToInput(draftLineItems) : undefined,
     })
     setSaving(false)
     if (!result.ok) { setError(result.error); return }
@@ -186,7 +303,51 @@ export default function WorkDocumentsSection({ clientId, orderId, montageProject
     }
     setCreatingType(null)
     setForm(defaultCreateForm())
-    setInvoiceExtraExpanded(false)
+    setCreateExtraExpanded(false)
+    setDraftLineItems([])
+  }
+
+  // Выбор счёта для копирования в ЧЕРНОВИК ещё не созданного акта — целиком
+  // на клиенте (черновик и так живёт в draftLineItems), новый сервер не
+  // нужен (см. AGENTS.md, "услуги — обязательная часть счёта/акта"). Если в
+  // черновике уже есть непустые строки — сначала спросить, что делать.
+  function handlePickInvoiceForActDraft(invoice: DocumentDTO) {
+    const hasContent = draftLineItems.some(d => d.description.trim() || Number(d.unitPrice) > 0)
+    if (!hasContent) {
+      applyInvoiceCopyToDraft(invoice, 'REPLACE')
+      return
+    }
+    setPendingCopyInvoiceForDraft(invoice)
+  }
+
+  function applyInvoiceCopyToDraft(invoice: DocumentDTO, mode: 'REPLACE' | 'APPEND') {
+    const copied = lineItemsToDraft(invoice.lineItems)
+    setDraftLineItems(prev => (mode === 'REPLACE' ? copied : [...prev, ...copied]))
+    setForm(f => ({
+      ...f,
+      number: f.number.trim() ? f.number : (invoice.displayNumber === 'Без номера' ? f.number : invoice.displayNumber.replace(/^№/, '')),
+      serviceDescription: f.serviceDescription.trim() ? f.serviceDescription : (invoice.serviceDescription ?? f.serviceDescription),
+    }))
+    setPendingCopyInvoiceForDraft(null)
+  }
+
+  // То же самое действие, но для УЖЕ созданного акта — здесь нужен реальный
+  // серверный вызов (см. copyInvoiceLineItemsIntoAct, actions/documents.ts),
+  // локальным стейтом уже не обойтись.
+  function handlePickInvoiceForExistingAct(act: DocumentDTO, invoice: DocumentDTO) {
+    if (act.lineItems.length === 0) {
+      void applyServerCopyIntoAct(act.id, invoice.id, 'REPLACE')
+      return
+    }
+    setCopyIntoActState({ act, invoice })
+  }
+
+  async function applyServerCopyIntoAct(actId: string, invoiceId: string, mode: 'REPLACE' | 'APPEND') {
+    setCopyingIntoActId(actId)
+    const result = await copyInvoiceLineItemsIntoAct({ invoiceId, actId, mode })
+    setCopyingIntoActId(null)
+    setCopyIntoActState(null)
+    if (result.ok) setDocuments(prev => prev?.map(d => (d.id === actId ? result.data : d)) ?? null)
   }
 
   async function handleStatusChange(doc: DocumentDTO, status: DocumentStatus) {
@@ -285,7 +446,7 @@ export default function WorkDocumentsSection({ clientId, orderId, montageProject
                 <Layers className="w-3.5 h-3.5" /> Приложение
               </p>
               {!appendix && creatingType !== 'APPENDIX' && contractSummary?.activeContractId && (
-                <button type="button" onClick={() => setCreatingType('APPENDIX')} className="flex items-center gap-1 text-[#00c26b] text-xs hover:underline">
+                <button type="button" onClick={() => handleToggleCreating('APPENDIX')} className="flex items-center gap-1 text-[#00c26b] text-xs hover:underline">
                   <Plus className="w-3 h-3" /> Добавить приложение
                 </button>
               )}
@@ -336,7 +497,7 @@ export default function WorkDocumentsSection({ clientId, orderId, montageProject
                 <input placeholder="Комментарий" className={`${INPUT} w-full`} value={form.comment} onChange={e => setForm(f => ({ ...f, comment: e.target.value }))} />
                 {error && <p className="text-red-400 text-xs">{error}</p>}
                 <div className="flex justify-end gap-2">
-                  <button type="button" onClick={() => setCreatingType(null)} className="text-zinc-400 hover:text-zinc-200 text-xs px-2 py-1.5">Отмена</button>
+                  <button type="button" onClick={() => handleToggleCreating('APPENDIX')} className="text-zinc-400 hover:text-zinc-200 text-xs px-2 py-1.5">Отмена</button>
                   <button type="button" disabled={saving} onClick={() => handleCreate('APPENDIX')} className="bg-[#00c26b] hover:bg-[#00b360] disabled:opacity-50 text-white text-xs font-medium px-3 py-1.5 rounded-lg">
                     {saving ? 'Сохранение…' : 'Создать приложение'}
                   </button>
@@ -349,7 +510,7 @@ export default function WorkDocumentsSection({ clientId, orderId, montageProject
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <p className="text-zinc-400 text-xs uppercase tracking-wide">Счета</p>
-              <button type="button" onClick={() => setCreatingType(creatingType === 'INVOICE' ? null : 'INVOICE')} className="flex items-center gap-1 text-[#00c26b] text-xs hover:underline">
+              <button type="button" onClick={() => handleToggleCreating('INVOICE')} className="flex items-center gap-1 text-[#00c26b] text-xs hover:underline">
                 <Plus className="w-3 h-3" /> Добавить счёт
               </button>
             </div>
@@ -367,14 +528,14 @@ export default function WorkDocumentsSection({ clientId, orderId, montageProject
                           </button>
                         )}
                       </p>
-                      <p className="text-zinc-500 text-[11px] mt-0.5">{formatDate(inv.issueDate)} · {formatMoney(inv.amount)} · {DOCUMENT_PAYMENT_STATE_LABELS[paymentState]}</p>
+                      <p className="text-zinc-500 text-[11px] mt-0.5">{formatDate(inv.issueDate)} · {formatMoney(inv.amount)} · Оплата: {DOCUMENT_PAYMENT_STATE_LABELS[paymentState]}</p>
                     </div>
                     <select className={`${SELECT} flex-shrink-0`} value={inv.status} onChange={e => handleStatusChange(inv, e.target.value as DocumentStatus)}>
                       {DOCUMENT_STATUS_OPTIONS_BY_TYPE.INVOICE.map(s => <option key={s} value={s}>{DOCUMENT_STATUS_LABELS[s]}</option>)}
                     </select>
                   </div>
-                  <InvoiceLineItemsEditor
-                    invoice={inv}
+                  <DocumentLineItemsEditor
+                    document={inv}
                     orderId={orderId ?? null}
                     appendix={appendix}
                     onUpdated={doc => setDocuments(prev => prev?.map(d => (d.id === doc.id ? doc : d)) ?? null)}
@@ -415,11 +576,12 @@ export default function WorkDocumentsSection({ clientId, orderId, montageProject
                     </select>
                   </div>
                 </div>
-                <p className="text-zinc-600 text-[11px]">Сумма счёта рассчитывается автоматически по товарам и услугам — добавьте их после создания.</p>
-                <button type="button" onClick={() => setInvoiceExtraExpanded(v => !v)} className="text-zinc-400 hover:text-[#00c26b] text-[11px] hover:underline">
-                  {invoiceExtraExpanded ? 'Скрыть дополнительно' : 'Дополнительно (описание, комментарий)'}
+                <p className="text-zinc-400 text-xs uppercase tracking-wide">Товары и услуги</p>
+                <DraftLineItemsSection items={draftLineItems} onChangeItems={setDraftLineItems} orderId={orderId ?? null} appendix={appendix} />
+                <button type="button" onClick={() => setCreateExtraExpanded(v => !v)} className="text-zinc-400 hover:text-[#00c26b] text-[11px] hover:underline">
+                  {createExtraExpanded ? 'Скрыть дополнительно' : 'Дополнительно (описание, комментарий)'}
                 </button>
-                {invoiceExtraExpanded && (
+                {createExtraExpanded && (
                   <div className="space-y-2">
                     <div className="space-y-1">
                       <div className="flex items-center justify-between">
@@ -437,7 +599,7 @@ export default function WorkDocumentsSection({ clientId, orderId, montageProject
                 )}
                 {error && <p className="text-red-400 text-xs">{error}</p>}
                 <div className="flex justify-end gap-2">
-                  <button type="button" onClick={() => { setCreatingType(null); setInvoiceExtraExpanded(false) }} className="text-zinc-400 hover:text-zinc-200 text-xs px-2 py-1.5">Отмена</button>
+                  <button type="button" onClick={() => handleToggleCreating('INVOICE')} className="text-zinc-400 hover:text-zinc-200 text-xs px-2 py-1.5">Отмена</button>
                   <button type="button" disabled={saving} onClick={() => handleCreate('INVOICE')} className="bg-[#00c26b] hover:bg-[#00b360] disabled:opacity-50 text-white text-xs font-medium px-3 py-1.5 rounded-lg">
                     {saving ? 'Сохранение…' : 'Создать счёт'}
                   </button>
@@ -450,29 +612,46 @@ export default function WorkDocumentsSection({ clientId, orderId, montageProject
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <p className="text-zinc-400 text-xs uppercase tracking-wide">Акты</p>
-              <button type="button" onClick={() => setCreatingType(creatingType === 'ACT' ? null : 'ACT')} className="flex items-center gap-1 text-[#00c26b] text-xs hover:underline">
+              <button type="button" onClick={() => handleToggleCreating('ACT')} className="flex items-center gap-1 text-[#00c26b] text-xs hover:underline">
                 <Plus className="w-3 h-3" /> Добавить акт
               </button>
             </div>
             {acts.map(act => (
-              <div key={act.id} className="flex items-center justify-between gap-2 bg-zinc-800/40 rounded-lg px-3 py-2">
-                <div className="min-w-0">
-                  <p className="text-zinc-200 text-xs flex items-center gap-1.5">
-                    {act.displayNumber}
-                    {canEditAppendix && (
-                      <button type="button" onClick={() => setEditingNumberDoc(act)} className="text-zinc-500 hover:text-[#00c26b] text-[11px] underline underline-offset-2 transition-colors">
-                        Изменить номер
-                      </button>
-                    )}
-                  </p>
-                  <p className="text-zinc-500 text-[11px] mt-0.5">
-                    {formatDate(act.issueDate)}
-                    {act.sourceInvoiceId && ` · из счёта ${invoices.find(i => i.id === act.sourceInvoiceId)?.displayNumber ?? ''}`}
-                  </p>
+              <div key={act.id} className="bg-zinc-800/40 rounded-lg px-3 py-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="text-zinc-200 text-xs flex items-center gap-1.5">
+                      {act.displayNumber}
+                      {canEditAppendix && (
+                        <button type="button" onClick={() => setEditingNumberDoc(act)} className="text-zinc-500 hover:text-[#00c26b] text-[11px] underline underline-offset-2 transition-colors">
+                          Изменить номер
+                        </button>
+                      )}
+                    </p>
+                    <p className="text-zinc-500 text-[11px] mt-0.5">
+                      {formatDate(act.issueDate)}
+                      {act.sourceInvoiceId && ` · из счёта ${invoices.find(i => i.id === act.sourceInvoiceId)?.displayNumber ?? ''}`}
+                    </p>
+                  </div>
+                  <select className={`${SELECT} flex-shrink-0`} value={act.status} onChange={e => handleStatusChange(act, e.target.value as DocumentStatus)}>
+                    {DOCUMENT_STATUS_OPTIONS_BY_TYPE.ACT.map(s => <option key={s} value={s}>{DOCUMENT_STATUS_LABELS[s]}</option>)}
+                  </select>
                 </div>
-                <select className={`${SELECT} flex-shrink-0`} value={act.status} onChange={e => handleStatusChange(act, e.target.value as DocumentStatus)}>
-                  {DOCUMENT_STATUS_OPTIONS_BY_TYPE.ACT.map(s => <option key={s} value={s}>{DOCUMENT_STATUS_LABELS[s]}</option>)}
-                </select>
+                <DocumentLineItemsEditor
+                  document={act}
+                  orderId={orderId ?? null}
+                  appendix={appendix}
+                  onUpdated={doc => setDocuments(prev => prev?.map(d => (d.id === doc.id ? doc : d)) ?? null)}
+                />
+                {invoices.length > 0 && (
+                  <div className="mt-1">
+                    <InvoiceCopySourcePicker
+                      invoices={invoices}
+                      disabled={copyingIntoActId === act.id}
+                      onPick={inv => handlePickInvoiceForExistingAct(act, inv)}
+                    />
+                  </div>
+                )}
               </div>
             ))}
             {acts.length === 0 && creatingType !== 'ACT' && <p className="text-zinc-600 text-xs">Актов нет</p>}
@@ -489,27 +668,48 @@ export default function WorkDocumentsSection({ clientId, orderId, montageProject
                   </div>
                 </div>
                 <div className="space-y-1">
-                  <div className="flex items-center justify-between gap-2 flex-wrap">
-                    <label className="text-zinc-500 text-[11px]">Описание услуги</label>
-                    <div className="flex items-center gap-2">
-                      {invoiceWithDescription && (
-                        <button type="button" onClick={() => setForm(f => ({ ...f, serviceDescription: invoiceWithDescription.serviceDescription ?? '' }))} className="text-[#00c26b] text-[11px] hover:underline">
-                          Заполнить из счёта
-                        </button>
-                      )}
-                      {appendix?.serviceDescription && (
-                        <button type="button" onClick={() => setForm(f => ({ ...f, serviceDescription: appendix.serviceDescription ?? '' }))} className="text-[#00c26b] text-[11px] hover:underline">
-                          Заполнить из приложения
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                  <textarea rows={2} className={TEXTAREA} value={form.serviceDescription} onChange={e => setForm(f => ({ ...f, serviceDescription: e.target.value }))} />
+                  <label className="text-zinc-500 text-[11px]">Статус акта</label>
+                  <select className={`${SELECT} w-full`} value={form.status} onChange={e => setForm(f => ({ ...f, status: e.target.value as DocumentStatus }))}>
+                    {DOCUMENT_STATUS_OPTIONS_BY_TYPE.ACT.map(s => <option key={s} value={s}>{DOCUMENT_STATUS_LABELS[s]}</option>)}
+                  </select>
                 </div>
-                <input placeholder="Комментарий" className={`${INPUT} w-full`} value={form.comment} onChange={e => setForm(f => ({ ...f, comment: e.target.value }))} />
+                <p className="text-zinc-400 text-xs uppercase tracking-wide">Товары и услуги</p>
+                <DraftLineItemsSection
+                  items={draftLineItems}
+                  onChangeItems={setDraftLineItems}
+                  orderId={orderId ?? null}
+                  appendix={appendix}
+                  extraQuickActions={invoices.length > 0 ? <InvoiceCopySourcePicker invoices={invoices} onPick={handlePickInvoiceForActDraft} /> : undefined}
+                />
+                <button type="button" onClick={() => setCreateExtraExpanded(v => !v)} className="text-zinc-400 hover:text-[#00c26b] text-[11px] hover:underline">
+                  {createExtraExpanded ? 'Скрыть дополнительно' : 'Дополнительно (описание, комментарий)'}
+                </button>
+                {createExtraExpanded && (
+                  <div className="space-y-2">
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <label className="text-zinc-500 text-[11px]">Описание услуги</label>
+                        <div className="flex items-center gap-2">
+                          {invoiceWithDescription && (
+                            <button type="button" onClick={() => setForm(f => ({ ...f, serviceDescription: invoiceWithDescription.serviceDescription ?? '' }))} className="text-[#00c26b] text-[11px] hover:underline">
+                              Заполнить из счёта
+                            </button>
+                          )}
+                          {appendix?.serviceDescription && (
+                            <button type="button" onClick={() => setForm(f => ({ ...f, serviceDescription: appendix.serviceDescription ?? '' }))} className="text-[#00c26b] text-[11px] hover:underline">
+                              Заполнить из приложения
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      <textarea rows={2} className={TEXTAREA} value={form.serviceDescription} onChange={e => setForm(f => ({ ...f, serviceDescription: e.target.value }))} />
+                    </div>
+                    <input placeholder="Комментарий" className={`${INPUT} w-full`} value={form.comment} onChange={e => setForm(f => ({ ...f, comment: e.target.value }))} />
+                  </div>
+                )}
                 {error && <p className="text-red-400 text-xs">{error}</p>}
                 <div className="flex justify-end gap-2">
-                  <button type="button" onClick={() => setCreatingType(null)} className="text-zinc-400 hover:text-zinc-200 text-xs px-2 py-1.5">Отмена</button>
+                  <button type="button" onClick={() => handleToggleCreating('ACT')} className="text-zinc-400 hover:text-zinc-200 text-xs px-2 py-1.5">Отмена</button>
                   <button type="button" disabled={saving} onClick={() => handleCreate('ACT')} className="bg-[#00c26b] hover:bg-[#00b360] disabled:opacity-50 text-white text-xs font-medium px-3 py-1.5 rounded-lg">
                     {saving ? 'Сохранение…' : 'Создать акт'}
                   </button>
@@ -544,23 +744,45 @@ export default function WorkDocumentsSection({ clientId, orderId, montageProject
         onUpdated={doc => { setDocuments(prev => prev?.map(d => (d.id === doc.id ? doc : d)) ?? null); setEditingNumberDoc(null) }}
       />
     )}
+    {pendingCopyInvoiceForDraft && (
+      <LineItemsCopyChoiceDialog
+        open={!!pendingCopyInvoiceForDraft}
+        onOpenChange={next => { if (!next) setPendingCopyInvoiceForDraft(null) }}
+        invoiceLabel={pendingCopyInvoiceForDraft.displayNumber}
+        onReplace={() => applyInvoiceCopyToDraft(pendingCopyInvoiceForDraft, 'REPLACE')}
+        onAppend={() => applyInvoiceCopyToDraft(pendingCopyInvoiceForDraft, 'APPEND')}
+      />
+    )}
+    {copyIntoActState && (
+      <LineItemsCopyChoiceDialog
+        open={!!copyIntoActState}
+        onOpenChange={next => { if (!next) setCopyIntoActState(null) }}
+        invoiceLabel={copyIntoActState.invoice.displayNumber}
+        onReplace={() => applyServerCopyIntoAct(copyIntoActState.act.id, copyIntoActState.invoice.id, 'REPLACE')}
+        onAppend={() => applyServerCopyIntoAct(copyIntoActState.act.id, copyIntoActState.invoice.id, 'APPEND')}
+      />
+    )}
     </>
   )
 }
 
 type LineItemPatch = Partial<{ description: string; quantity: number; unit: InvoiceLineItemUnit; customUnitLabel: string | null; unitPrice: number; vatRate: VatRate }>
 
-// Строки счёта — список (добавить/убрать/переставить) + кнопки быстрого
+// Строки счёта/акта — список (добавить/убрать/переставить) + кнопки быстрого
 // заполнения (ТЗ, ранее отложено пользователем — см. AGENTS.md/память,
 // теперь запрошено явно). Полностью самодостаточный overlay поверх одного
-// конкретного счёта: сохраняет каждое изменение сразу через свои собственные
-// действия, возвращая родителю обновлённый DocumentDTO целиком (amount
-// пересчитан сервером — см. recomputeDocumentAmount, actions/documents.ts),
-// а не патчит локальный стейт вручную, чтобы не разойтись с сервером.
-function InvoiceLineItemsEditor({
-  invoice, orderId, appendix, onUpdated,
+// конкретного документа: сохраняет каждое изменение сразу через свои
+// собственные действия, возвращая родителю обновлённый DocumentDTO целиком
+// (amount пересчитан сервером — см. recomputeDocumentAmount,
+// actions/documents.ts), а не патчит локальный стейт вручную, чтобы не
+// разойтись с сервером. 2026-07-23: переименован из InvoiceLineItemsEditor —
+// компонент и раньше был type-agnostic (addInvoiceLineItem и т.п. работают
+// по documentId, не по типу), теперь рендерится и для ACT, а не только для
+// INVOICE, старое имя стало вводить в заблуждение.
+function DocumentLineItemsEditor({
+  document: doc, orderId, appendix, onUpdated,
 }: {
-  invoice: DocumentDTO
+  document: DocumentDTO
   orderId: string | null
   appendix: DocumentDTO | null
   onUpdated: (doc: DocumentDTO) => void
@@ -577,30 +799,19 @@ function InvoiceLineItemsEditor({
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
   const [quickFilling, setQuickFilling] = useState(false)
 
-  // Все три кнопки переиспользуют уже существующие данные (заказ/монтаж/
+  // Все четыре кнопки переиспользуют уже существующие данные (заказ/монтаж/
   // приложение) — ничего не дублируется и не хранится отдельным полем "только
-  // для этой кнопки" (см. AGENTS.md, единый источник данных). Съёмка — только
-  // когда счёт привязан к заказу (montageProjectId-контекст уже показывает
-  // собственные финансы монтажа без снимка съёмки, самостоятельно её не
-  // добавляем — не тот сценарий использования).
+  // для этой кнопки" (см. AGENTS.md, единый источник данных). Не гейтим по
+  // типу документа — та же съёмка/монтаж одинаково осмысленны и в составе
+  // акта, а не только счёта.
   async function handleQuickFillShoot() {
     if (!orderId) return
     setQuickFilling(true)
     const result = await getOrder(orderId)
     setQuickFilling(false)
     if (!result.ok) return
-    const order = result.data
-    const shoot = orderShootDisplay(order)
-    const durationLabel = order.durationMinutes ? `${Math.round(order.durationMinutes / 6) / 10} ч.` : null
-    const dateLabel = order.plannedStartTime ? formatDate(order.plannedStartTime) : null
-    const description = [
-      'Видеосъёмка', dateLabel,
-      shoot.room && shoot.room !== 'Не указан' ? shoot.room : null,
-      shoot.format !== 'Не указан' ? shoot.format : null,
-      order.camerasCount ? `${order.camerasCount} кам.` : null,
-      durationLabel,
-    ].filter(Boolean).join(', ')
-    await submitQuickFill(description, order.preliminaryAmount ?? 0)
+    const { description, unitPrice } = buildShootDescriptionAndPrice(result.data)
+    await submitQuickFill(description, unitPrice)
   }
 
   // Клиентская стоимость монтажа (НЕ выплата монтажёру — та же граница, что
@@ -612,16 +823,16 @@ function InvoiceLineItemsEditor({
     setQuickFilling(true)
     const result = await getMontageProjectsForOrder(orderId)
     setQuickFilling(false)
-    const active = result.data.find(p => p.status !== 'CANCELLED')
-    if (!active) return
-    await submitQuickFill('Монтаж', active.clientAmount ?? 0)
+    const amount = findActiveMontageClientAmount(result.data)
+    if (amount == null) return
+    await submitQuickFill('Монтаж', amount)
   }
 
   // Идемпотентно (ТЗ): повторный клик не дублирует строку, если описание уже
   // совпадает с уже добавленной ранее из приложения строкой.
   async function handleQuickFillFromAppendix() {
     if (!appendix?.serviceDescription) return
-    if (invoice.lineItems.some(li => li.description === appendix.serviceDescription)) return
+    if (doc.lineItems.some(li => li.description === appendix.serviceDescription)) return
     await submitQuickFill(appendix.serviceDescription, appendix.amount ?? 0)
   }
 
@@ -631,7 +842,7 @@ function InvoiceLineItemsEditor({
 
   async function submitQuickFill(description: string, unitPrice: number) {
     setQuickFilling(true)
-    const result = await addInvoiceLineItem({ documentId: invoice.id, description, quantity: 1, unit: 'SERVICE', unitPrice, vatRate: 'NOT_APPLICABLE' })
+    const result = await addInvoiceLineItem({ documentId: doc.id, description, quantity: 1, unit: 'SERVICE', unitPrice, vatRate: 'NOT_APPLICABLE' })
     setQuickFilling(false)
     if (result.ok) onUpdated(result.data)
   }
@@ -641,7 +852,7 @@ function InvoiceLineItemsEditor({
     setSavingNew(true)
     setError(null)
     const result = await addInvoiceLineItem({
-      documentId: invoice.id,
+      documentId: doc.id,
       description: newDescription,
       quantity: Number(newQuantity) || 1,
       unit: newUnit,
@@ -668,21 +879,21 @@ function InvoiceLineItemsEditor({
   }
 
   async function handleMove(index: number, direction: -1 | 1) {
-    const items = invoice.lineItems
+    const items = doc.lineItems
     const targetIndex = index + direction
     if (targetIndex < 0 || targetIndex >= items.length) return
     const reordered = [...items]
     const [moved] = reordered.splice(index, 1)
     reordered.splice(targetIndex, 0, moved)
-    const result = await reorderInvoiceLineItems(invoice.id, reordered.map(i => i.id))
+    const result = await reorderInvoiceLineItems(doc.id, reordered.map(i => i.id))
     if (result.ok) onUpdated(result.data)
   }
 
-  const lastIndex = invoice.lineItems.length - 1
+  const lastIndex = doc.lineItems.length - 1
 
   async function handleDuplicate(item: InvoiceLineItemDTO) {
     const result = await addInvoiceLineItem({
-      documentId: invoice.id,
+      documentId: doc.id,
       description: item.description,
       quantity: item.quantity,
       unit: item.unit,
@@ -693,27 +904,19 @@ function InvoiceLineItemsEditor({
     if (result.ok) onUpdated(result.data)
   }
 
+  const kindGenitive = doc.type === 'ACT' ? 'акта' : 'счёта'
+
   return (
     <div className="mt-2 pt-2 border-t border-zinc-700/50 space-y-1.5">
-      {invoice.lineItems.length === 0 && !adding && (
+      {doc.lineItems.length === 0 && !adding && (
         <p className="text-zinc-600 text-[11px]">
-          {invoice.amount != null
-            ? `Позиций нет — сумма счёта (${formatMoney(invoice.amount)}) указана вручную и не изменится, пока не добавлены позиции.`
-            : 'Позиций нет — добавьте товары или услуги, чтобы сформировать сумму счёта.'}
+          {doc.amount != null
+            ? `Позиций нет — сумма ${kindGenitive} (${formatMoney(doc.amount)}) указана вручную и не изменится, пока не добавлены позиции.`
+            : `Позиций нет — добавьте товары или услуги, чтобы сформировать сумму ${kindGenitive}.`}
         </p>
       )}
-      {invoice.lineItems.length > 0 && (
-        <div className="hidden sm:flex items-center gap-1.5 px-2 text-zinc-500 text-[10px] uppercase tracking-wide">
-          <span className="flex-1 min-w-0">Наименование</span>
-          <span className="w-16 text-center flex-shrink-0">Кол-во</span>
-          <span className="w-20 text-center flex-shrink-0">Ед.</span>
-          <span className="w-24 text-center flex-shrink-0">Цена</span>
-          <span className="w-20 text-center flex-shrink-0">НДС</span>
-          <span className="w-20 text-right flex-shrink-0">Сумма</span>
-          <span className="w-14 flex-shrink-0" />
-        </div>
-      )}
-      {invoice.lineItems.map((item, index) => (
+      {doc.lineItems.length > 0 && <LineItemsTableHeader />}
+      {doc.lineItems.map((item, index) => (
         <LineItemRow
           key={item.id}
           item={item}
@@ -729,8 +932,8 @@ function InvoiceLineItemsEditor({
           onConfirmDelete={() => handleRemove(item.id)}
         />
       ))}
-      {invoice.lineItems.length > 0 && (
-        <p className="text-zinc-500 text-[11px] text-right pr-1">Итого по позициям: {formatMoney(computeLineItemsTotal(invoice.lineItems))}</p>
+      {doc.lineItems.length > 0 && (
+        <p className="text-zinc-500 text-[11px] text-right pr-1">Итого по позициям: {formatMoney(computeLineItemsTotal(doc.lineItems))}</p>
       )}
       {!adding && (
         <div className="flex items-center gap-2 flex-wrap">
@@ -784,6 +987,293 @@ function InvoiceLineItemsEditor({
         </button>
       )}
     </div>
+  )
+}
+
+// Общая шапка колонок — переиспользуется и уже созданным документом
+// (DocumentLineItemsEditor), и черновиком ещё не созданного (DraftLineItemsSection).
+// Ширины совпадают с полями строки в LineItemRow/DraftLineItemRow — держать
+// в синхроне при правке.
+function LineItemsTableHeader() {
+  return (
+    <div className="hidden sm:flex items-center gap-1.5 px-2 text-zinc-500 text-[10px] uppercase tracking-wide">
+      <span className="flex-1 min-w-0">Наименование</span>
+      <span className="w-16 text-center flex-shrink-0">Кол-во</span>
+      <span className="w-20 text-center flex-shrink-0">Ед.</span>
+      <span className="w-24 text-center flex-shrink-0">Цена</span>
+      <span className="w-20 text-center flex-shrink-0">НДС</span>
+      <span className="w-20 text-right flex-shrink-0">Сумма</span>
+      <span className="w-14 flex-shrink-0" />
+    </div>
+  )
+}
+
+// Черновик строк создаваемого (ещё не сохранённого) счёта/акта — живёт
+// целиком в состоянии родителя (WorkDocumentsSection), ничего не сохраняет
+// само по себе: каждое изменение сразу отражается в массиве draftLineItems,
+// отправляемом одним вызовом createDocument при финальном сохранении (см.
+// AGENTS.md, "услуги — обязательная часть счёта/акта"). extraQuickActions —
+// место для ACT-специфичной кнопки "Скопировать из счёта".
+function DraftLineItemsSection({
+  items, onChangeItems, orderId, appendix, extraQuickActions,
+}: {
+  items: DraftLineItem[]
+  onChangeItems: (items: DraftLineItem[]) => void
+  orderId: string | null
+  appendix: DocumentDTO | null
+  extraQuickActions?: React.ReactNode
+}) {
+  const [quickFilling, setQuickFilling] = useState(false)
+
+  function addItem(item: DraftLineItem) { onChangeItems([...items, item]) }
+  function updateItem(index: number, patch: Partial<DraftLineItem>) {
+    onChangeItems(items.map((it, i) => (i === index ? { ...it, ...patch } : it)))
+  }
+  function removeItem(index: number) { onChangeItems(items.filter((_, i) => i !== index)) }
+  function duplicateItem(index: number) {
+    const copy = { ...items[index], key: makeDraftKey() }
+    onChangeItems([...items.slice(0, index + 1), copy, ...items.slice(index + 1)])
+  }
+  function moveItem(index: number, direction: -1 | 1) {
+    const target = index + direction
+    if (target < 0 || target >= items.length) return
+    const next = [...items]
+    const [moved] = next.splice(index, 1)
+    next.splice(target, 0, moved)
+    onChangeItems(next)
+  }
+
+  async function handleQuickFillShoot() {
+    if (!orderId) return
+    setQuickFilling(true)
+    const result = await getOrder(orderId)
+    setQuickFilling(false)
+    if (!result.ok) return
+    const { description, unitPrice } = buildShootDescriptionAndPrice(result.data)
+    addItem({ ...emptyDraftLineItem(), description, unitPrice: String(unitPrice) })
+  }
+
+  async function handleQuickFillMontage() {
+    if (!orderId) return
+    setQuickFilling(true)
+    const result = await getMontageProjectsForOrder(orderId)
+    setQuickFilling(false)
+    const amount = findActiveMontageClientAmount(result.data)
+    if (amount == null) return
+    addItem({ ...emptyDraftLineItem(), description: 'Монтаж', unitPrice: String(amount) })
+  }
+
+  function handleQuickFillFromAppendix() {
+    if (!appendix?.serviceDescription) return
+    if (items.some(d => d.description === appendix.serviceDescription)) return
+    addItem({ ...emptyDraftLineItem(), description: appendix.serviceDescription, unitPrice: String(appendix.amount ?? 0) })
+  }
+
+  function handleQuickFillExtra() {
+    addItem({ ...emptyDraftLineItem(), description: 'Дополнительная услуга' })
+  }
+
+  const lastIndex = items.length - 1
+
+  return (
+    <div className="space-y-1.5">
+      {items.length > 0 && <LineItemsTableHeader />}
+      {items.map((item, index) => (
+        <DraftLineItemRow
+          key={item.key}
+          item={item}
+          index={index}
+          lastIndex={lastIndex}
+          onChange={patch => updateItem(index, patch)}
+          onMoveUp={() => moveItem(index, -1)}
+          onMoveDown={() => moveItem(index, 1)}
+          onDuplicate={() => duplicateItem(index)}
+          onRemove={() => removeItem(index)}
+        />
+      ))}
+      {items.length > 0 && (
+        <p className="text-zinc-500 text-[11px] text-right pr-1">Итого: {formatMoney(draftLineItemsTotal(items))}</p>
+      )}
+      <div className="flex items-center gap-2 flex-wrap">
+        {orderId && (
+          <button type="button" disabled={quickFilling} onClick={handleQuickFillShoot} className="text-zinc-400 hover:text-[#00c26b] disabled:opacity-50 text-[11px] hover:underline transition-colors">
+            + Добавить съёмку
+          </button>
+        )}
+        {orderId && (
+          <button type="button" disabled={quickFilling} onClick={handleQuickFillMontage} className="text-zinc-400 hover:text-[#00c26b] disabled:opacity-50 text-[11px] hover:underline transition-colors">
+            + Добавить монтаж
+          </button>
+        )}
+        {appendix?.serviceDescription && (
+          <button type="button" onClick={handleQuickFillFromAppendix} className="text-zinc-400 hover:text-[#00c26b] text-[11px] hover:underline transition-colors">
+            Заполнить из приложения
+          </button>
+        )}
+        <button type="button" onClick={handleQuickFillExtra} className="text-zinc-400 hover:text-[#00c26b] text-[11px] hover:underline transition-colors">
+          + Добавить доп. услугу
+        </button>
+        {extraQuickActions}
+        <button type="button" onClick={() => addItem(emptyDraftLineItem())} className="flex items-center gap-1 text-[#00c26b] text-[11px] hover:underline">
+          <Plus className="w-3 h-3" /> Добавить ещё одну услугу
+        </button>
+      </div>
+    </div>
+  )
+}
+
+interface DraftLineItemRowProps {
+  item: DraftLineItem
+  index: number
+  lastIndex: number
+  onChange: (patch: Partial<DraftLineItem>) => void
+  onMoveUp: () => void
+  onMoveDown: () => void
+  onDuplicate: () => void
+  onRemove: () => void
+}
+
+// Визуально повторяет LineItemRow (те же ширины полей, шапка), но пишет
+// напрямую в родительский draftLineItems при каждом изменении — ничего не
+// сохраняется на сервер до финального "Создать счёт"/"Создать акт", поэтому
+// не нужен ни onBlur-дебаунс, ни подтверждение удаления строки.
+function DraftLineItemRow({ item, index, lastIndex, onChange, onMoveUp, onMoveDown, onDuplicate, onRemove }: DraftLineItemRowProps) {
+  return (
+    <div className="bg-zinc-900/40 rounded-lg px-2 py-1.5 space-y-1">
+      <div className="flex items-start gap-1.5">
+        <textarea
+          rows={2}
+          placeholder="Наименование товара или услуги"
+          className={`${TEXTAREA} flex-1 min-w-0`}
+          value={item.description}
+          onChange={e => onChange({ description: e.target.value })}
+        />
+        <div className="flex items-center gap-0.5 flex-shrink-0">
+          <button type="button" disabled={index === 0} onClick={onMoveUp} className="text-zinc-500 hover:text-zinc-300 disabled:opacity-20 p-0.5">
+            <ChevronUp className="w-3.5 h-3.5" />
+          </button>
+          <button type="button" disabled={index === lastIndex} onClick={onMoveDown} className="text-zinc-500 hover:text-zinc-300 disabled:opacity-20 p-0.5">
+            <ChevronDown className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </div>
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <input
+          type="number" min="0" step="any" className={`${INPUT} w-16 flex-shrink-0 text-center`}
+          value={item.quantity}
+          onChange={e => onChange({ quantity: e.target.value })}
+        />
+        <select
+          className={`${SELECT} w-20 flex-shrink-0`}
+          value={item.unit}
+          onChange={e => {
+            const nextUnit = e.target.value as InvoiceLineItemUnit
+            onChange({ unit: nextUnit, customUnitLabel: nextUnit === 'OTHER' ? item.customUnitLabel : '' })
+          }}
+        >
+          {(Object.keys(INVOICE_LINE_ITEM_UNIT_LABELS) as InvoiceLineItemUnit[]).map(u => <option key={u} value={u}>{INVOICE_LINE_ITEM_UNIT_LABELS[u]}</option>)}
+        </select>
+        <input
+          type="number" min="0" className={`${INPUT} w-24 flex-shrink-0`}
+          value={item.unitPrice}
+          onChange={e => onChange({ unitPrice: e.target.value })}
+        />
+        <select className={`${SELECT} w-20 flex-shrink-0`} value={item.vatRate} onChange={e => onChange({ vatRate: e.target.value as VatRate })}>
+          {(Object.keys(VAT_RATE_LABELS) as VatRate[]).map(v => <option key={v} value={v}>{VAT_RATE_LABELS[v]}</option>)}
+        </select>
+        <span className="text-zinc-300 text-xs w-20 flex-shrink-0 text-right">
+          {formatMoney(computeLineItemTotal({ quantity: Number(item.quantity) || 0, unitPrice: Number(item.unitPrice) || 0 }))}
+        </span>
+        <div className="flex items-center gap-0.5 ml-auto flex-shrink-0">
+          <button type="button" onClick={onDuplicate} title="Дублировать строку" className="text-zinc-600 hover:text-zinc-300 p-0.5">
+            <Copy className="w-3.5 h-3.5" />
+          </button>
+          <button type="button" onClick={onRemove} className="text-zinc-500 hover:text-red-400 p-0.5">
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </div>
+      {item.unit === 'OTHER' && (
+        <input
+          placeholder="Название единицы измерения"
+          className={`${INPUT} w-full`}
+          value={item.customUnitLabel}
+          onChange={e => onChange({ customUnitLabel: e.target.value })}
+        />
+      )}
+    </div>
+  )
+}
+
+// Выбор счёта-источника для копирования состава в акт — один счёт: кнопка
+// сразу копирует; несколько — компактный список для выбора (тот же приём
+// input+список кнопок, что уже используется в EditorAssignField.tsx).
+// Используется и при создании нового акта (копия в локальный черновик), и на
+// уже существующем акте (копия через copyInvoiceLineItemsIntoAct) — сам
+// компонент не знает, какой из двух путей вызовет onPick.
+function InvoiceCopySourcePicker({ invoices, onPick, disabled }: { invoices: DocumentDTO[]; onPick: (invoice: DocumentDTO) => void; disabled?: boolean }) {
+  const [open, setOpen] = useState(false)
+  if (invoices.length === 0) return null
+  if (invoices.length === 1) {
+    return (
+      <button type="button" disabled={disabled} onClick={() => onPick(invoices[0])} className="text-zinc-400 hover:text-[#00c26b] disabled:opacity-50 text-[11px] hover:underline transition-colors">
+        Скопировать из счёта {invoices[0].displayNumber}
+      </button>
+    )
+  }
+  return (
+    <div className="relative inline-block">
+      <button type="button" disabled={disabled} onClick={() => setOpen(v => !v)} className="text-zinc-400 hover:text-[#00c26b] disabled:opacity-50 text-[11px] hover:underline transition-colors">
+        Скопировать из счёта…
+      </button>
+      {open && (
+        <div className="absolute z-10 mt-1 w-64 bg-zinc-800 border border-zinc-700 rounded-lg shadow-lg max-h-56 overflow-y-auto">
+          {invoices.map(inv => (
+            <button key={inv.id} type="button" onMouseDown={e => e.preventDefault()} onClick={() => { onPick(inv); setOpen(false) }}
+              className="w-full text-left px-3 py-2 text-xs text-zinc-200 hover:bg-zinc-700 transition-colors border-b border-zinc-700/60 last:border-0">
+              <div>{inv.displayNumber} · {formatMoney(inv.amount)}</div>
+              <div className="text-zinc-500 text-[11px]">{formatDate(inv.issueDate)} · {DOCUMENT_STATUS_LABELS[inv.status]}</div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Подтверждение "заменить/добавить/отмена" при повторном копировании из
+// счёта, когда в акте (черновике или уже созданном) уже есть непустые
+// строки — один общий диалог для обоих путей (создание и уже существующий
+// акт), сама "заменить или добавить" логика — на стороне вызывающего кода.
+function LineItemsCopyChoiceDialog({
+  open, onOpenChange, invoiceLabel, onReplace, onAppend,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  invoiceLabel: string
+  onReplace: () => void
+  onAppend: () => void
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="bg-zinc-900 border-zinc-800 text-white max-w-sm">
+        <DialogHeader>
+          <DialogTitle className="text-white text-lg font-semibold">Заменить текущие услуги данными из счёта {invoiceLabel}?</DialogTitle>
+        </DialogHeader>
+        <p className="text-zinc-400 text-sm">В документе уже есть заполненные позиции. Что сделать с данными из счёта?</p>
+        <DialogFooter className="bg-zinc-900 border-zinc-800 flex-col sm:flex-col gap-2">
+          <button type="button" onClick={onReplace} className="w-full bg-[#00c26b] hover:bg-[#00b360] text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">
+            Заменить
+          </button>
+          <button type="button" onClick={onAppend} className="w-full bg-zinc-700 hover:bg-zinc-600 text-zinc-100 text-sm font-medium px-4 py-2 rounded-lg transition-colors">
+            Добавить к текущим
+          </button>
+          <button type="button" onClick={() => onOpenChange(false)} className="w-full text-zinc-400 hover:text-zinc-200 text-sm px-4 py-2 transition-colors">
+            Отмена
+          </button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 

@@ -4,6 +4,7 @@ import {
   getWorkDocumentAttentionReasons, getClientContractAttentionReasons,
   computeLineItemTotal, computeLineItemsTotal, compareDocumentNumbers,
   getLineItemUnitLabel, INVOICE_LINE_ITEM_UNIT_LABELS, VAT_RATE_LABELS,
+  validateLineItemDraft, DOCUMENT_STATUS_LABELS,
 } from '@/lib/document-model'
 
 describe('getDocumentDisplayNumber', () => {
@@ -255,5 +256,58 @@ describe('getLineItemUnitLabel', () => {
   it('falls back to the generic "прочее" label when OTHER has no usable custom label', () => {
     expect(getLineItemUnitLabel({ unit: 'OTHER', customUnitLabel: null })).toBe('прочее')
     expect(getLineItemUnitLabel({ unit: 'OTHER', customUnitLabel: '   ' })).toBe('прочее')
+  })
+})
+
+describe('validateLineItemDraft', () => {
+  const base = { description: 'Аренда студии', quantity: 1, unit: 'SERVICE' as const, unitPrice: 15000, vatRate: 'NOT_APPLICABLE' as const }
+
+  it('rejects an empty or whitespace-only description', () => {
+    expect(validateLineItemDraft({ ...base, description: '' })).toEqual({ ok: false, error: 'Укажите наименование услуги' })
+    expect(validateLineItemDraft({ ...base, description: '   ' })).toEqual({ ok: false, error: 'Укажите наименование услуги' })
+  })
+
+  it('rejects quantity <= 0', () => {
+    expect(validateLineItemDraft({ ...base, quantity: 0 })).toEqual({ ok: false, error: 'Количество должно быть больше нуля' })
+    expect(validateLineItemDraft({ ...base, quantity: -1 })).toEqual({ ok: false, error: 'Количество должно быть больше нуля' })
+  })
+
+  it('rejects a negative unit price', () => {
+    expect(validateLineItemDraft({ ...base, unitPrice: -100 })).toEqual({ ok: false, error: 'Цена не может быть отрицательной' })
+  })
+
+  it('rejects unit OTHER without a custom label', () => {
+    expect(validateLineItemDraft({ ...base, unit: 'OTHER' })).toEqual({ ok: false, error: 'Укажите название единицы измерения' })
+    expect(validateLineItemDraft({ ...base, unit: 'OTHER', customUnitLabel: '   ' })).toEqual({ ok: false, error: 'Укажите название единицы измерения' })
+  })
+
+  it('accepts valid input, trimming description and normalizing customUnitLabel to null for non-OTHER units', () => {
+    const result = validateLineItemDraft({ ...base, description: '  Аренда студии  ', customUnitLabel: 'что-то' })
+    expect(result).toEqual({
+      ok: true,
+      data: { description: 'Аренда студии', quantity: 1, unit: 'SERVICE', customUnitLabel: null, unitPrice: 15000, vatRate: 'NOT_APPLICABLE' },
+    })
+  })
+
+  it('accepts unit OTHER with a trimmed custom label', () => {
+    const result = validateLineItemDraft({ ...base, unit: 'OTHER', customUnitLabel: '  лицензия  ' })
+    expect(result).toEqual({ ok: true, data: { ...base, unit: 'OTHER', customUnitLabel: 'лицензия' } })
+  })
+})
+
+describe('DOCUMENT_STATUS_LABELS — 2026-07-23 renamed to match user vocabulary', () => {
+  it('renames INVOICE statuses without changing enum membership', () => {
+    expect(DOCUMENT_STATUS_LABELS.DRAFT).toBe('Не задан')
+    expect(DOCUMENT_STATUS_LABELS.ISSUED).toBe('Сформирован')
+    expect(DOCUMENT_STATUS_LABELS.SENT).toBe('Отправлен')
+    expect(DOCUMENT_STATUS_LABELS.CANCELLED).toBe('Аннулирован')
+  })
+
+  it('renames ACT statuses without changing enum membership', () => {
+    expect(DOCUMENT_STATUS_LABELS.NOT_PREPARED).toBe('Не сформирован')
+    expect(DOCUMENT_STATUS_LABELS.PREPARED).toBe('Сформирован')
+    expect(DOCUMENT_STATUS_LABELS.DELIVERED).toBe('Отправлен')
+    expect(DOCUMENT_STATUS_LABELS.NEEDS_CORRECTION).toBe('Не принят')
+    expect(DOCUMENT_STATUS_LABELS.SIGNED).toBe('Подписан')
   })
 })

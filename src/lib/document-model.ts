@@ -69,15 +69,21 @@ export const DOCUMENT_STATUS_OPTIONS_BY_TYPE: Record<DocumentType, DocumentStatu
   ACT: ['NOT_PREPARED', 'PREPARED', 'DELIVERED', 'SIGNED', 'NEEDS_CORRECTION', 'ARCHIVED', 'CANCELLED'],
 }
 
+// 2026-07-23: подписи INVOICE/ACT приведены к словарю пользователя (Не
+// задан/Сформирован/Отправлен/Не принят/Подписан/Аннулирован) — это ТОЛЬКО
+// смена текста, значения enum и DOCUMENT_STATUS_OPTIONS_BY_TYPE не менялись
+// (миграция схемы не нужна). ISSUED и PREPARED оба читаются как
+// "Сформирован" — не проблема, это разные значения enum для разных типов
+// документа (счёт/акт), никогда не показываются в одном списке одновременно.
 export const DOCUMENT_STATUS_LABELS: Record<DocumentStatus, string> = {
-  DRAFT: 'Черновик',
-  ISSUED: 'Выставлен',
+  DRAFT: 'Не задан',
+  ISSUED: 'Сформирован',
   SENT: 'Отправлен',
-  NOT_PREPARED: 'Не подготовлен',
-  PREPARED: 'Подготовлен',
-  DELIVERED: 'Передан клиенту',
+  NOT_PREPARED: 'Не сформирован',
+  PREPARED: 'Сформирован',
+  DELIVERED: 'Отправлен',
   SIGNED: 'Подписан',
-  NEEDS_CORRECTION: 'Требует исправления',
+  NEEDS_CORRECTION: 'Не принят',
   ACTIVE: 'Действует',
   ARCHIVED: 'Архив',
   CANCELLED: 'Аннулирован',
@@ -345,4 +351,39 @@ export function computeLineItemTotal(item: InvoiceLineItemInput): number {
 
 export function computeLineItemsTotal(items: InvoiceLineItemInput[]): number {
   return items.reduce((sum, item) => sum + computeLineItemTotal(item), 0)
+}
+
+export interface LineItemDraftInput {
+  description: string
+  quantity: number
+  unit: InvoiceLineItemUnit
+  customUnitLabel?: string | null
+  unitPrice: number
+  vatRate: VatRate
+}
+
+export interface ValidatedLineItem {
+  description: string
+  quantity: number
+  unit: InvoiceLineItemUnit
+  customUnitLabel: string | null
+  unitPrice: number
+  vatRate: VatRate
+}
+
+// Единая проверка строки счёта/акта — переиспользуется и при создании
+// документа сразу со строками (createDocument), и при добавлении строки к
+// уже существующему документу (addInvoiceLineItem), чтобы не держать два
+// места с одинаковыми (и рискующими разойтись) правилами.
+export function validateLineItemDraft(input: LineItemDraftInput): { ok: true; data: ValidatedLineItem } | { ok: false; error: string } {
+  const description = input.description.trim()
+  if (!description) return { ok: false, error: 'Укажите наименование услуги' }
+  if (!(input.quantity > 0)) return { ok: false, error: 'Количество должно быть больше нуля' }
+  if (!(input.unitPrice >= 0)) return { ok: false, error: 'Цена не может быть отрицательной' }
+  const customUnitLabel = input.unit === 'OTHER' ? (input.customUnitLabel?.trim() || null) : null
+  if (input.unit === 'OTHER' && !customUnitLabel) return { ok: false, error: 'Укажите название единицы измерения' }
+  return {
+    ok: true,
+    data: { description, quantity: input.quantity, unit: input.unit, customUnitLabel, unitPrice: input.unitPrice, vatRate: input.vatRate },
+  }
 }
