@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, type ReactNode, type SelectHTMLAttributes } from 'react'
+import { useEffect, useRef, useState, type ReactNode, type SelectHTMLAttributes } from 'react'
 import Link from 'next/link'
 import { format, parseISO } from 'date-fns'
 import { ru } from 'date-fns/locale'
@@ -18,7 +18,7 @@ import type { ClientType, OrderStatus, OrderPaymentStatus, PaymentMethod } from 
 import AddClientModal from '../clients/AddClientModal'
 import WorkDocumentsSection from '@/components/documents/WorkDocumentsSection'
 import ConfirmableStatusToggle from '@/components/ui/confirmable-status-toggle'
-import OrderFinanceBlock from '@/components/orders/OrderFinanceBlock'
+import OrderFinanceBlock, { type OrderFinanceBlockHandle } from '@/components/orders/OrderFinanceBlock'
 import MontageDisableChoiceDialog from '@/components/orders/MontageDisableChoiceDialog'
 import type { MontageProjectDTO } from '@/lib/actions/montage'
 import { useAutosave, readAutosaveDraft, clearAutosaveDraft, type StoredDraft } from '@/lib/hooks/use-autosave'
@@ -149,8 +149,11 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
   // для диалога отключения монтажа, не делаем второй такой же запрос.
   // "Прибыль по заказу" и "Комментарий к прибыли" редактируются и
   // сохраняются САМИМ OrderFinanceBlock напрямую через updateOrderProfit —
-  // не часть этой формы/handleSave, поэтому здесь для них нет локального состояния.
+  // не часть этой формы/handleSave, поэтому здесь для них нет локального
+  // состояния — только ref для явной досылки уже введённых значений сразу
+  // после createOrder (см. handleSave, тот же приём, что и в EventCardModal).
   const [activeMontageProjects, setActiveMontageProjects] = useState<MontageProjectDTO[]>([])
+  const financeBlockRef = useRef<OrderFinanceBlockHandle>(null)
   const [montageDisableDialogOpen, setMontageDisableDialogOpen] = useState(false)
   const [pendingEditingRequired, setPendingEditingRequired] = useState<'' | 'true' | 'false' | null>(null)
   const [yandexDiskUrl, setYandexDiskUrl] = useState(order?.yandexDiskUrl ?? '')
@@ -327,11 +330,25 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
     setSaving(true)
     setError(null)
 
-    const result = isEdit ? await autosave.flush() : await createOrder(buildOrderInput())
-    if (!result.ok) {
-      setSaving(false)
-      setError(result.error)
-      return
+    if (isEdit) {
+      const result = await autosave.flush()
+      if (!result.ok) {
+        setSaving(false)
+        setError(result.error)
+        return
+      }
+    } else {
+      const result = await createOrder(buildOrderInput())
+      if (!result.ok) {
+        setSaving(false)
+        setError(result.error)
+        return
+      }
+      // Заказ только что создан этим сохранением — если администратор уже
+      // успел ввести прибыль/комментарий к ней (заказа тогда ещё не было,
+      // OrderFinanceBlock не мог их сохранить), досылаем прямо сейчас, пока
+      // карточка не закрылась ниже (см. OrderFinanceBlockHandle).
+      await financeBlockRef.current?.flushToOrder(result.data.id)
     }
 
     if (isEdit && status !== order!.status) {
@@ -655,6 +672,7 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
             ) : (
               <>
                 <OrderFinanceBlock
+                  ref={financeBlockRef}
                   orderId={order?.id ?? null}
                   revenueValue={preliminaryAmount}
                   onRevenueChange={setPreliminaryAmount}

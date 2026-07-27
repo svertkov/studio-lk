@@ -26,7 +26,7 @@ import ConfirmableStatusToggle from '@/components/ui/confirmable-status-toggle'
 import SubscriptionPaymentBlock, { type SubscriptionPaymentHandle } from './SubscriptionPaymentBlock'
 import AddClientModal from '../clients/AddClientModal'
 import WorkDocumentsSection from '@/components/documents/WorkDocumentsSection'
-import OrderFinanceBlock from '@/components/orders/OrderFinanceBlock'
+import OrderFinanceBlock, { type OrderFinanceBlockHandle } from '@/components/orders/OrderFinanceBlock'
 import MontageDisableChoiceDialog from '@/components/orders/MontageDisableChoiceDialog'
 import type { MontageProjectDTO } from '@/lib/actions/montage'
 import { useAutosave, readAutosaveDraft, clearAutosaveDraft, type StoredDraft } from '@/lib/hooks/use-autosave'
@@ -134,6 +134,7 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
   )
   const [subscriptionValid, setSubscriptionValid] = useState(true)
   const subscriptionRef = useRef<SubscriptionPaymentHandle>(null)
+  const financeBlockRef = useRef<OrderFinanceBlockHandle>(null)
 
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -379,6 +380,15 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
       if (!result.ok) {
         setError(result.error)
         return
+      }
+
+      // Заказ мог появиться именно в этом сохранении (см. комментарий в
+      // upsertScheduleEvent/schedule.ts) — если администратор уже успел
+      // ввести прибыль/комментарий к ней ДО этого (заказа тогда ещё не было,
+      // OrderFinanceBlock не мог их сохранить), досылаем прямо сейчас, пока
+      // карточка не закрылась ниже (см. OrderFinanceBlockHandle).
+      if (result.data.orderId && !annotation?.orderId) {
+        await financeBlockRef.current?.flushToOrder(result.data.orderId)
       }
 
       if (requiresFullBookingForm(eventType) && clientId) {
@@ -769,6 +779,7 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
           {(!hasClient || paymentMode === 'ONE_TIME') && (
             <>
               <OrderFinanceBlock
+                ref={financeBlockRef}
                 orderId={annotation?.orderId ?? null}
                 revenueValue={estimatedPrice}
                 onRevenueChange={setEstimatedPrice}
