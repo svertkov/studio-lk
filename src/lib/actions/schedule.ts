@@ -272,18 +272,25 @@ export async function upsertScheduleEvent(
 
     const effectiveEventType = input.eventType ?? classifyEventType(input.title ?? '')
 
-    // Заказ (раздел "Заказы") создаётся только в момент ПЕРВОГО сохранения
-    // студийной записи из живого Google Calendar — не при последующих
-    // пересохранениях уже существующей аннотации, чтобы не перезаписывать
-    // статус заказа, который могли уже вручную продвинуть по канбану. Плюс
-    // не раньше ORDERS_AUTO_IMPORT_LAUNCH_DATE — раздел "Заказы" начинается с
-    // чистого листа, старые записи не должны задним числом становиться
-    // заказами только из-за того, что кто-то открыл и сохранил их карточку.
-    // Google Calendar здесь только читается (через уже переданные input),
-    // ничего не пишется обратно.
+    // Заказ (раздел "Заказы") создаётся, если у записи ЕЩЁ НЕТ своего заказа
+    // (existing?.orderId == null) — не только при самом первом сохранении
+    // (2026-07-27: было `!existing`, из-за чего запись, чья аннотация уже
+    // существовала по любой другой причине — историческая, тронутая до
+    // появления этого кода и т.п. — не могла получить заказ вообще никогда,
+    // сколько бы раз её ни пересохраняли; см. реальный кейс "Выездная Настя
+    // Поэзия", 20 июля 2026 — дата уже после ORDERS_AUTO_IMPORT_LAUNCH_DATE,
+    // но заказ не создавался). Если заказ уже привязан (existing.orderId
+    // задан) — сюда не заходим вообще и НЕ трогаем ни этот заказ, ни его
+    // статус, который могли уже вручную продвинуть по канбану — то, ради
+    // чего исходно был этот гейт, полностью сохраняется. Плюс не раньше
+    // ORDERS_AUTO_IMPORT_LAUNCH_DATE — раздел "Заказы" начинается с чистого
+    // листа, старые записи не должны задним числом становиться заказами
+    // только из-за того, что кто-то открыл и сохранил их карточку. Google
+    // Calendar здесь только читается (через уже переданные input), ничего не
+    // пишется обратно.
     const startsAfterOrdersLaunch = !!input.startAt && new Date(input.startAt) >= ORDERS_AUTO_IMPORT_LAUNCH_DATE
     let orderIdForCreate: string | null = null
-    if (!existing && requiresFullBookingForm(effectiveEventType) && startsAfterOrdersLaunch) {
+    if (!existing?.orderId && requiresFullBookingForm(effectiveEventType) && startsAfterOrdersLaunch) {
       orderIdForCreate = await ensureOrderForNewBooking({
         calendarEventId: input.calendarEventId,
         title: input.title ?? '',
@@ -375,6 +382,12 @@ export async function upsertScheduleEvent(
         ...(input.clientConfirmationStatus !== undefined && { clientConfirmationStatus: input.clientConfirmationStatus }),
         ...(input.eventType !== undefined && { eventType: input.eventType }),
         ...(input.makeupDurationMinutes !== undefined && { makeupDurationMinutes: input.makeupDurationMinutes }),
+        // Ретроактивная привязка заказа (см. комментарий у orderIdForCreate
+        // выше) — пишем, только когда реально что-то нашли/создали в этом
+        // save; если у записи уже был свой заказ, orderIdForCreate остаётся
+        // null и это поле сюда даже не попадает, существующая привязка не
+        // трогается.
+        ...(orderIdForCreate && { orderId: orderIdForCreate }),
       },
       include: SCHEDULE_EVENT_INCLUDE,
     })
