@@ -767,6 +767,13 @@ model ScheduleEvent {
   // Снэпшот для страницы Клиентов (блок неподтверждённых) — НЕ источник правды.
   // На странице Расписания эти поля всегда берутся из живого Google Calendar.
   title                    String?
+  // 2026-07-27: description — техническое сырое описание события Google
+  // Calendar на момент последнего сохранения карточки, больше НЕ отображается
+  // отдельно нигде в UI (раньше — серый блок в EventCardModal.tsx). Единственное
+  // видимое администратору поле комментария — notes ниже: при первом
+  // сохранении карточки (annotation ещё не существовал) description
+  // копируется в notes на клиенте, дальше notes живёт независимо и не
+  // перезаписывается при изменении события в календаре.
   description              String?
   startAt                  DateTime?                @map("start_at")
   endAt                    DateTime?                @map("end_at")
@@ -794,6 +801,9 @@ model ScheduleEvent {
   logisticsComment         String?                  @map("logistics_comment")
   estimatedPrice           Float?                   @map("estimated_price")
   paymentMethod            PaymentMethod?           @map("payment_method")
+  // Единое поле "Комментарий / нюансы" в EventCardModal.tsx — включает как
+  // ручные пометки администратора, так и (при первом сохранении) описание
+  // события Google Calendar, см. комментарий у description выше.
   notes                    String?
   // Структурированная пометка акции (см. OrderPromotionType выше и
   // src/lib/promotion-model.ts) — источник правды по акции для записей с

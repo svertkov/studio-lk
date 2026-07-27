@@ -89,7 +89,18 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
   // а не часть свободного текста. Для старых записей, где акция ещё жила
   // только как фраза в notes, это на первом же Save "мигрирует" её в
   // структурированное поле и одновременно убирает дублирующий текст.
-  const [notes, setNotes] = useState(getVisibleOrderComment({ comment: annotation?.notes ?? null }) ?? '')
+  //
+  // Единое поле комментария: до первого сохранения карточки строки
+  // ScheduleEvent ещё не существует (annotation === null) — в этом и только
+  // в этом случае донором единственного поля выступает описание события
+  // Google Calendar, вместо отдельного серого блока. Как только строка
+  // сохранена хотя бы раз, annotation перестаёт быть null и notes становится
+  // источником правды даже если он пуст (администратор мог осознанно
+  // очистить комментарий) — calendarEvent.description больше не подмешивается,
+  // изменение события в календаре не может перезаписать правку администратора.
+  const [notes, setNotes] = useState(
+    annotation ? (getVisibleOrderComment({ comment: annotation.notes ?? null }) ?? '') : (calendarEvent.description ?? ''),
+  )
   const [promotionType, setPromotionType] = useState<OrderPromotionType | null>(
     getOrderPromotion({ promotionType: annotation?.promotionType ?? null, comment: annotation?.notes ?? null }),
   )
@@ -441,22 +452,20 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
               </div>
             </div>
           )}
-          {calendarEvent.description && (
-            <p className="text-zinc-400 text-xs whitespace-pre-wrap bg-zinc-800/50 rounded-lg p-3">
-              {calendarEvent.description}
-            </p>
-          )}
 
-          <p className={SECTION}>Тип события</p>
-          <select className={SELECT} value={eventType} onChange={e => setEventType(e.target.value as EventType)}>
-            {(Object.keys(EVENT_TYPE_LABELS) as EventType[]).map(t => (
-              <option key={t} value={t}>{EVENT_TYPE_LABELS[t]}</option>
-            ))}
-          </select>
-
+          {/* Единое поле комментария — заменяет и бывший нередактируемый блок
+              описания Google Calendar, и отдельное поле "Комментарий / нюансы"
+              (см. инициализацию notes выше: описание календаря подмешивается
+              только до первого сохранения записи). */}
           <div>
             <label className={LABEL}>Комментарий / нюансы</label>
-            <textarea className={`${INPUT} resize-none`} rows={2} value={notes} onChange={e => setNotes(e.target.value)} />
+            <textarea
+              className={`${INPUT} resize-none max-h-64 overflow-y-auto`}
+              rows={5}
+              placeholder="Добавьте важные детали заказа, список оборудования, адрес или пожелания клиента"
+              value={notes}
+              onChange={e => setNotes(e.target.value)}
+            />
             {/* Акция — структурированный тоггл, а не текст, вставляемый в
                 комментарий (см. src/lib/promotion-model.ts). Повторный клик
                 снимает отметку; комментарий этим не затрагивается. */}
@@ -473,6 +482,13 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
               </GlowPill>
             </div>
           </div>
+
+          <p className={SECTION}>Тип события</p>
+          <select className={SELECT} value={eventType} onChange={e => setEventType(e.target.value as EventType)}>
+            {(Object.keys(EVENT_TYPE_LABELS) as EventType[]).map(t => (
+              <option key={t} value={t}>{EVENT_TYPE_LABELS[t]}</option>
+            ))}
+          </select>
 
           {!requiresFullBookingForm(eventType) && (
             <p className="text-zinc-500 text-xs">

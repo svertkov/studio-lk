@@ -1,0 +1,91 @@
+{
+  "createdAt": "2026-07-27T10:16:07.641Z",
+  "note": "ScheduleEvent.notes, изменённые merge-schedule-comments/apply.ts. Для отката — rollback.ts с этим файлом (восстанавливает previousNotes).",
+  "count": 14,
+  "records": [
+    {
+      "id": "cmr5j4nub000l14ftylmdyw3i",
+      "previousNotes": null,
+      "newNotes": "Никита Горин\n13к\n\nКлассика",
+      "action": "set_from_description"
+    },
+    {
+      "id": "cmrbxamu20003mtlhcom1ak7q",
+      "previousNotes": null,
+      "newNotes": "Михаил Гаврилов\nФизлицо \n\n13к если 2 часа\n18к если три часа\n\nКлассика",
+      "action": "set_from_description"
+    },
+    {
+      "id": "cmrdttjo70003wxx90e6cenz8",
+      "previousNotes": null,
+      "newNotes": "Никита Горин\n13к\n\nПодскаст в светлом\nВАЖНО: крупные планы сделать чуть общее с небольшим воздухом над головой - он будет резать это на шортсы и рилсы! Его просьба!",
+      "action": "set_from_description"
+    },
+    {
+      "id": "cmrfbye6r000cc0fqk0nzvah4",
+      "previousNotes": null,
+      "newNotes": "Пашок\n15к за эту + 15к за прошлую наличкой\nОПЛАТА НА МЕСТЕ\nГонщики",
+      "action": "set_from_description"
+    },
+    {
+      "id": "cmrfc2ng8000nc0fqir75gn8n",
+      "previousNotes": null,
+      "newNotes": "Андрей\n+7 (904) 262-83-81\n\nПодкаст, классика\n10400 - если 2 часа\n14400 - если 3 часа",
+      "action": "set_from_description"
+    },
+    {
+      "id": "cmrfc97dp000yc0fq79x9dzll",
+      "previousNotes": null,
+      "newNotes": "Александра\n@sashazorihina\n\n10400",
+      "action": "set_from_description"
+    },
+    {
+      "id": "cmrkv0nfc00031189wnjqqqcf",
+      "previousNotes": null,
+      "newNotes": "Скиф аренда\n7500",
+      "action": "set_from_description"
+    },
+    {
+      "id": "cmrqnnny3001qr53ppasmcy08",
+      "previousNotes": null,
+      "newNotes": "Виктор Пастернак\nПодкаст 5 камер \n\nПридет записывать популярную женщину Елена Кипер (продюсер ТАТУ)\n\nНадо использовать все камеры что будут + сделать много света красиво \n\nГример - 6к",
+      "action": "set_from_description"
+    },
+    {
+      "id": "cmrqobhe00029r53p9d7cagpr",
+      "previousNotes": null,
+      "newNotes": "Минимализм, черный фон\nКак обычно для Ивана\n\nОплата по карте на месте или переводом\n13к съемка \n16к монтаж",
+      "action": "set_from_description"
+    },
+    {
+      "id": "cmrqoddck002hr53pk4d8udwj",
+      "previousNotes": null,
+      "newNotes": "Дима как обычно придет раньше\n3 человека\n5 КАМЕР! Будет проверка\nЛибо снять с рук либо поставить бэкстэйдж\n\nДАТЬ ДИМЕ НАШИ ВИЗИТКИ\n\nЖелательно быть Ване\nПридет директор по маркетингу Димы\nОни сейчас обсуждают увеличение объема контента, надо сдклать красиво, возможно добавить бэки с рук",
+      "action": "set_from_description"
+    },
+    {
+      "id": "cmrxcsv8e000ixgkuefaos27a",
+      "previousNotes": null,
+      "newNotes": "Диана\nСнимали раньше много документалку\n1 час\n\nОплата 5000 на месте переводом или наличными",
+      "action": "set_from_description"
+    },
+    {
+      "id": "cmrxcu8st000yxgkujd6q8ksm",
+      "previousNotes": "3 человека, 3 камеры, 3 микрофона",
+      "newNotes": "3 человека, 3 камеры, 3 микрофона\n\nАлёна Родина\n+7 992 043 8804\n\n3 ЧЕЛОВЕКА\nРассадка 2 ведущих 1 гость (как у Алтынбаевой)\nГолубоватая подсветка фона (холодная)\n\n12400\nОплата по факту в студии",
+      "action": "append_description"
+    },
+    {
+      "id": "cms2eja7y000ufnsvphgc5ufd",
+      "previousNotes": null,
+      "newNotes": "Екатерина Холод\n@Shygirl222\n\nТемный зал\nТеплый фон, уют\nПридут на 15 мин раньше\nРассадка 2+1\n\n12400",
+      "action": "set_from_description"
+    },
+    {
+      "id": "cms2em7cd001jfnsv4ggc09fo",
+      "previousNotes": null,
+      "newNotes": "Будут использоваться все камеры из студии и свет. Нужна помощь Ромчика\n\n-2 Уланзи 200\n-ЛС 60x\n-2 маленьких лайтдома\n-3 стойки\n-Storm 400x\n-лайтдом 150\n-атемка!\n-3 кабеля хдми 10 метров\n-3комплекта нпф + площадки \n-3 флешки \n-3штатива\n-3 камеры и 3 объектива\n\nстудия забронена 20.07 с 11:00 - 18:00\nСанкт-Петербург, ул. Курляндская д. 44\nВеретено",
+      "action": "set_from_description"
+    }
+  ]
+}
