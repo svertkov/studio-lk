@@ -1,10 +1,12 @@
 import Link from 'next/link'
 import { CreditCard, ChevronRight, Info, Hourglass } from 'lucide-react'
 import { getFinanceSummary, getSubscriptionsSummary } from '@/lib/actions/finance'
+import { getOrdersFinanceSummary } from '@/lib/actions/orders'
 import { getExpensesSummary, getExpensesByCategory, getOutstandingLiabilities } from '@/lib/actions/expenses'
 import { getMontageDashboardStats } from '@/lib/actions/montage'
 import { getDocumentsDashboardStats } from '@/lib/actions/documents'
 import { computeCombinedFinanceSummary } from '@/lib/finance-model'
+import { pluralizeOrdersCount } from '@/lib/order-model'
 import DonutChart from '@/components/ui/donut-chart'
 import FinanceStatCards from './FinanceStatCards'
 import MontageFinanceBreakdown from './MontageFinanceBreakdown'
@@ -41,7 +43,7 @@ function subscriptionWord(n: number) {
 }
 
 export default async function FinancePage() {
-  const [summaryResult, subsResult, expensesResult, expensesByCategoryResult, outstandingResult, montageResult, documentsStatsResult] = await Promise.all([
+  const [summaryResult, subsResult, expensesResult, expensesByCategoryResult, outstandingResult, montageResult, documentsStatsResult, ordersFinanceResult] = await Promise.all([
     getFinanceSummary(),
     getSubscriptionsSummary(),
     getExpensesSummary(),
@@ -49,6 +51,7 @@ export default async function FinancePage() {
     getOutstandingLiabilities(),
     getMontageDashboardStats(),
     getDocumentsDashboardStats(),
+    getOrdersFinanceSummary(),
   ])
   const stats = summaryResult.data
   const subs = subsResult.data
@@ -56,10 +59,21 @@ export default async function FinancePage() {
   const expensesByCategory = expensesByCategoryResult.data
   const outstanding = outstandingResult.data.slice(0, 5)
   const montage = montageResult.data
+  const ordersFinance = ordersFinanceResult.ok
+    ? ordersFinanceResult.data
+    : { ordersCount: 0, revenueTotal: 0, profitTotal: 0, ordersMissingProfitCount: 0 }
 
   // Единая сборка "Финансов" из трёх независимых источников денег (визиты,
   // обязательства, монтаж) — вся арифметика в одном чистом helper'е
   // (finance-model.ts), а не разбросана инлайн по странице (см. AGENTS.md).
+  // "Чистая прибыль"/"Выручка" из этого расчёта (визиты минус фактические
+  // расходы) БОЛЬШЕ НЕ являются заголовочными показателями страницы —
+  // 2026-07-27: заведён отдельный, единственный показатель прибыли на
+  // дашборде — "Прибыль по заказам" (сумма Order.netProfitManualAmount,
+  // см. getOrdersFinanceSummary), полностью ручной, без конкурирующей
+  // формулы. combined.netProfit/margin намеренно не удалены (используются
+  // ниже только в MontageFinanceBreakdown и подписи "Средний чек") — не
+  // выводить их отдельно под словом "Прибыль" (см. AGENTS.md/ТЗ).
   const combined = montage
     ? computeCombinedFinanceSummary(stats, expenses, montage)
     : computeCombinedFinanceSummary(stats, expenses, {
@@ -67,8 +81,6 @@ export default async function FinancePage() {
         expensesTotal: 0, expensesPaid: 0, profit: 0, margin: null,
         activeCount: 0, attentionCount: 0, clientDebt: 0, studioDebt: 0,
       })
-  const { totalRevenue: grossTotal, netProfit, projectedProfit } = combined
-  const margin = grossTotal > 0 ? (netProfit / grossTotal) * 100 : null
 
   return (
     <div className="p-8 space-y-6">
@@ -78,11 +90,16 @@ export default async function FinancePage() {
       </div>
 
       <FinanceStatCards
-        grossTotal={formatMoneyCompact(grossTotal)}
+        grossTotal={formatMoneyCompact(ordersFinance.revenueTotal)}
         actualExpensesTotal={formatMoneyCompact(combined.actualExpensesTotal)}
         plannedExpensesTotal={formatMoneyCompact(combined.plannedExpensesTotal)}
-        netProfit={formatMoneyCompact(netProfit)}
-        marginHint={margin != null ? `маржа ${margin.toFixed(0)}%` : 'по факт. расходам'}
+        ordersProfitTotal={formatMoneyCompact(ordersFinance.profitTotal)}
+        ordersProfitNegative={ordersFinance.profitTotal < 0}
+        ordersProfitHint={
+          ordersFinance.ordersMissingProfitCount > 0
+            ? `${pluralizeOrdersCount(ordersFinance.ordersMissingProfitCount)} без указанной прибыли`
+            : 'по всем заказам'
+        }
         outstandingTotal={formatMoneyCompact(combined.outstandingTotal)}
         outstandingHint={
           expenses.partialCount + expenses.unpaidCount > 0 || combined.montageOutstanding > 0
@@ -100,7 +117,7 @@ export default async function FinancePage() {
       <div className="flex items-start gap-2 text-zinc-600 text-xs px-1">
         <Info className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
         <p>
-          Прогнозная прибыль (с учётом всех плановых расходов, даже ещё не оплаченных): {formatMoney(projectedProfit)}.
+          Выручка и прибыль по заказам — сумма по всем заказам (кроме отменённых), без периода, за всё время.
           {' '}Средний чек = сумма выручки / количество визитов с указанной суммой оплаты (без учёта монтажа).
           {combined.montageReportingSince && ` Монтаж учитывается с ${formatDate(combined.montageReportingSince)}.`}
         </p>

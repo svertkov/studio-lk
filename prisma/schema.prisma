@@ -952,21 +952,38 @@ model Order {
   // Document, чтобы несколько документов одной работы не хранили одно и то же
   // число копией (см. AGENTS.md, "Реестр документов").
   documentPackageNumber  Int?                @unique @map("document_package_number")
-  // ---- Прибыль заказа — AUTO НИЧЕГО не хранит, computeOrderNetProfit
-  // (order-model.ts) считает её на лету при каждом чтении из preliminaryAmount
-  // (выручка) минус выплата монтажёру связанных MontageProject.editorAmount —
-  // тот же принцип "не хранить производное", что computeMontageProfit
-  // (montage-model.ts). MANUAL_OVERRIDE — осознанное бизнес-исключение
-  // (администратор считает автоматическую цифру неверной, например из-за
-  // расходов, не структурированных в системе) — тогда и только тогда
-  // сохраняется реальное число прибыли. Метаданные подтверждения живут рядом
-  // с самим полем — тот же приём, что ScheduleEvent.yandexNotRequiredConfirmedAt/
-  // By/Reason (см. выше), не отдельная таблица.
+  // ---- "Прибыль по заказу" — 2026-07-27: ПОЛНОСТЬЮ ручное поле, платформа
+  // никогда не считает и не подставляет его сама (не выручка, не выручка минус
+  // выплата монтажёру, не что-либо ещё) — администратор сам считает налоги,
+  // выплаты исполнителям, аренду и т.п. на калькуляторе и вписывает итог.
+  // netProfitManualAmount — единственный источник значения (null означает
+  // "не указана", НЕ ноль — см. UI/API: 0 сохраняется и отображается как
+  // "0 ₽", отличимо от null/"Не указана"). netProfitMode раньше переключал
+  // AUTO/MANUAL_OVERRIDE (автоматический расчёт vs подтверждённое вручную
+  // число) — режимы удалены из UI и бизнес-логики; колонка оставлена в схеме
+  // не удалённой (исторические данные), но новый код её больше не читает и
+  // не ветвится по ней — начиная с этой даты действие, сохраняющее прибыль,
+  // всегда проставляет MANUAL_OVERRIDE, не проверяя и не меняя эту логику.
+  // netProfitOverrideAt/ById — теперь просто "когда/кем в последний раз
+  // изменена прибыль", audit-метаданные, не часть акта подтверждения.
   netProfitMode           OrderNetProfitMode @default(AUTO) @map("net_profit_mode")
   netProfitManualAmount   Float?             @map("net_profit_manual_amount")
   netProfitOverrideAt     DateTime?          @map("net_profit_override_at")
   netProfitOverrideById   String?            @map("net_profit_override_by_id")
+  // 2026-07-27: заморожено — новый код больше не читает и не пишет это поле
+  // (см. financeComment ниже). Оставлено в схеме только как исторический
+  // источник для одноразовой миграции (scripts/backfill-finance-comment):
+  // старые "причины" переопределения прибыли уже перенесены в financeComment,
+  // само поле не удаляем, чтобы не терять сырые исторические данные.
   netProfitOverrideReason String?            @map("net_profit_override_reason")
+  // Свободный финансовый комментарий заказа — "куда делись деньги": расходы,
+  // выплаты исполнителям/собственникам, причины нулевой/отрицательной
+  // прибыли. Никогда не сбрасывается автоматически при изменении
+  // netProfitManualAmount — обычная заметка, не часть акта подтверждения.
+  // Намеренно ОТДЕЛЬНОЕ поле от ScheduleEvent.notes/Order.comment
+  // ("Комментарий / нюансы" — информация о съёмке для клиента) — это поле
+  // сугубо внутреннее, не должно попадать в документы/счета/сообщения клиенту.
+  financeComment          String?            @map("finance_comment")
 
   client               Client?               @relation(fields: [clientId], references: [id])
   netProfitOverrideBy  User?                 @relation("OrderNetProfitOverrideBy", fields: [netProfitOverrideById], references: [id])

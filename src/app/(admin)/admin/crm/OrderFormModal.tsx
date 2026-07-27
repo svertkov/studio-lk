@@ -147,9 +147,9 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
   // activeMontageProjects заполняется самим OrderFinanceBlock (единственное
   // место, что реально загружает проекты монтажа заказа) — переиспользуем
   // для диалога отключения монтажа, не делаем второй такой же запрос.
-  // Прибыль (netProfitMode и т.п.) редактируется и сохраняется САМИМ
-  // OrderFinanceBlock напрямую через updateOrderNetProfit — не часть этой
-  // формы/handleSave, поэтому здесь для неё нет локального состояния.
+  // "Прибыль по заказу" и "Комментарий к прибыли" редактируются и
+  // сохраняются САМИМ OrderFinanceBlock напрямую через updateOrderProfit —
+  // не часть этой формы/handleSave, поэтому здесь для них нет локального состояния.
   const [activeMontageProjects, setActiveMontageProjects] = useState<MontageProjectDTO[]>([])
   const [montageDisableDialogOpen, setMontageDisableDialogOpen] = useState(false)
   const [pendingEditingRequired, setPendingEditingRequired] = useState<'' | 'true' | 'false' | null>(null)

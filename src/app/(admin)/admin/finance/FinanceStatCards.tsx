@@ -7,8 +7,9 @@ interface Props {
   grossTotal: string
   actualExpensesTotal: string
   plannedExpensesTotal: string
-  netProfit: string
-  marginHint: string
+  ordersProfitTotal: string
+  ordersProfitNegative: boolean
+  ordersProfitHint: string
   outstandingTotal: string
   outstandingHint: string
   totalVisitsHint: string
@@ -23,11 +24,14 @@ interface Props {
 // клиентский компонент и импортирует иконки локально, принимая от страницы только
 // уже отформатированные строки.
 //
-// "Чистая прибыль" здесь = выручка - фактически оплаченные расходы (реальное
-// движение денег), поэтому карточка не кликабельна — это не строка из одной
-// таблицы, а расчёт из двух разных разделов, отдельного экрана-расшифровки под
-// неё пока нет. Прогнозная прибыль (с учётом ПЛАНОВЫХ расходов) — только в
-// подписи под карточками на странице, во избежание путаницы с реальной прибылью.
+// 2026-07-27: "Выручка" и "Чистая прибыль" переведены с формулы "визиты минус
+// фактические расходы" (computeCombinedFinanceSummary) на сумму по заказам
+// (Order.preliminaryAmount/estimatedPrice и полностью ручной
+// Order.netProfitManualAmount, см. getOrdersFinanceSummary в actions/orders.ts)
+// — единственный показатель прибыли на дашборде, без конкурирующей формулы
+// (см. AGENTS.md/ТЗ доработки финансового блока заказа). Обе карточки не
+// кликабельны — это агрегат по всем заказам, отдельного экрана-разбивки под
+// него пока нет (тот же случай, что уже был у "Чистая прибыль" раньше).
 //
 // Два отдельных ряда вместо одной auto-fit сетки на все семь карточек (ТЗ:
 // "не размещать все карточки в одну тесную строку, не оставлять одну одинокую
@@ -39,7 +43,7 @@ interface Props {
 // (последняя) крупная карточка растягивается на всю ширину строки
 // (sm:col-span-2 lg:col-span-1), чтобы не повисать одна в пустой строке.
 export default function FinanceStatCards({
-  grossTotal, actualExpensesTotal, plannedExpensesTotal, netProfit, marginHint,
+  grossTotal, actualExpensesTotal, plannedExpensesTotal, ordersProfitTotal, ordersProfitNegative, ordersProfitHint,
   outstandingTotal, outstandingHint, totalVisitsHint, avgCheck, activeSubscriptions, remainingHoursHint,
 }: Props) {
   return (
@@ -47,15 +51,17 @@ export default function FinanceStatCards({
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
         <MetricCard
           size="large" icon={Wallet} label="Выручка" value={grossTotal}
-          subtitle="за всё время" href="/admin/finance/visits"
+          subtitle="по заказам, за всё время"
         />
         <MetricCard
           size="large" icon={ArrowDownCircle} label="Расходы факт" value={actualExpensesTotal}
           subtitle="реально оплачено" href="/admin/finance/expenses"
         />
         <MetricCard
-          size="large" icon={PiggyBank} label="Чистая прибыль" value={netProfit}
-          subtitle={marginHint} className="sm:col-span-2 lg:col-span-1"
+          size="large" icon={PiggyBank} label="Прибыль по заказам" value={ordersProfitTotal}
+          subtitle={ordersProfitHint} className="sm:col-span-2 lg:col-span-1"
+          valueColorClassName={ordersProfitNegative ? 'text-red-400' : undefined}
+          title="Сумма прибыли, вручную указанной в карточках заказов"
         />
       </div>
 

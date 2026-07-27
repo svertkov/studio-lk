@@ -1,4 +1,4 @@
-import type { OrderStatus, OrderSource, OrderPaymentStatus, PaymentMethod, ArchiveReason, OrderNetProfitMode } from '@prisma/client'
+import type { OrderStatus, OrderSource, OrderPaymentStatus, PaymentMethod, ArchiveReason } from '@prisma/client'
 import { formatMakeupBadgeLabel, formatDurationMinutes } from '@/lib/schedule-model'
 
 export type { OrderStatus, OrderSource, OrderPaymentStatus, ArchiveReason }
@@ -561,32 +561,10 @@ export function pluralizeOrdersCount(n: number): string {
 }
 
 // ============================================================
-// ПРИБЫЛЬ ЗАКАЗА — тот же принцип, что computeMontageProfit
-// (montage-model.ts): чистая функция, ничего не хранит. AUTO всегда считает
-// autoAmount заново (выручка минус выплата монтажёру); MANUAL_OVERRIDE
-// показывает подтверждённое администратором значение, но autoAmount всё
-// равно возвращается — для сравнения "автоматически было бы: …" в UI.
-// null (не 0) — когда выручка неизвестна: "нет данных", а не "ноль".
+// "ПРИБЫЛЬ ПО ЗАКАЗУ" — 2026-07-27: раньше здесь жила computeOrderNetProfit
+// (AUTO = выручка минус выплата монтажёру, MANUAL_OVERRIDE = подтверждённое
+// число). Режимы удалены — платформа больше не считает прибыль заказа
+// НИКАК, это полностью ручное поле (Order.netProfitManualAmount), администратор
+// сам считает итог на калькуляторе. Расчётной функции здесь больше нет —
+// нечего вычислять, значение читается из БД как есть (null = "не указана").
 // ============================================================
-
-export interface OrderNetProfitInput {
-  revenue: number | null
-  montageEditorAmountTotal: number | null
-  mode: OrderNetProfitMode
-  manualAmount: number | null
-}
-
-export interface OrderNetProfitResult {
-  mode: OrderNetProfitMode
-  amount: number | null
-  autoAmount: number | null
-}
-
-export function computeOrderNetProfit(input: OrderNetProfitInput): OrderNetProfitResult {
-  const autoAmount = input.revenue == null ? null : input.revenue - (input.montageEditorAmountTotal ?? 0)
-  return {
-    mode: input.mode,
-    amount: input.mode === 'MANUAL_OVERRIDE' ? input.manualAmount : autoAmount,
-    autoAmount,
-  }
-}

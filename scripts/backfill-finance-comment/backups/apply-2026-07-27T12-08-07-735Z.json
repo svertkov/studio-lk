@@ -1,0 +1,12 @@
+{
+  "createdAt": "2026-07-27T12:08:07.745Z",
+  "note": "Order.financeComment, заполненные backfill-finance-comment/apply.ts из netProfitOverrideReason. Для отката — rollback.ts с этим файлом.",
+  "count": 1,
+  "records": [
+    {
+      "id": "cmrqodd72002fr53p5vwiccxg",
+      "previousFinanceComment": null,
+      "newFinanceComment": "Налог 9% \nЗатраты на монтаж\nГрафический пакет"
+    }
+  ]
+}

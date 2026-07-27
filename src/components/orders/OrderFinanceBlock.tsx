@@ -1,31 +1,33 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import GlowPill from '@/components/ui/glow-pill'
+import SaveStatusIndicator from '@/components/ui/save-status-indicator'
+import { useAutosave, readAutosaveDraft, clearAutosaveDraft, type StoredDraft } from '@/lib/hooks/use-autosave'
 import { getMontageProjectsForOrder, updateMontageProject, assignMontageEditor, type MontageProjectDTO } from '@/lib/actions/montage'
-import { getOrder, updateOrderNetProfit } from '@/lib/actions/orders'
-import { computeOrderNetProfit } from '@/lib/order-model'
-import NetProfitOverrideDialog from './NetProfitOverrideDialog'
+import { getOrder, updateOrderProfit, type UpdateOrderProfitInput } from '@/lib/actions/orders'
 import EditorAssignField from './EditorAssignField'
 import EditorReassignDialog from './EditorReassignDialog'
 import type { EditorProfileListItemDTO } from '@/lib/actions/editors'
-import type { OrderNetProfitMode } from '@prisma/client'
 
 const FIELD_BASE = 'w-full h-10 bg-zinc-800 border border-zinc-700 rounded-lg text-sm outline-none focus:border-[#00c26b] transition-colors'
 const INPUT = `${FIELD_BASE} px-3 text-zinc-100 placeholder-zinc-600`
+const TEXTAREA = 'w-full bg-zinc-800 border border-zinc-700 rounded-lg text-sm outline-none focus:border-[#00c26b] transition-colors px-3 py-2 text-zinc-100 placeholder-zinc-600 resize-none max-h-48 overflow-y-auto'
 const LABEL = 'block text-zinc-400 text-xs'
 
-function formatMoney(v: number | null): string {
-  if (v == null) return '—'
-  return new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB', maximumFractionDigits: 0 }).format(v)
+// Цвет — только дополнительный акцент (см. ТЗ: "не выделять прибыль зелёным
+// только потому, что положительная; для отрицательной допустим аккуратный
+// красный акцент, но значение и подпись понятны без цвета"). Поэтому красим
+// ТОЛЬКО отрицательное значение, положительное/нулевое остаётся обычным
+// цветом текста, как и любое другое денежное поле.
+function profitColorClass(amount: number | null): string {
+  return amount != null && amount < 0 ? 'text-red-400' : 'text-zinc-100'
 }
 
 interface FinanceData {
-  netProfitMode: OrderNetProfitMode
-  netProfitManualAmount: number | null
-  netProfitOverrideReason: string | null
-  netProfitOverrideByName: string | null
-  netProfitOverrideAt: string | null
+  profitAmount: number | null
+  financeComment: string | null
+  profitUpdatedByName: string | null
+  profitUpdatedAt: string | null
 }
 
 interface Props {
@@ -49,22 +51,20 @@ interface Props {
 // (CRM), и в EventCardModal (расписание/дашборд/карточка клиента), чтобы обе
 // карточки одного заказа показывали одинаковую логику вместо двух разных
 // независимых виджетов (см. AGENTS.md, единый источник данных). Выплата за
-// монтаж и режим прибыли — самостоятельные overlay-мутации (тот же приём,
-// что pause/cancel/archiveMontageProject и WorkDocumentsSection): сохраняются
-// сразу через отдельные действия, не через общую кнопку "Сохранить" карточки
-// — так EventCardModal, у которого нет полного OrderDTO под рукой (только
-// annotation.orderId), может показывать и редактировать эти данные без
-// изменений в своей общей форме/handleSave.
+// монтаж и финансы заказа (прибыль/комментарий) — самостоятельные overlay-
+// мутации (тот же приём, что pause/cancel/archiveMontageProject и
+// WorkDocumentsSection): сохраняются через собственный автосейв, не через
+// общую кнопку "Сохранить" карточки — так EventCardModal, у которого нет
+// полного OrderDTO под рукой (только annotation.orderId), может показывать и
+// редактировать эти данные без изменений в своей общей форме/handleSave.
 export default function OrderFinanceBlock({
   orderId, revenueValue, onRevenueChange, editingRequired, onMontageProjectsLoaded,
 }: Props) {
-  const revenue = revenueValue.trim() ? parseFloat(revenueValue) : null
   const [projects, setProjects] = useState<MontageProjectDTO[] | null>(null)
   const [editorAmountDraft, setEditorAmountDraft] = useState('')
   const [clientAmountDraft, setClientAmountDraft] = useState('')
   const [savingPayout, setSavingPayout] = useState(false)
   const [payoutSaved, setPayoutSaved] = useState(false)
-  const [overrideDialogOpen, setOverrideDialogOpen] = useState(false)
   const [finance, setFinance] = useState<FinanceData | null>(null)
   const [pendingEditor, setPendingEditor] = useState<EditorProfileListItemDTO | null>(null)
   const [reassignDialogOpen, setReassignDialogOpen] = useState(false)
@@ -79,7 +79,7 @@ export default function OrderFinanceBlock({
     if (!orderId) {
       const timer = setTimeout(() => {
         setProjects([])
-        setFinance({ netProfitMode: 'AUTO', netProfitManualAmount: null, netProfitOverrideReason: null, netProfitOverrideByName: null, netProfitOverrideAt: null })
+        setFinance({ profitAmount: null, financeComment: null, profitUpdatedByName: null, profitUpdatedAt: null })
       }, 0)
       return () => clearTimeout(timer)
     }
@@ -97,11 +97,10 @@ export default function OrderFinanceBlock({
       if (cancelled) return
       if (res.ok) {
         setFinance({
-          netProfitMode: res.data.netProfitMode,
-          netProfitManualAmount: res.data.netProfitManualAmount,
-          netProfitOverrideReason: res.data.netProfitOverrideReason,
-          netProfitOverrideByName: res.data.netProfitOverrideByName,
-          netProfitOverrideAt: res.data.netProfitOverrideAt,
+          profitAmount: res.data.profitAmount,
+          financeComment: res.data.financeComment,
+          profitUpdatedByName: res.data.profitUpdatedByName,
+          profitUpdatedAt: res.data.profitUpdatedAt,
         })
       }
     })
@@ -110,12 +109,6 @@ export default function OrderFinanceBlock({
   }, [orderId])
 
   const activeProject = projects?.find(p => p.status !== 'CANCELLED') ?? null
-  const montageEditorAmountTotal = activeProject?.editorAmount ?? null
-  const netProfit = computeOrderNetProfit({
-    revenue, montageEditorAmountTotal,
-    mode: finance?.netProfitMode ?? 'AUTO',
-    manualAmount: finance?.netProfitManualAmount ?? null,
-  })
 
   async function handleSavePayout() {
     if (!activeProject) return
@@ -163,29 +156,9 @@ export default function OrderFinanceBlock({
     setPendingEditor(null)
   }
 
-  async function handleNetProfitChange(mode: OrderNetProfitMode, manualAmount: number | null, reason: string | null) {
-    if (!orderId) return
-    const result = await updateOrderNetProfit(orderId, { mode, manualAmount, reason })
-    if (result.ok) {
-      setFinance({
-        netProfitMode: result.data.netProfitMode,
-        netProfitManualAmount: result.data.netProfitManualAmount,
-        netProfitOverrideReason: result.data.netProfitOverrideReason,
-        netProfitOverrideByName: result.data.netProfitOverrideByName,
-        netProfitOverrideAt: result.data.netProfitOverrideAt,
-      })
-    }
-  }
-
   return (
     <>
       <div className="space-y-3">
-        <div>
-          <Label>Выручка по заказу, ₽</Label>
-          <input className={`${INPUT} mt-1.5`} type="number" min="0" placeholder="напр. 15000" value={revenueValue}
-            onChange={e => onRevenueChange(e.target.value)} />
-        </div>
-
         {editingRequired && (
           <div className="bg-zinc-800/40 border border-zinc-800 rounded-lg p-3 space-y-2.5">
             <p className="text-zinc-500 text-[11px] font-semibold uppercase tracking-wider">Финансы и исполнитель монтажа</p>
@@ -215,9 +188,7 @@ export default function OrderFinanceBlock({
                 <div className="flex items-center gap-3">
                   {/* Отдельная кнопка сохранения — не часть общего autosave/"Сохранить"
                       карточки: этот блок самодостаточен (см. комментарий компонента
-                      выше) специально потому, что у EventCardModal нет полного OrderDTO.
-                      Переименована для ясности (ТЗ п.10) — раньше "Сохранить" рядом с
-                      общей кнопкой карточки читалось как дубль. */}
+                      выше) специально потому, что у EventCardModal нет полного OrderDTO. */}
                   <button type="button" onClick={handleSavePayout} disabled={savingPayout}
                     className="bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 text-zinc-100 text-xs font-medium px-3 py-1.5 rounded-lg transition-colors">
                     {savingPayout ? 'Сохранение...' : 'Обновить данные монтажа'}
@@ -229,51 +200,16 @@ export default function OrderFinanceBlock({
           </div>
         )}
 
-        <div className="bg-zinc-800/40 border border-zinc-800 rounded-lg p-3 space-y-1.5">
-          <div className="flex items-center justify-between">
-            <span className="text-zinc-500 text-xs">Предварительная прибыль</span>
-            <span className="text-zinc-300 text-sm">{formatMoney(netProfit.autoAmount)}</span>
-          </div>
-          <div className="flex items-center justify-between">
-            <span className={LABEL}>Чистая прибыль студии, ₽</span>
-            <div className="flex items-center gap-2">
-              <span className="text-zinc-100 text-sm font-medium">{formatMoney(netProfit.amount)}</span>
-              {finance?.netProfitMode === 'MANUAL_OVERRIDE' && (
-                <GlowPill as="button" color="amber" size="sm" onClick={() => setOverrideDialogOpen(true)}
-                  title="Изменить вручную указанное значение" ariaLabel="Прибыль изменена вручную — нажмите, чтобы изменить">
-                  Изменено вручную
-                </GlowPill>
-              )}
-            </div>
-          </div>
-          {finance?.netProfitMode === 'MANUAL_OVERRIDE' ? (
-            <p className="text-zinc-500 text-[11px]">
-              {finance.netProfitOverrideByName && finance.netProfitOverrideAt
-                ? `Подтверждено: ${finance.netProfitOverrideByName}, ${new Date(finance.netProfitOverrideAt).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}`
-                : 'Подтверждено администратором'}
-              {finance.netProfitOverrideReason && ` · ${finance.netProfitOverrideReason}`}
-              {' · '}
-              <button type="button" className="underline hover:text-zinc-300" onClick={() => handleNetProfitChange('AUTO', null, null)}>
-                Вернуться к автоматическому расчёту
-              </button>
-            </p>
-          ) : (
-            <button type="button" className="text-zinc-500 text-[11px] underline hover:text-zinc-300"
-              onClick={() => setOverrideDialogOpen(true)} disabled={!orderId} title={!orderId ? 'Сначала сохраните заказ' : undefined}>
-              Указать вручную
-            </button>
-          )}
+        <div>
+          <Label>Выручка по заказу, ₽</Label>
+          <input className={`${INPUT} mt-1.5`} type="number" min="0" placeholder="напр. 15000" value={revenueValue}
+            onChange={e => onRevenueChange(e.target.value)} />
         </div>
-      </div>
 
-      <NetProfitOverrideDialog
-        open={overrideDialogOpen}
-        onOpenChange={setOverrideDialogOpen}
-        autoAmount={netProfit.autoAmount}
-        initialManualAmount={finance?.netProfitManualAmount ?? null}
-        initialReason={finance?.netProfitOverrideReason ?? null}
-        onConfirm={(manualAmount, reason) => { setOverrideDialogOpen(false); handleNetProfitChange('MANUAL_OVERRIDE', manualAmount, reason) }}
-      />
+        {finance && (
+          <FinanceEditor key={orderId ?? 'new'} orderId={orderId} initialFinance={finance} />
+        )}
+      </div>
 
       {pendingEditor && activeProject && (
         <EditorReassignDialog
@@ -292,4 +228,125 @@ export default function OrderFinanceBlock({
 
 function Label({ children }: { children: React.ReactNode }) {
   return <label className={LABEL}>{children}</label>
+}
+
+// Черновик = ровно то, что уходит на сервер (UpdateOrderProfitInput) — не
+// заводим параллельную структуру только ради localStorage (см. AGENTS.md,
+// единый источник данных).
+type FinanceDraft = UpdateOrderProfitInput
+
+interface FinanceEditorProps {
+  orderId: string | null
+  initialFinance: FinanceData
+}
+
+// "Прибыль по заказу" + "Комментарий к прибыли" — отдельный компонент,
+// монтируемый (key=orderId) только ПОСЛЕ загрузки initialFinance с сервера.
+// useAutosave фиксирует свой baseline ("уже сохранено") один раз при
+// монтировании (см. use-autosave.ts) — если бы мы держали это состояние в
+// родителе и просто обновляли его по мере загрузки, baseline зафиксировал бы
+// пустые значения ДО ответа сервера, и автосейв тут же посчитал бы только
+// что загруженные данные "несохранённым изменением".
+//
+// 2026-07-27: поле ПОЛНОСТЬЮ ручное — никакого авто-расчёта, никакого
+// "указать вручную"/"рассчитать автоматически". Платформа никогда не
+// подставляет сюда выручку и не пересчитывает значение при изменении
+// выручки/способа оплаты/типа события — просто обычный редактируемый
+// number-input поверх Order.netProfitManualAmount. null ("Не указана") и 0
+// ("0 ₽") — два разных, различимых состояния.
+function FinanceEditor({ orderId, initialFinance }: FinanceEditorProps) {
+  const [profitInput, setProfitInput] = useState(
+    initialFinance.profitAmount != null ? String(initialFinance.profitAmount) : '',
+  )
+  const [financeComment, setFinanceComment] = useState(initialFinance.financeComment ?? '')
+  const [updatedByName, setUpdatedByName] = useState(initialFinance.profitUpdatedByName)
+  const [updatedAt, setUpdatedAt] = useState(initialFinance.profitUpdatedAt)
+
+  const profitAmount = profitInput.trim() ? parseFloat(profitInput) : null
+
+  function buildFinanceInput(): FinanceDraft {
+    return { profitAmount, financeComment: financeComment.trim() || null }
+  }
+
+  const storageKey = orderId ? `studio-lk:autosave:order-finance:${orderId}` : null
+  const autosave = useAutosave({
+    value: buildFinanceInput(),
+    onSave: async input => {
+      if (!orderId) return { ok: true }
+      const result = await updateOrderProfit(orderId, input)
+      if (result.ok) {
+        setUpdatedByName(result.data.profitUpdatedByName)
+        setUpdatedAt(result.data.profitUpdatedAt)
+      }
+      return result.ok ? { ok: true } : { ok: false, error: result.error }
+    },
+    enabled: !!orderId,
+    storageKey,
+  })
+
+  const [draftBanner, setDraftBanner] = useState<StoredDraft<FinanceDraft> | null>(null)
+
+  // setState отложен через setTimeout(…, 0) — react-hooks/set-state-in-effect
+  // (см. память проекта).
+  useEffect(() => {
+    if (!storageKey) return
+    const timer = setTimeout(() => {
+      const draft = readAutosaveDraft<FinanceDraft>(storageKey)
+      if (draft) setDraftBanner(draft)
+    }, 0)
+    return () => clearTimeout(timer)
+  }, [storageKey])
+
+  function applyDraft(input: FinanceDraft) {
+    setProfitInput(input.profitAmount != null ? String(input.profitAmount) : '')
+    setFinanceComment(input.financeComment ?? '')
+  }
+
+  return (
+    <div className="bg-zinc-800/40 border border-zinc-800 rounded-lg p-3 space-y-3">
+      {draftBanner && storageKey && (
+        <div className="flex items-center justify-between gap-3 bg-amber-950/30 border border-amber-900/60 rounded-lg px-3 py-2 text-xs">
+          <span className="text-amber-300">Есть несохранённый черновик по финансам заказа.</span>
+          <div className="flex items-center gap-3 flex-shrink-0">
+            <button type="button" onClick={() => { applyDraft(draftBanner.value); setDraftBanner(null) }}
+              className="text-amber-300 underline hover:text-amber-200">Восстановить</button>
+            <button type="button" onClick={() => { clearAutosaveDraft(storageKey); setDraftBanner(null) }}
+              className="text-zinc-400 underline hover:text-zinc-300">Отклонить</button>
+          </div>
+        </div>
+      )}
+
+      <div>
+        <div className="flex items-center justify-between mb-1.5">
+          <Label>Прибыль по заказу, ₽</Label>
+          <SaveStatusIndicator status={autosave.status} error={autosave.error} />
+        </div>
+        <input
+          className={`${FIELD_BASE} px-3 placeholder-zinc-600 font-medium ${profitColorClass(profitAmount)}`}
+          type="number"
+          placeholder="Не указана"
+          value={profitInput}
+          onChange={e => setProfitInput(e.target.value)}
+          disabled={!orderId}
+          title={!orderId ? 'Сначала сохраните заказ' : undefined}
+        />
+        {updatedByName && updatedAt && (
+          <p className="text-zinc-500 text-[11px] mt-1">
+            Изменил: {updatedByName}, {new Date(updatedAt).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+          </p>
+        )}
+      </div>
+
+      <div>
+        <Label>Комментарий к прибыли</Label>
+        <textarea
+          className={`${TEXTAREA} mt-1.5`}
+          rows={3}
+          placeholder="Укажите расходы, выплаты или распределение денег по заказу"
+          value={financeComment}
+          onChange={e => setFinanceComment(e.target.value)}
+        />
+      </div>
+    </div>
+  )
 }

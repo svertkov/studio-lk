@@ -5,7 +5,6 @@ import {
   getOrdersTableTier, ORDERS_TABLE_MOBILE_MAX_WIDTH, ORDERS_TABLE_COMPACT_MAX_WIDTH,
   isOrdersTableDense, ORDERS_TABLE_DENSE_MAX_WIDTH,
   groupOrdersByMonth, getHiddenMonthsCount, pluralizeOrdersCount, monthGroupDurationLabel,
-  computeOrderNetProfit,
 } from './order-model'
 
 function makeRow(overrides: Partial<OrderTableRow> = {}): OrderTableRow {
@@ -280,27 +279,3 @@ describe('isOrdersTableDense — плотный режим для узких д�
   })
 })
 
-describe('computeOrderNetProfit — прибыль заказа (AUTO/MANUAL_OVERRIDE)', () => {
-  it('AUTO: revenue minus montage payout', () => {
-    const r = computeOrderNetProfit({ revenue: 35800, montageEditorAmountTotal: 17600, mode: 'AUTO', manualAmount: null })
-    expect(r).toEqual({ mode: 'AUTO', amount: 18200, autoAmount: 18200 })
-  })
-
-  it('AUTO: no montage payout — profit equals revenue', () => {
-    const r = computeOrderNetProfit({ revenue: 12000, montageEditorAmountTotal: null, mode: 'AUTO', manualAmount: null })
-    expect(r.amount).toBe(12000)
-    expect(r.autoAmount).toBe(12000)
-  })
-
-  it('AUTO: unknown revenue — null, not 0', () => {
-    const r = computeOrderNetProfit({ revenue: null, montageEditorAmountTotal: 5000, mode: 'AUTO', manualAmount: null })
-    expect(r.amount).toBeNull()
-    expect(r.autoAmount).toBeNull()
-  })
-
-  it('MANUAL_OVERRIDE: displays the manual amount regardless of autoAmount', () => {
-    const r = computeOrderNetProfit({ revenue: 35800, montageEditorAmountTotal: 17600, mode: 'MANUAL_OVERRIDE', manualAmount: 10000 })
-    expect(r.amount).toBe(10000)
-    expect(r.autoAmount).toBe(18200) // всё равно посчитан, для сравнения "автоматически было бы"
-  })
-})

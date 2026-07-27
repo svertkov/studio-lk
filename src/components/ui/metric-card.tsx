@@ -8,6 +8,9 @@ interface Props {
   label: string
   value: string
   subtitle?: string
+  // Нативный tooltip при наведении — для карточек, где ширина/усечённый
+  // subtitle не вмещают полное пояснение (см. "Прибыль по заказам").
+  title?: string
   href?: string
   onClick?: () => void
   // Готовый пресет масштаба (типографика/иконка/паддинг/высота) — используется,
@@ -20,6 +23,11 @@ interface Props {
   className?: string
   padding?: string
   valueClassName?: string
+  // Отдельно от valueClassName (тот отвечает за размер/отступ, напр. "text-3xl
+  // mt-1") — иначе два class-а с color-утилитами (text-white из тела компонента
+  // и переданный сюда text-red-400) конкурировали бы за одно и то же свойство
+  // с непредсказуемым порядком в сгенерированном Tailwind-стилшите.
+  valueColorClassName?: string
   iconWrapperClassName?: string
   iconClassName?: string
   labelClassName?: string
@@ -83,12 +91,14 @@ export default function MetricCard({
   label,
   value,
   subtitle,
+  title,
   href,
   onClick,
   size,
   className,
   padding,
   valueClassName,
+  valueColorClassName,
   iconWrapperClassName,
   iconClassName,
   labelClassName,
@@ -98,6 +108,7 @@ export default function MetricCard({
   const resolvedMinHeight = preset?.minHeight ?? ''
   const resolvedPadding = padding ?? preset?.padding ?? 'p-5'
   const resolvedValueClassName = valueClassName ?? preset?.valueClassName ?? 'text-2xl'
+  const resolvedValueColorClassName = valueColorClassName ?? 'text-white'
   const resolvedIconWrapperClassName = iconWrapperClassName ?? preset?.iconWrapperClassName ?? 'w-8 h-8'
   const resolvedIconClassName = iconClassName ?? preset?.iconClassName ?? 'w-4 h-4 text-zinc-300'
   const resolvedLabelClassName = labelClassName ?? preset?.labelClassName ?? 'text-zinc-400 text-xs uppercase tracking-wider'
@@ -129,7 +140,7 @@ export default function MetricCard({
         )}
       </div>
       <div className="flex-1 flex items-center min-h-0">
-        <p className={`font-bold text-white truncate w-full ${resolvedValueClassName}`}>{value}</p>
+        <p className={`font-bold ${resolvedValueColorClassName} truncate w-full ${resolvedValueClassName}`}>{value}</p>
       </div>
       {(subtitle || clickable) && (
         <div className="flex items-center justify-between gap-3 mt-1">
@@ -143,14 +154,14 @@ export default function MetricCard({
   )
 
   if (href) {
-    return <Link href={href} className={cardClass}>{body}</Link>
+    return <Link href={href} className={cardClass} title={title}>{body}</Link>
   }
   if (onClick) {
     return (
-      <button type="button" onClick={onClick} className={`${cardClass} w-full text-left`}>
+      <button type="button" onClick={onClick} className={`${cardClass} w-full text-left`} title={title}>
         {body}
       </button>
     )
   }
-  return <div className={cardClass}>{body}</div>
+  return <div className={cardClass} title={title}>{body}</div>
 }
