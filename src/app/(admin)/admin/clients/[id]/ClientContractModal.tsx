@@ -1,9 +1,10 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
-import { createDocument } from '@/lib/actions/documents'
+import GlowPill from '@/components/ui/glow-pill'
+import { createDocument, getNextContractNumberPreview } from '@/lib/actions/documents'
 import { updateClientContractState } from '@/lib/actions/documents'
 import { CLIENT_CONTRACT_STATE_LABELS, type ClientContractState } from '@/lib/document-model'
 
@@ -37,12 +38,29 @@ export default function ClientContractModal({
   const [plannedDate, setPlannedDate] = useState(contractPlannedDate ? contractPlannedDate.slice(0, 10) : '')
   const [createNumber, setCreateNumber] = useState(!hasActiveContractDocument)
   const [issueDate, setIssueDate] = useState(new Date().toISOString().slice(0, 10))
-  const [isHistorical, setIsHistorical] = useState(false)
+  // Номер договора — свободный текст (2026-07-27): поддерживает составные
+  // форматы вроде "20-02.26" или "14/2026", не только целые числа (см.
+  // Document.number в schema.prisma — String, не Int, ровно по этой причине).
+  // Пусто -> автоматический номер по счётчику; заполнено (вручную или
+  // выбором подсказки ниже) -> сохраняется как есть, isHistorical=true.
   const [historicalNumber, setHistoricalNumber] = useState('')
+  const [nextNumber, setNextNumber] = useState<number | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const needsNewContractDoc = state === 'ACTIVE' && !hasActiveContractDocument && createNumber
+
+  // Подсказка "следующий номер по порядку" — только чтение (см.
+  // getNextContractNumberPreview), счётчик не трогает, поэтому открыть и
+  // закрыть диалог несколько раз не пропускает номера.
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    getNextContractNumberPreview().then(res => {
+      if (!cancelled && res.ok) setNextNumber(res.data)
+    })
+    return () => { cancelled = true }
+  }, [open])
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -54,12 +72,13 @@ export default function ClientContractModal({
     setError(null)
 
     if (needsNewContractDoc) {
+      const trimmedNumber = historicalNumber.trim()
       const result = await createDocument({
         type: 'CONTRACT',
         clientId,
         issueDate,
-        isHistorical,
-        historicalNumber: isHistorical && historicalNumber ? Number(historicalNumber) : null,
+        isHistorical: !!trimmedNumber,
+        historicalNumber: trimmedNumber || null,
         comment: comment.trim() || null,
       })
       setLoading(false)
@@ -107,17 +126,31 @@ export default function ClientContractModal({
                     <label className={LABEL}>Дата договора</label>
                     <input type="date" className={INPUT} value={issueDate} onChange={e => setIssueDate(e.target.value)} />
                   </div>
-                  <label className="flex items-center gap-2 text-xs text-zinc-400 cursor-pointer">
-                    <input type="checkbox" checked={isHistorical} onChange={e => setIsHistorical(e.target.checked)} className="accent-[#00c26b]" />
-                    Указать исторический номер вручную (перенос старых данных)
-                  </label>
-                  {isHistorical && (
+                  <div>
+                    <label className={LABEL}>Номер договора</label>
                     <input
-                      type="number" min={1} className={INPUT} placeholder="Например, 14"
+                      type="text" className={INPUT} placeholder="Например, 20-02.26 или 14"
                       value={historicalNumber} onChange={e => setHistoricalNumber(e.target.value)}
                     />
-                  )}
-                  {!isHistorical && <p className="text-zinc-500 text-xs">Номер будет присвоен автоматически, по порядку.</p>}
+                    {nextNumber != null && (
+                      <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                        <span className="text-zinc-500 text-[11px]">Быстрый выбор:</span>
+                        <GlowPill
+                          as="button" color="zinc" size="sm"
+                          onClick={() => setHistoricalNumber(String(nextNumber))}
+                          title="Подставить следующий номер по порядку"
+                          ariaLabel={`Подставить номер ${nextNumber} по порядку`}
+                        >
+                          №{nextNumber} по порядку
+                        </GlowPill>
+                      </div>
+                    )}
+                    <p className="text-zinc-500 text-xs mt-1.5">
+                      {historicalNumber.trim()
+                        ? 'Номер будет сохранён именно так, как введён.'
+                        : 'Оставьте пустым — номер присвоится автоматически, по порядку.'}
+                    </p>
+                  </div>
                 </>
               )}
             </div>

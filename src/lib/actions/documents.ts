@@ -81,6 +81,23 @@ async function bumpCounterIfLower(tx: Prisma.TransactionClient, counterId: strin
   }
 }
 
+// Только ЧТЕНИЕ — не инкрементирует DocumentCounter("contract_number") (в
+// отличие от getNextCounterValue, вызываемого внутри createDocument при
+// самом создании). Нужен для UI-подсказки "следующий номер по порядку"
+// (ClientContractModal) ДО того, как договор реально создаётся — открыть и
+// закрыть диалог несколько раз не должно пропускать номера.
+export async function getNextContractNumberPreview(): Promise<{ ok: true; data: number } | { ok: false; error: string }> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, error: authResult.error }
+  try {
+    const counter = await prisma.documentCounter.findUnique({ where: { id: 'contract_number' } })
+    return { ok: true, data: (counter?.value ?? 0) + 1 }
+  } catch (e) {
+    console.error('[getNextContractNumberPreview]', e)
+    return { ok: false, error: 'Не удалось получить следующий номер договора' }
+  }
+}
+
 async function ensureDocumentPackageNumber(
   tx: Prisma.TransactionClient,
   work: { orderId: string } | { montageProjectId: string },
@@ -275,7 +292,12 @@ export interface CreateDocumentInput {
   comment?: string | null
   serviceDescription?: string | null
   isHistorical?: boolean
-  historicalNumber?: number | null
+  // Строка, не число (2026-07-27) — номер договора не всегда чистая
+  // последовательность (составные/исторические форматы вроде "20-02.26",
+  // "14/2026"). Если введённое значение — целое число без посторонних
+  // символов, счётчик всё равно "подтягивается" вверх (см. bumpCounterIfLower
+  // ниже), иначе просто сохраняется как есть.
+  historicalNumber?: string | null
   // Ручной номер счёта/акта (см. AGENTS.md, "Реестр документов") —
   // необязателен: без него номер по-прежнему вычисляется из
   // workPackageNumber+suffix, как раньше (getDocumentDisplayNumber).
@@ -326,9 +348,17 @@ export async function createDocument(input: CreateDocumentInput): Promise<
       let suffix: string | null = null
 
       if (input.type === 'CONTRACT') {
-        if (input.isHistorical && input.historicalNumber != null) {
-          await bumpCounterIfLower(tx, 'contract_number', input.historicalNumber)
-          number = String(input.historicalNumber)
+        const trimmedHistorical = input.isHistorical ? input.historicalNumber?.trim() : ''
+        if (trimmedHistorical) {
+          // Чистое целое число (без слэшей/точек/букв и т.п.) — двигаем
+          // счётчик вверх, чтобы следующий автоматический номер не столкнулся
+          // с уже занятым (см. bumpCounterIfLower). Составной формат
+          // ("20-02.26", "14/2026") с последовательным счётчиком не сравним —
+          // просто сохраняем как введено, счётчик не трогаем.
+          if (/^\d+$/.test(trimmedHistorical)) {
+            await bumpCounterIfLower(tx, 'contract_number', Number(trimmedHistorical))
+          }
+          number = trimmedHistorical
         } else {
           number = String(await getNextCounterValue(tx, 'contract_number'))
         }
