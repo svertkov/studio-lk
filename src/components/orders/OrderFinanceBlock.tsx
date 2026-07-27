@@ -316,19 +316,40 @@ function FinanceEditor({ orderId, initialFinance }: FinanceEditorProps) {
         </div>
       )}
 
+      {/* Прибыль и комментарий к ней хранятся на Order, а не на ScheduleEvent
+          (см. комментарий компонента выше) — до первого "Сохранить" карточки
+          заказа ещё не существует, сохранять эти два поля некуда. Раньше при
+          том же условии просто пряталась маленькая ссылка "Указать вручную" —
+          теперь тут всегда виден целый блок, и оба заблокированных поля без
+          объяснения читались бы как баг (см. реальный вопрос пользователя
+          "поле не активно, в чём дело" — 2026-07-27). Комментарий тоже
+          обязан быть disabled в этом состоянии, а не только прибыль: иначе
+          введённый здесь текст молча терялся бы, когда после сохранения
+          появляется orderId и этот компонент перемонтируется (key=orderId)
+          заново с чистого initialFinance, минуя всё, что было напечатано,
+          пока черновик некуда было сохранить (при orderId===null useAutosave
+          выключен — storageKey===null — и даже в localStorage ничего не
+          пишет). Тот же приём подписи, что уже есть у "Оплата через
+          абонемент доступна после привязки клиента к записи" чуть выше. */}
+      {!orderId && (
+        <p className="text-amber-500/80 text-xs">
+          Сначала нажмите «Сохранить» внизу карточки — прибыль и комментарий к ней станут доступны сразу после этого.
+        </p>
+      )}
+
       <div>
         <div className="flex items-center justify-between mb-1.5">
           <Label>Прибыль по заказу, ₽</Label>
           <SaveStatusIndicator status={autosave.status} error={autosave.error} />
         </div>
         <input
-          className={`${FIELD_BASE} px-3 placeholder-zinc-600 font-medium ${profitColorClass(profitAmount)}`}
+          className={`${FIELD_BASE} px-3 placeholder-zinc-600 font-medium ${profitColorClass(profitAmount)} disabled:opacity-50 disabled:cursor-not-allowed`}
           type="number"
           placeholder="Не указана"
           value={profitInput}
           onChange={e => setProfitInput(e.target.value)}
           disabled={!orderId}
-          title={!orderId ? 'Сначала сохраните заказ' : undefined}
+          title={!orderId ? 'Сначала сохраните запись — поле появится сразу после этого' : undefined}
         />
         {updatedByName && updatedAt && (
           <p className="text-zinc-500 text-[11px] mt-1">
@@ -340,11 +361,13 @@ function FinanceEditor({ orderId, initialFinance }: FinanceEditorProps) {
       <div>
         <Label>Комментарий к прибыли</Label>
         <textarea
-          className={`${TEXTAREA} mt-1.5`}
+          className={`${TEXTAREA} mt-1.5 disabled:opacity-50 disabled:cursor-not-allowed`}
           rows={3}
           placeholder="Укажите расходы, выплаты или распределение денег по заказу"
           value={financeComment}
           onChange={e => setFinanceComment(e.target.value)}
+          disabled={!orderId}
+          title={!orderId ? 'Сначала сохраните запись — поле появится сразу после этого' : undefined}
         />
       </div>
     </div>
