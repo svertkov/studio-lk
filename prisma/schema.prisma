@@ -1,5 +1,5 @@
 // Схема базы данных платформы 2470
-// ORM: Prisma | База: Timeweb Cloud PostgreSQL
+// ORM: Prisma | База: Yandex Cloud Managed PostgreSQL
 
 generator client {
   provider = "prisma-client-js"
