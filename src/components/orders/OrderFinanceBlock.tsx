@@ -2,9 +2,11 @@
 
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import SaveStatusIndicator from '@/components/ui/save-status-indicator'
+import GlowPill from '@/components/ui/glow-pill'
 import { useAutosave, readAutosaveDraft, clearAutosaveDraft, type StoredDraft } from '@/lib/hooks/use-autosave'
 import { getMontageProjectsForOrder, updateMontageProject, assignMontageEditor, type MontageProjectDTO } from '@/lib/actions/montage'
 import { getOrder, updateOrderProfit, type UpdateOrderProfitInput } from '@/lib/actions/orders'
+import { FINANCE_COMMENT_TEMPLATES, appendFinanceCommentTemplate } from '@/lib/finance-comment-model'
 import EditorAssignField from './EditorAssignField'
 import EditorReassignDialog from './EditorReassignDialog'
 import type { EditorProfileListItemDTO } from '@/lib/actions/editors'
@@ -397,6 +399,30 @@ const FinanceEditor = forwardRef<FinanceEditorHandle, FinanceEditorProps>(functi
           value={financeComment}
           onChange={e => setFinanceComment(e.target.value)}
         />
+        {/* Шаблоны дополняют комментарий, а не заменяют его (см.
+            appendFinanceCommentTemplate) — тот же "Быстрые пометки"-приём, что
+            у акции под комментарием заказа, но здесь клик реально пишет текст
+            в поле, а не переключает структурированный флаг. */}
+        <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+          <span className="text-zinc-500 text-[11px]">Быстрые шаблоны:</span>
+          {FINANCE_COMMENT_TEMPLATES.map(tpl => {
+            const active = financeComment.includes(tpl.text)
+            return (
+              <GlowPill
+                key={tpl.id}
+                as="button"
+                size="sm"
+                color={active ? 'green' : 'zinc'}
+                onClick={() => setFinanceComment(prev => appendFinanceCommentTemplate(prev, tpl.text))}
+                title={active ? `«${tpl.label}» уже в комментарии` : `Добавить «${tpl.label}» в комментарий`}
+                ariaLabel={active ? `«${tpl.label}» уже добавлено в комментарий к прибыли` : `Добавить «${tpl.label}» в комментарий к прибыли`}
+                ariaPressed={active}
+              >
+                {tpl.label}
+              </GlowPill>
+            )
+          })}
+        </div>
       </div>
     </div>
   )
