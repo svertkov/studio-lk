@@ -1,39 +1,17 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
-import Link from 'next/link'
+import { useEffect, useState } from 'react'
 import { format, parseISO } from 'date-fns'
 import { ru } from 'date-fns/locale'
-import { Copy, Check, ExternalLink, AlertTriangle, UserPlus, HardDrive } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import GlowPill from '@/components/ui/glow-pill'
-import { upsertScheduleEvent, findSimilarClientsForEvent, confirmScheduleClient, type SimilarClientMatch } from '@/lib/actions/schedule'
-import { chargeEventToSubscription, createSubscription, removeEventSubscriptionCharge } from '@/lib/actions/subscriptions'
-import { parseEventTitle } from '@/lib/event-category'
-import type { ScheduleEventVM } from '@/lib/schedule-model'
-import {
-  MATERIALS_WARNING_TEXT,
-  getEffectiveEventType, isPastBooking, shouldShowMaterialsBadge,
-  type ClientConfirmationStatus,
-  MAKEUP_QUICK_OPTIONS, MAKEUP_DURATION_MAX_MINUTES, normalizeMakeupDurationMinutes, computeMakeupInterval, formatMakeupRange,
-} from '@/lib/schedule-model'
+import { upsertScheduleEvent } from '@/lib/actions/schedule'
+import { getOrder, type OrderDTO } from '@/lib/actions/orders'
+import { getEffectiveEventType, type ScheduleEventVM } from '@/lib/schedule-model'
 import { EVENT_TYPE_LABELS, requiresFullBookingForm, type EventType } from '@/lib/event-type'
-import { PAYMENT_METHOD_LABELS, ONE_TIME_PAYMENT_METHODS, type PaymentMethod } from '@/lib/schedule-model'
-import { ROOM_DICTIONARY, FORMAT_DICTIONARY } from '@/lib/import/normalize'
 import { getOrderPromotion, getVisibleOrderComment, PROMOTION_PILL_LABEL, type OrderPromotionType } from '@/lib/promotion-model'
-import MaterialsStatusBadge from './MaterialsStatusBadge'
-import ConfirmableStatusToggle from '@/components/ui/confirmable-status-toggle'
-import SubscriptionPaymentBlock, { type SubscriptionPaymentHandle } from './SubscriptionPaymentBlock'
-import AddClientModal from '../clients/AddClientModal'
-import WorkDocumentsSection from '@/components/documents/WorkDocumentsSection'
-import OrderFinanceBlock, { type OrderFinanceBlockHandle } from '@/components/orders/OrderFinanceBlock'
-import MontageDisableChoiceDialog from '@/components/orders/MontageDisableChoiceDialog'
-import type { MontageProjectDTO } from '@/lib/actions/montage'
 import { useAutosave, readAutosaveDraft, clearAutosaveDraft, type StoredDraft } from '@/lib/hooks/use-autosave'
 import SaveStatusIndicator from '@/components/ui/save-status-indicator'
-
-const ROOM_OPTIONS = ROOM_DICTIONARY.map(e => e.canonical)
-const FORMAT_OPTIONS = FORMAT_DICTIONARY.map(e => e.canonical)
 
 const INPUT = 'w-full bg-zinc-800 border border-zinc-700 text-zinc-100 placeholder-zinc-600 rounded-lg px-3 py-2 text-sm outline-none focus:border-[#00c26b] transition-colors'
 const SELECT = 'w-full bg-zinc-800 border border-zinc-700 text-zinc-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-[#00c26b] transition-colors cursor-pointer'
@@ -46,220 +24,57 @@ interface Props {
   onSaved: () => void
 }
 
-function selectWithCustom(options: string[], current: string) {
-  return current && !options.includes(current) ? [current, ...options] : options
-}
-
+// 2026-08-02: урезан до лёгкого режима аннотирования — единственный
+// оставшийся потребитель этого компонента для КОММЕРЧЕСКИХ записей
+// (STUDIO_BOOKING/OFFSITE_SHOOT) был Расписание и ещё 4 точки входа; все они
+// переведены на каноническую карточку заказа (OrderFormModal, см. ORDERS.md,
+// "Карточка заказа — какой компонент канонический"). Здесь остаётся только
+// то, что реально нужно для НЕ-коммерческих записей календаря (встречи,
+// отсутствия сотрудников, служебные пометки, "прочее") — комментарий, акция,
+// смена типа события. Клиент/оплата/материалы/монтаж/документы отсюда
+// удалены НЕ потому что урезана функциональность внутри самого экрана — они
+// просто больше не нужны здесь: единственная реализация этих полей теперь в
+// OrderFormModal.tsx (см. AGENTS.md, правило 11 — не поддерживать вторую
+// независимую реализацию тех же полей).
+//
+// Если администратор меняет тип события ЗДЕСЬ на коммерческий и жмёт
+// "Сохранить" — см. handleSave: это единственное место, где ещё нужна ссылка
+// на OrderFormModal, поэтому импорт СТРОГО динамический (`import(...)`, как
+// уже сделано для неё в OrdersArchiveView.tsx), а не статический — иначе
+// цикл OrderFormModal → SubscriptionPaymentBlock → SubscriptionDetailModal →
+// EventCardModal → OrderFormModal.
 export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
   const { calendarEvent, annotation } = vm
 
-  // Зал/камеры из самого события Google Calendar ("тз, 3к" в названии или
-  // "Тёмный зал, 3 камеры" в описании) — используются как подсказка по
-  // умолчанию, только если администратор ещё не указал их сам в карточке.
-  // Once сохранено вручную, эта авто-подсказка больше не участвует (аннотация
-  // побеждает) — см. parseEventTitle в src/lib/event-category.ts.
-  const parsedFromCalendar = parseEventTitle(calendarEvent.title, calendarEvent.description)
-
   const [eventType, setEventType] = useState<EventType>(getEffectiveEventType(vm))
-  const [room, setRoom] = useState(annotation?.room ?? parsedFromCalendar.hall ?? '')
-  const [formatValue, setFormatValue] = useState(annotation?.format ?? '')
-  const [camerasCount, setCamerasCount] = useState(
-    annotation?.camerasCount?.toString() ?? parsedFromCalendar.cameras?.toString() ?? '',
-  )
-  // Блок "ВЫЕЗД" — только для eventType=OFFSITE_SHOOT, см. ScheduleEventDTO.
-  const [shootAddress, setShootAddress] = useState(annotation?.shootAddress ?? '')
-  const [venueName, setVenueName] = useState(annotation?.venueName ?? '')
-  const [venueContact, setVenueContact] = useState(annotation?.venueContact ?? '')
-  const [logisticsComment, setLogisticsComment] = useState(annotation?.logisticsComment ?? '')
-  const [estimatedPrice, setEstimatedPrice] = useState(annotation?.estimatedPrice?.toString() ?? '')
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | ''>(annotation?.paymentMethod ?? '')
-  // Комментарий инициализируется УЖЕ очищенным от текста акции (см.
-  // src/lib/promotion-model.ts) — акция теперь отдельный тоггл (promotionType),
-  // а не часть свободного текста. Для старых записей, где акция ещё жила
-  // только как фраза в notes, это на первом же Save "мигрирует" её в
-  // структурированное поле и одновременно убирает дублирующий текст.
-  //
-  // Единое поле комментария: до первого сохранения карточки строки
-  // ScheduleEvent ещё не существует (annotation === null) — в этом и только
-  // в этом случае донором единственного поля выступает описание события
-  // Google Calendar, вместо отдельного серого блока. Как только строка
-  // сохранена хотя бы раз, annotation перестаёт быть null и notes становится
-  // источником правды даже если он пуст (администратор мог осознанно
-  // очистить комментарий) — calendarEvent.description больше не подмешивается,
-  // изменение события в календаре не может перезаписать правку администратора.
+  // Комментарий: до первого сохранения строки ScheduleEvent ещё не существует
+  // (annotation === null) — донор единственного поля тогда описание события
+  // Google Calendar, как и раньше (см. историю этого компонента в git).
   const [notes, setNotes] = useState(
     annotation ? (getVisibleOrderComment({ comment: annotation.notes ?? null }) ?? '') : (calendarEvent.description ?? ''),
   )
   const [promotionType, setPromotionType] = useState<OrderPromotionType | null>(
     getOrderPromotion({ promotionType: annotation?.promotionType ?? null, comment: annotation?.notes ?? null }),
   )
-  const [yandexDiskUrl, setYandexDiskUrl] = useState(annotation?.yandexDiskUrl ?? '')
-  const [nasBackupUrl, setNasBackupUrl] = useState(annotation?.nasBackupUrl ?? '')
-  const [materialsComment, setMaterialsComment] = useState(annotation?.materialsComment ?? '')
-  const [yandexLinkRequired, setYandexLinkRequired] = useState(annotation?.yandexLinkRequired ?? true)
-  const [nasLinkRequired, setNasLinkRequired] = useState(annotation?.nasLinkRequired ?? true)
-  const [yandexNotRequiredReason, setYandexNotRequiredReason] = useState<string | null>(annotation?.yandexNotRequiredReason ?? null)
-  const [nasNotRequiredReason, setNasNotRequiredReason] = useState<string | null>(annotation?.nasNotRequiredReason ?? null)
-  const [editingRequired, setEditingRequired] = useState<boolean | null>(annotation?.editingRequired ?? null)
-  // См. OrderFinanceBlock — activeMontageProjects заполняется самим блоком,
-  // переиспользуем для MontageDisableChoiceDialog при отключении монтажа.
-  const [activeMontageProjects, setActiveMontageProjects] = useState<MontageProjectDTO[]>([])
-  const [montageDisableDialogOpen, setMontageDisableDialogOpen] = useState(false)
-  const [pendingEditingRequired, setPendingEditingRequired] = useState<boolean | null | 'unset'>('unset')
-  const [clientNameRaw, setClientNameRaw] = useState(annotation?.clientNameRaw ?? '')
-  const [contactRaw, setContactRaw] = useState(annotation?.contactRaw ?? '')
-  const [companyRaw, setCompanyRaw] = useState(annotation?.companyRaw ?? '')
-
-  // Гримёр — длительность хранится строкой + единицей измерения только для
-  // удобства ручного ввода; в БД (ScheduleEvent.makeupDurationMinutes) и при
-  // сохранении всегда уходят целые минуты через normalizeMakeupDurationMinutes.
-  const [makeupDurationInput, setMakeupDurationInput] = useState(
-    annotation?.makeupDurationMinutes != null ? String(annotation.makeupDurationMinutes) : '',
-  )
-  const [makeupDurationUnit, setMakeupDurationUnit] = useState<'minutes' | 'hours'>('minutes')
-
-  const [paymentMode, setPaymentMode] = useState<'ONE_TIME' | 'SUBSCRIPTION'>(
-    annotation?.subscriptionUsage ? 'SUBSCRIPTION' : 'ONE_TIME',
-  )
-  const [subscriptionValid, setSubscriptionValid] = useState(true)
-  const subscriptionRef = useRef<SubscriptionPaymentHandle>(null)
-  const financeBlockRef = useRef<OrderFinanceBlockHandle>(null)
-
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [copiedField, setCopiedField] = useState<'yandex' | 'nas' | null>(null)
 
-  const [clientId, setClientId] = useState<string | null>(annotation?.clientId ?? null)
-  const [clientName, setClientName] = useState<string | null>(annotation?.clientName ?? null)
-  const [similarMatches, setSimilarMatches] = useState<SimilarClientMatch[] | null>(null)
-  const [searchingClient, setSearchingClient] = useState(false)
-  const [selectedMatchId, setSelectedMatchId] = useState('')
-  const [linking, setLinking] = useState(false)
-  const [linkError, setLinkError] = useState<string | null>(null)
-  const [addClientOpen, setAddClientOpen] = useState(false)
-
-  const materialsStatus = annotation?.materialsStatus ?? 'NO_LINKS'
-  const yandexAddedAt = annotation?.yandexDiskUrlAddedAt ? parseISO(annotation.yandexDiskUrlAddedAt) : null
-  const yandexExpiresAt = annotation?.yandexDiskUrlExpiresAt ? parseISO(annotation.yandexDiskUrlExpiresAt) : null
-  const warningText = MATERIALS_WARNING_TEXT[materialsStatus]
-  const hasClient = !!clientId
-  const eventDurationHours = Math.max(0, (new Date(calendarEvent.end).getTime() - new Date(calendarEvent.start).getTime()) / 3600000)
-  const makeupDurationMinutes = normalizeMakeupDurationMinutes(makeupDurationInput, makeupDurationUnit)
-  const makeupInterval = computeMakeupInterval(new Date(calendarEvent.start), makeupDurationMinutes)
-  const isBookingPast = isPastBooking(vm)
-  // Лёгкая, СОВЕТУЮЩАЯ (не блокирующая) проверка формата — только для живой
-  // подсказки под полем; сохранить ссылку можно в любом случае, даже если она
-  // не похожа на Яндекс.Диск (см. ТЗ: "не должно быть ситуации, когда ссылка
-  // визуально введена, но форма считает поле невалидным без понятной причины").
-  const yandexUrlTrimmedLive = yandexDiskUrl.trim()
-  const looksLikeYandexLink = /^https?:\/\/(disk\.yandex\.[a-z.]+|yadi\.sk)\//i.test(yandexUrlTrimmedLive)
-  // Материалы: наличие ссылки на Яндекс.Диск снимает предупреждение само по
-  // себе — NAS-бэкап при этом просто дополнительный плюс, а не обязательное
-  // условие (см. Материалы ниже и schedule-model.ts: getMaterialsDisplay/getBookingAttentionInfo).
-  const hasYandexNow = !!yandexDiskUrl
-  const hasNasNow = !!nasBackupUrl
-  // "Ok" — поле удовлетворено, если ссылка реально введена ИЛИ администратор
-  // отметил её необязательной (см. RequiredLinkToggle, schedule-model.ts).
-  const yandexOkNow = hasYandexNow || !yandexLinkRequired
-  const nasOkNow = hasNasNow || !nasLinkRequired
-  const paymentMissingNow = paymentMode === 'ONE_TIME' && !estimatedPrice
-  // Единственная причина, по которой кнопка "Сохранить" может быть
-  // заблокирована помимо самого процесса сохранения — см. disabled на кнопке
-  // ниже. Вынесено в переменную, чтобы явно показать причину рядом с кнопкой,
-  // а не просто оставить её серой без объяснения.
-  const subscriptionBlocksSave = requiresFullBookingForm(eventType) && hasClient && paymentMode === 'SUBSCRIPTION' && !subscriptionValid
-
-  // Лучшая догадка об имени клиента: то, что вручную ввели в "Имя из
-  // календаря", иначе — разбор названия/описания события Google Calendar
-  // (например «Подкаст, тз, 3к, Соломатин» → «Соломатин»).
-  const guessedClientName = clientNameRaw.trim() || parsedFromCalendar.client || ''
-
-  // Пытаемся сами найти клиента по имени из названия/описания события в Google
-  // Calendar — та же функция поиска, что и в блоке "Клиенты из расписания" на
-  // странице Клиентов, просто вызванная прямо в карточке, чтобы не заставлять
-  // администратора переключаться на другую страницу ради привязки клиента.
-  async function runClientSearch() {
-    if (!guessedClientName && !contactRaw.trim() && !companyRaw.trim()) { setSimilarMatches([]); return }
-    setSearchingClient(true)
-    setLinkError(null)
-    const result = await findSimilarClientsForEvent({
-      name: guessedClientName || undefined,
-      contact: contactRaw.trim() || undefined,
-      company: companyRaw.trim() || undefined,
-    })
-    setSearchingClient(false)
-    setSimilarMatches(result.ok ? result.data : [])
-    setSelectedMatchId('')
-  }
-
-  // Автопоиск при открытии карточки — без runClientSearch(), чтобы не задавать
-  // состояние синхронно в теле эффекта (setSearchingClient обновляется только
-  // из клика "Искать"/"Изменить"; здесь достаточно того, что similarMatches
-  // остаётся null, пока запрос не завершится).
-  useEffect(() => {
-    if (hasClient || !requiresFullBookingForm(eventType)) return
-    if (!guessedClientName && !contactRaw.trim() && !companyRaw.trim()) return
-    let cancelled = false
-    findSimilarClientsForEvent({
-      name: guessedClientName || undefined,
-      contact: contactRaw.trim() || undefined,
-      company: companyRaw.trim() || undefined,
-    }).then(result => {
-      if (!cancelled) setSimilarMatches(result.ok ? result.data : [])
-    })
-    return () => { cancelled = true }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  // Привязка клиента сохраняется сразу (не дожидаясь общей кнопки "Сохранить"),
-  // чтобы блок абонементов клиента тут же подтянулся и предупреждение "оплата
-  // доступна после привязки" исчезло без перезагрузки формы.
-  async function handleLinkClient(id: string, name: string) {
-    setLinking(true)
-    setLinkError(null)
-    const result = annotation?.id
-      ? await confirmScheduleClient(annotation.id, id)
-      : await upsertScheduleEvent({
-          calendarEventId: calendarEvent.id,
-          title: calendarEvent.title,
-          description: calendarEvent.description,
-          startAt: calendarEvent.start,
-          endAt: calendarEvent.end,
-          clientId: id,
-          clientConfirmationStatus: 'CONFIRMED',
-        })
-    setLinking(false)
-    if (!result.ok) { setLinkError(result.error); return }
-    setClientId(id)
-    setClientName(name)
-    setSimilarMatches(null)
-  }
-
-  // Отключение "Монтаж требуется" при уже существующем проекте монтажа —
-  // раньше проект просто зависал без предупреждения (см. план). Перехватываем
-  // переход true -> не true, если есть непогашенный проект.
-  function handleEditingRequiredChange(next: boolean | null) {
-    if (editingRequired === true && next !== true && activeMontageProjects.length > 0) {
-      setPendingEditingRequired(next)
-      setMontageDisableDialogOpen(true)
-      return
-    }
-    setEditingRequired(next)
-  }
-
-  async function copyLink(url: string, field: 'yandex' | 'nas') {
-    try {
-      await navigator.clipboard.writeText(url)
-      setCopiedField(field)
-      setTimeout(() => setCopiedField(null), 1500)
-    } catch {
-      // буфер обмена недоступен — молча игнорируем, ссылка всё равно видна в поле
-    }
-  }
+  // Переход на каноническую карточку заказа — только если ЭТИМ сохранением
+  // запись впервые стала коммерческой (см. handleSave).
+  const [reclassifiedOrder, setReclassifiedOrder] = useState<OrderDTO | null>(null)
+  const [OrderFormModalComp, setOrderFormModalComp] = useState<typeof import('../crm/OrderFormModal').default | null>(null)
 
   // Единая точка построения payload для upsertScheduleEvent — используется и
   // явным "Сохранить" (см. handleSave), и автосохранением (см. useAutosave
-  // ниже), чтобы не держать два разных способа собрать один и тот же объект.
+  // ниже). Поля клиента/оплаты/материалов и т.п. сюда не входят — их просто
+  // не остаётся редактировать в этом компоненте (см. комментарий выше), а не
+  // потому что их нужно обнулять: сервер трактует отсутствие ключа в payload
+  // как "не трогать" для каждого из них (проверено по коду upsertScheduleEvent,
+  // src/lib/actions/schedule.ts — все раньше редактируемые здесь поля пишутся
+  // через `input.field !== undefined && {...}` или явный fallback на текущее
+  // значение), поэтому урезание формы не стирает то, что уже было сохранено
+  // раньше (например, если запись когда-то была коммерческой, а потом её
+  // переклассифицировали обратно).
   function buildEventInput() {
     return {
       calendarEventId: calendarEvent.id,
@@ -268,40 +83,11 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
       startAt: calendarEvent.start,
       endAt: calendarEvent.end,
       eventType,
-      room,
-      format: formatValue,
-      camerasCount: camerasCount ? parseInt(camerasCount, 10) : null,
-      shootAddress,
-      venueName,
-      venueContact,
-      logisticsComment,
-      // Абонемент оплачивается один раз при покупке — отдельная запись не должна
-      // повторно создавать выручку, поэтому очищаем разовую цену.
-      estimatedPrice: paymentMode === 'SUBSCRIPTION' ? null : (estimatedPrice ? parseFloat(estimatedPrice) : null),
-      paymentMethod: paymentMode === 'SUBSCRIPTION' ? null : (paymentMethod || null),
       notes,
       promotionType,
-      yandexDiskUrl: yandexDiskUrl || null,
-      nasBackupUrl: nasBackupUrl || null,
-      materialsComment,
-      yandexLinkRequired,
-      nasLinkRequired,
-      yandexNotRequiredReason,
-      nasNotRequiredReason,
-      editingRequired,
-      clientNameRaw,
-      contactRaw,
-      companyRaw,
-      makeupDurationMinutes,
     }
   }
 
-  // Автосохранение — та же запись (upsertScheduleEvent — upsert по
-  // calendarEventId, который всегда есть, событие приходит из Google
-  // Calendar), поэтому, в отличие от OrderFormModal, здесь нет случая
-  // "записи ещё не существует" — периодическое автосохранение включено
-  // всегда. Локальная резервная копия в localStorage — на случай перезагрузки
-  // страницы/краша между сетевыми тиками.
   const storageKey = `studio-lk:autosave:event:${calendarEvent.id}`
   const autosave = useAutosave({
     value: buildEventInput(),
@@ -326,83 +112,35 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
   }, [storageKey])
 
   function applyDraft(input: ReturnType<typeof buildEventInput>) {
-    setRoom(input.room ?? '')
-    setFormatValue(input.format ?? '')
-    setCamerasCount(input.camerasCount != null ? String(input.camerasCount) : '')
-    setShootAddress(input.shootAddress ?? '')
-    setVenueName(input.venueName ?? '')
-    setVenueContact(input.venueContact ?? '')
-    setLogisticsComment(input.logisticsComment ?? '')
-    setEstimatedPrice(input.estimatedPrice != null ? String(input.estimatedPrice) : '')
-    setPaymentMethod(input.paymentMethod ?? '')
     setNotes(input.notes ?? '')
     setPromotionType(input.promotionType ?? null)
-    setYandexDiskUrl(input.yandexDiskUrl ?? '')
-    setNasBackupUrl(input.nasBackupUrl ?? '')
-    setMaterialsComment(input.materialsComment ?? '')
-    setYandexLinkRequired(input.yandexLinkRequired)
-    setNasLinkRequired(input.nasLinkRequired)
-    setYandexNotRequiredReason(input.yandexNotRequiredReason ?? null)
-    setNasNotRequiredReason(input.nasNotRequiredReason ?? null)
-    setEditingRequired(input.editingRequired ?? null)
-    setClientNameRaw(input.clientNameRaw ?? '')
-    setContactRaw(input.contactRaw ?? '')
-    setCompanyRaw(input.companyRaw ?? '')
-    setMakeupDurationInput(input.makeupDurationMinutes != null ? String(input.makeupDurationMinutes) : '')
-    setMakeupDurationUnit('minutes')
+    if (input.eventType) setEventType(input.eventType)
   }
 
-  async function handleSave(confirmationOverride?: ClientConfirmationStatus) {
+  async function handleSave() {
     setSaving(true)
     setError(null)
-    // Всё тело — в try/finally: раньше setSaving(false) вызывался отдельно
-    // перед каждым return, и если бы что-то неожиданно бросило исключение
-    // (а не просто вернуло {ok:false}) — например сетевой сбой посреди одного
-    // из последовательных вызовов ниже — кнопка "Сохранить" оставалась бы
-    // задизейбленной навсегда без единой видимой ошибки: saving так и не
-    // вернулся бы в false. finally гарантирует сброс при любом исходе.
     try {
-      const result = await upsertScheduleEvent({
-        ...buildEventInput(),
-        ...(confirmationOverride && { clientConfirmationStatus: confirmationOverride }),
-      })
+      const result = await upsertScheduleEvent(buildEventInput())
       if (!result.ok) {
         setError(result.error)
         return
       }
 
-      // Заказ мог появиться именно в этом сохранении (см. комментарий в
-      // upsertScheduleEvent/schedule.ts) — если администратор уже успел
-      // ввести прибыль/комментарий к ней ДО этого (заказа тогда ещё не было,
-      // OrderFinanceBlock не мог их сохранить), досылаем прямо сейчас, пока
-      // карточка не закрылась ниже (см. OrderFinanceBlockHandle).
-      if (result.data.orderId && !annotation?.orderId) {
-        await financeBlockRef.current?.flushToOrder(result.data.orderId)
-      }
-
-      if (requiresFullBookingForm(eventType) && clientId) {
-        if (paymentMode === 'ONE_TIME') {
-          if (annotation?.subscriptionUsage) {
-            const removed = await removeEventSubscriptionCharge(result.data.id)
-            if (!removed.ok) { setError(removed.error); return }
-          }
-        } else {
-          const value = subscriptionRef.current?.getValue()
-          if (value?.paymentType === 'EXISTING') {
-            const charged = await chargeEventToSubscription({
-              scheduleEventId: result.data.id, subscriptionId: value.subscriptionId, usedHours: value.usedHours,
-            })
-            if (!charged.ok) { setError(charged.error); return }
-          } else if (value?.paymentType === 'NEW') {
-            const created = await createSubscription({
-              clientId, packageHours: value.packageHours, paidAmount: value.paidAmount, purchasedAt: value.purchasedAt,
-            })
-            if (!created.ok) { setError(created.error); return }
-            const charged = await chargeEventToSubscription({
-              scheduleEventId: result.data.id, subscriptionId: created.data.id, usedHours: value.usedHours,
-            })
-            if (!charged.ok) { setError(charged.error); return }
-          }
+      // Запись была НЕ-коммерческой и стала коммерческой именно этим
+      // сохранением (см. заголовочный комментарий) — вместо обычного
+      // закрытия передаём управление канонической карточке заказа, у неё уже
+      // есть свежесозданный orderId (см. ensureOrderForNewBooking, schedule.ts).
+      const wasCommercial = requiresFullBookingForm(getEffectiveEventType(vm))
+      if (!wasCommercial && requiresFullBookingForm(eventType) && result.data.orderId) {
+        const [orderResult, mod] = await Promise.all([
+          getOrder(result.data.orderId),
+          import('../crm/OrderFormModal'),
+        ])
+        if (orderResult.ok) {
+          setOrderFormModalComp(() => mod.default)
+          setReclassifiedOrder(orderResult.data)
+          return
         }
       }
 
@@ -416,8 +154,17 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
     }
   }
 
+  if (reclassifiedOrder && OrderFormModalComp) {
+    return (
+      <OrderFormModalComp
+        order={reclassifiedOrder}
+        onOpenChange={open => { if (!open) { setReclassifiedOrder(null); onSaved(); onOpenChange(false) } }}
+        onSaved={onSaved}
+      />
+    )
+  }
+
   return (
-    <>
     <Dialog open onOpenChange={onOpenChange}>
       <DialogContent className="bg-zinc-900 border-zinc-800 text-white max-w-xl sm:max-w-[min(1040px,94vw)] max-h-[88vh] flex flex-col p-0">
         <DialogHeader className="px-6 pt-6 pb-4 border-b border-zinc-800 flex-shrink-0">
@@ -452,16 +199,12 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
             </div>
           )}
 
-          {/* Единое поле комментария — заменяет и бывший нередактируемый блок
-              описания Google Calendar, и отдельное поле "Комментарий / нюансы"
-              (см. инициализацию notes выше: описание календаря подмешивается
-              только до первого сохранения записи). */}
           <div>
             <label className={LABEL}>Комментарий / нюансы</label>
             <textarea
               className={`${INPUT} resize-none max-h-64 overflow-y-auto`}
               rows={5}
-              placeholder="Добавьте важные детали заказа, список оборудования, адрес или пожелания клиента"
+              placeholder="Добавьте важные детали, список оборудования, адрес или пожелания клиента"
               value={notes}
               onChange={e => setNotes(e.target.value)}
             />
@@ -488,487 +231,14 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
               <option key={t} value={t}>{EVENT_TYPE_LABELS[t]}</option>
             ))}
           </select>
-
-          {!requiresFullBookingForm(eventType) && (
+          {requiresFullBookingForm(eventType) ? (
+            <p className="text-zinc-500 text-xs">
+              После сохранения откроется полная карточка заказа (клиент, оплата, материалы, монтаж).
+            </p>
+          ) : (
             <p className="text-zinc-500 text-xs">
               Для типа «{EVENT_TYPE_LABELS[eventType]}» материалы и оплата не проверяются.
             </p>
-          )}
-
-          {requiresFullBookingForm(eventType) && (
-          <>
-          <p className={SECTION}>Съёмка</p>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              {eventType === 'STUDIO_BOOKING' ? (
-                <>
-                  <label className={LABEL}>Зал</label>
-                  <select className={SELECT} value={room} onChange={e => setRoom(e.target.value)}>
-                    <option value="">Не указан</option>
-                    {selectWithCustom(ROOM_OPTIONS, room).map(o => <option key={o} value={o}>{o}</option>)}
-                  </select>
-                </>
-              ) : (
-                <>
-                  <label className={LABEL}>Зал</label>
-                  <p className="text-zinc-400 text-sm px-3 py-2">Локация: выездная</p>
-                </>
-              )}
-            </div>
-            <div>
-              <label className={LABEL}>Формат</label>
-              <select className={SELECT} value={formatValue} onChange={e => setFormatValue(e.target.value)}>
-                <option value="">Не указан</option>
-                {selectWithCustom(FORMAT_OPTIONS, formatValue).map(o => <option key={o} value={o}>{o}</option>)}
-              </select>
-            </div>
-          </div>
-          <div>
-            <label className={LABEL}>Количество камер</label>
-            <input className={INPUT} type="number" min="0" placeholder="напр. 3" value={camerasCount}
-              onChange={e => setCamerasCount(e.target.value)} />
-          </div>
-
-          {eventType === 'OFFSITE_SHOOT' && (
-            <>
-              <p className={SECTION}>Выезд</p>
-              <div>
-                <label className={LABEL}>Адрес съёмки</label>
-                <input className={INPUT} placeholder="напр. ул. Ленина, 10" value={shootAddress}
-                  onChange={e => setShootAddress(e.target.value)} />
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className={LABEL}>Площадка / локация</label>
-                  <input className={INPUT} value={venueName} onChange={e => setVenueName(e.target.value)} />
-                </div>
-                <div>
-                  <label className={LABEL}>Контакт на площадке</label>
-                  <input className={INPUT} value={venueContact} onChange={e => setVenueContact(e.target.value)} />
-                </div>
-              </div>
-              <div>
-                <label className={LABEL}>Комментарий по логистике</label>
-                <textarea className={`${INPUT} resize-none`} rows={2} value={logisticsComment}
-                  onChange={e => setLogisticsComment(e.target.value)} />
-              </div>
-              {!shootAddress.trim() && (
-                <p className="bg-amber-950/40 border border-amber-900 text-amber-300 text-xs rounded-lg px-3 py-2">
-                  Для выездной съёмки не указан адрес
-                </p>
-              )}
-            </>
-          )}
-
-          <p className={SECTION}>Гримёр</p>
-          <div>
-            <label className={LABEL}>Время на гримёра до съёмки</label>
-            <div className="flex items-center gap-2">
-              <input
-                className={`${INPUT} flex-1`}
-                type="number"
-                min="0"
-                inputMode="decimal"
-                placeholder="0"
-                value={makeupDurationInput}
-                onChange={e => setMakeupDurationInput(e.target.value)}
-              />
-              <div className="flex items-center gap-1 bg-zinc-800 border border-zinc-700 rounded-lg p-1 flex-shrink-0">
-                {(['minutes', 'hours'] as const).map(u => (
-                  <button
-                    key={u}
-                    type="button"
-                    onClick={() => setMakeupDurationUnit(u)}
-                    className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
-                      makeupDurationUnit === u ? 'bg-zinc-700 text-white' : 'text-zinc-400 hover:text-zinc-200'
-                    }`}
-                  >
-                    {u === 'minutes' ? 'мин' : 'ч'}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-1.5">
-            {MAKEUP_QUICK_OPTIONS.map(opt => {
-              const active = makeupDurationUnit === 'minutes' && makeupDurationMinutes === opt.minutes
-              return (
-                <GlowPill
-                  key={opt.minutes}
-                  as="button"
-                  color={active ? 'green' : 'zinc'}
-                  onClick={() => { setMakeupDurationInput(String(opt.minutes)); setMakeupDurationUnit('minutes') }}
-                  title={`Гримёр: ${opt.label}`}
-                  ariaLabel={`Установить время гримёра: ${opt.label}`}
-                >
-                  {opt.label}
-                </GlowPill>
-              )
-            })}
-          </div>
-          {makeupDurationMinutes != null && (
-            makeupInterval ? (
-              <p className="text-zinc-400 text-xs">Гримёр: {formatMakeupRange(makeupInterval)}</p>
-            ) : (
-              <p className="text-zinc-500 text-xs">Интервал будет рассчитан после выбора времени съёмки</p>
-            )
-          )}
-          <p className="text-zinc-600 text-[11px]">
-            Не входит в длительность и стоимость основной съёмки. Максимум — {MAKEUP_DURATION_MAX_MINUTES / 60} часов.
-          </p>
-
-          <p className={SECTION}>Клиент</p>
-          {hasClient ? (
-            <div className="bg-zinc-800/50 rounded-lg p-3 flex items-center justify-between gap-3">
-              <p className="text-zinc-200 text-sm truncate">{clientName}</p>
-              <div className="flex items-center gap-3 flex-shrink-0">
-                <Link href={`/admin/clients/${clientId}`} className="text-xs text-[#00c26b] hover:underline">
-                  Открыть карточку
-                </Link>
-                {!annotation?.subscriptionUsage && (
-                  <button type="button" onClick={() => { setClientId(null); setClientName(null); runClientSearch() }}
-                    className="text-xs text-zinc-400 hover:text-white underline">
-                    Изменить
-                  </button>
-                )}
-              </div>
-            </div>
-          ) : (
-            <>
-              {searchingClient && <p className="text-zinc-500 text-xs">Ищем клиента по названию записи...</p>}
-
-              {!searchingClient && similarMatches && similarMatches.length > 0 && (
-                <div className="bg-zinc-800/50 border border-zinc-700 rounded-lg p-3 space-y-2">
-                  {similarMatches.length === 1 ? (
-                    <div className="flex items-center justify-between gap-3">
-                      <p className="text-zinc-300 text-xs">
-                        Возможный клиент: <span className="text-zinc-100 font-medium">{similarMatches[0].name}</span>
-                      </p>
-                      <button type="button" onClick={() => handleLinkClient(similarMatches[0].id, similarMatches[0].name)} disabled={linking}
-                        className="text-xs text-[#00c26b] hover:underline disabled:opacity-50 flex-shrink-0 whitespace-nowrap">
-                        Привязать
-                      </button>
-                    </div>
-                  ) : (
-                    <div>
-                      <label className={LABEL}>Похожие клиенты — выберите</label>
-                      <div className="flex items-center gap-2">
-                        <select className={SELECT} value={selectedMatchId} onChange={e => setSelectedMatchId(e.target.value)}>
-                          <option value="">Выберите клиента</option>
-                          {similarMatches.map(m => (
-                            <option key={m.id} value={m.id}>{m.name}{m.phone ? ` · ${m.phone}` : ''}</option>
-                          ))}
-                        </select>
-                        <button type="button" disabled={linking || !selectedMatchId} className="text-xs text-[#00c26b] hover:underline disabled:opacity-50 flex-shrink-0 whitespace-nowrap"
-                          onClick={() => {
-                            const m = similarMatches.find(x => x.id === selectedMatchId)
-                            if (m) handleLinkClient(m.id, m.name)
-                          }}>
-                          Привязать
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {linkError && <p className="text-red-400 text-xs">{linkError}</p>}
-
-              <div>
-                <label className={LABEL}>Имя из календаря</label>
-                <div className="flex items-center gap-2">
-                  <input className={INPUT} placeholder="Как записано в календаре" value={clientNameRaw}
-                    onChange={e => setClientNameRaw(e.target.value)} />
-                  <button type="button" onClick={runClientSearch} disabled={searchingClient}
-                    className="flex-shrink-0 text-xs text-zinc-400 hover:text-white underline whitespace-nowrap disabled:opacity-50">
-                    Искать
-                  </button>
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className={LABEL}>Контакт</label>
-                  <input className={INPUT} placeholder="Телефон / Telegram / email" value={contactRaw}
-                    onChange={e => setContactRaw(e.target.value)} />
-                </div>
-                <div>
-                  <label className={LABEL}>Компания</label>
-                  <input className={INPUT} placeholder="Если известна" value={companyRaw}
-                    onChange={e => setCompanyRaw(e.target.value)} />
-                </div>
-              </div>
-              <div className="flex flex-col items-start gap-2">
-                <button type="button" onClick={async () => { await autosave.flush(); setAddClientOpen(true) }}
-                  className="inline-flex items-center gap-1.5 bg-[#00c26b] hover:bg-[#00b360] disabled:opacity-50 text-white font-semibold text-xs px-3 py-2 rounded-lg transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#00c26b]">
-                  <UserPlus className="w-3.5 h-3.5" />
-                  Создать нового клиента
-                </button>
-                {annotation?.clientConfirmationStatus === 'PENDING' ? (
-                  <p className="text-amber-400 text-xs">Ожидает подтверждения в разделе «Клиенты»</p>
-                ) : (
-                  <button type="button" onClick={() => handleSave('PENDING')} disabled={saving || !clientNameRaw.trim()}
-                    className="text-xs text-zinc-500 hover:text-zinc-300 hover:underline disabled:opacity-40 disabled:no-underline">
-                    Отметить как ожидает подтверждения
-                  </button>
-                )}
-              </div>
-            </>
-          )}
-
-          <p className={SECTION}>Оплата</p>
-          {hasClient && clientId ? (
-            <SubscriptionPaymentBlock
-              ref={subscriptionRef}
-              clientId={clientId}
-              eventDurationHours={eventDurationHours}
-              initialUsage={annotation?.subscriptionUsage ?? null}
-              onModeChange={setPaymentMode}
-              onValidityChange={setSubscriptionValid}
-            />
-          ) : (
-            <p className="text-zinc-500 text-xs">Оплата через абонемент доступна после привязки клиента к записи.</p>
-          )}
-          {/* Переставлено ВЫШЕ OrderFinanceBlock (2026-07-23) — раньше блок
-              "Финансы монтажа" внутри OrderFinanceBlock отображался ДО того,
-              как администратор вообще решал, нужен ли монтаж, что было
-              нелогично (в OrderFormModal/CRM переключатель и так уже стоял
-              раньше — реордеринг требовался только здесь). Сама видимость
-              финансов монтажа по-прежнему определяется внутри OrderFinanceBlock
-              условием editingRequired — здесь только позиция самого переключателя. */}
-          <div>
-            <label className={LABEL}>Монтаж</label>
-            {/* Восстановлен прежний вид (две крупные кнопки-переключатели) по
-                просьбе пользователя 2026-07-19 — выпадающий список, введённый
-                этой доработкой ранее, оказался менее удобным для бинарного
-                выбора. Гейтинг по isBookingPast сознательно НЕ восстановлен:
-                это было отдельное самостоятельное решение (позволить
-                администратору указывать монтаж независимо от даты записи),
-                пользователь его не просил отменять. */}
-            <div className="flex gap-2">
-              <button type="button" onClick={() => handleEditingRequiredChange(true)}
-                className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00c26b] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 ${
-                  editingRequired === true ? 'bg-[#FACC15] text-black' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-white'
-                }`}>
-                Монтаж требуется
-              </button>
-              <button type="button" onClick={() => handleEditingRequiredChange(false)}
-                className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00c26b] focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 ${
-                  editingRequired === false ? 'bg-[#00c26b] text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-white'
-                }`}>
-                Монтаж не требуется
-              </button>
-            </div>
-            <p className="text-zinc-500 text-xs mt-1.5">
-              {editingRequired === null
-                ? 'Выберите, нужен ли монтаж, прежде чем прикладывать материалы — так администратор не забудет это сделать.'
-                : 'После сохранения заказ автоматически перейдёт в «Монтаж», если монтаж требуется, или в «Завершено», если монтаж не требуется.'}
-            </p>
-          </div>
-
-          {(!hasClient || paymentMode === 'ONE_TIME') && (
-            <>
-              <OrderFinanceBlock
-                ref={financeBlockRef}
-                orderId={annotation?.orderId ?? null}
-                revenueValue={estimatedPrice}
-                onRevenueChange={setEstimatedPrice}
-                editingRequired={editingRequired}
-                onMontageProjectsLoaded={setActiveMontageProjects}
-              />
-              <div>
-                <label className={LABEL}>Способ оплаты</label>
-                <select className={SELECT} value={paymentMethod} onChange={e => setPaymentMethod(e.target.value as PaymentMethod | '')}>
-                  <option value="">Не указан</option>
-                  {ONE_TIME_PAYMENT_METHODS.map(m => (
-                    <option key={m} value={m}>{PAYMENT_METHOD_LABELS[m]}</option>
-                  ))}
-                </select>
-              </div>
-            </>
-          )}
-          {paymentMissingNow && (
-            isBookingPast ? (
-              <div className="flex items-start gap-2 rounded-lg px-3 py-2.5 text-xs bg-amber-950/40 border border-amber-900 text-amber-300">
-                <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                <p>Оплата не указана.</p>
-              </div>
-            ) : (
-              <p className="text-zinc-500 text-xs">Оплата будет проверяться после завершения записи.</p>
-            )
-          )}
-
-          <p className={SECTION}>Материалы</p>
-          {shouldShowMaterialsBadge(vm) && (
-            <div className="flex items-center justify-between">
-              <MaterialsStatusBadge status={materialsStatus} nasBackupUrl={annotation?.nasBackupUrl} nasLinkRequired={annotation?.nasLinkRequired} size="md" showLabel />
-            </div>
-          )}
-
-          {!isBookingPast ? (
-            <p className="text-zinc-500 text-xs">Материалы ещё не добавлены — проверка начнётся после завершения записи.</p>
-          ) : (
-            <>
-              {/* Ссылка на Яндекс.Диск сама по себе снимает предупреждение —
-                  NAS-бэкап только дополнительный плюс, а не обязательное
-                  условие (см. schedule-model.ts: getMaterialsDisplay/
-                  getBookingAttentionInfo). Поэтому блока "hasYandexNow &&
-                  !hasNasNow" здесь больше нет — это больше не проблема, это норма.
-                  "Ok"-версии (yandexOkNow/nasOkNow) учитывают ещё и явное решение
-                  администратора "ссылка не требуется" — баннер тогда тоже не показывается. */}
-              {!nasOkNow && !yandexOkNow && (
-                <div className="flex items-start gap-2 rounded-lg px-3 py-2.5 text-xs bg-red-950/40 border border-red-900 text-red-300">
-                  <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                  <p>Съёмка уже прошла, но ссылка на Яндекс.Диск и бэкап на NAS не указаны.</p>
-                </div>
-              )}
-              {nasOkNow && !yandexOkNow && (
-                <div className="flex items-start gap-2 rounded-lg px-3 py-2.5 text-xs bg-amber-950/40 border border-amber-900 text-amber-300">
-                  <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                  <p>Бэкап на NAS указан, но ссылка на Яндекс.Диск для клиента не добавлена.</p>
-                </div>
-              )}
-              {nasOkNow && hasYandexNow && warningText && (
-                <div className="flex items-start gap-2 rounded-lg px-3 py-2.5 text-xs bg-amber-950/40 border border-amber-900 text-amber-300">
-                  <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                  <p>{warningText}</p>
-                </div>
-              )}
-            </>
-          )}
-
-          <div>
-            <label className={LABEL}>Ссылка на Яндекс.Диск</label>
-            <div className="flex items-center gap-2">
-              <input
-                className={`${INPUT} ${!yandexLinkRequired ? 'border-red-800/60 bg-red-950/20 text-red-200/80' : ''}`}
-                placeholder={yandexLinkRequired ? 'https://disk.yandex.ru/...' : 'Материалы на Яндекс.Диске не предусмотрены'}
-                value={yandexDiskUrl}
-                readOnly={!yandexLinkRequired}
-                onChange={e => setYandexDiskUrl(e.target.value)}
-              />
-              {annotation?.yandexDiskUrl && (
-                <>
-                  <button type="button" onClick={() => copyLink(annotation.yandexDiskUrl!, 'yandex')}
-                    className="flex-shrink-0 w-9 h-9 flex items-center justify-center rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300" title="Скопировать ссылку">
-                    {copiedField === 'yandex' ? <Check className="w-4 h-4 text-[#00c26b]" /> : <Copy className="w-4 h-4" />}
-                  </button>
-                  <a href={annotation.yandexDiskUrl} target="_blank" rel="noopener noreferrer"
-                    className="flex-shrink-0 w-9 h-9 flex items-center justify-center rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300" title="Открыть в новой вкладке">
-                    <ExternalLink className="w-4 h-4" />
-                  </a>
-                </>
-              )}
-            </div>
-            {!yandexLinkRequired && yandexUrlTrimmedLive && (
-              <p className="text-amber-400/80 text-xs mt-1.5">
-                В поле уже указана ссылка. Она будет сохранена, но перестанет считаться обязательной.
-              </p>
-            )}
-            {yandexLinkRequired && (
-              <div className="flex items-center justify-between mt-1.5">
-                <p className="text-zinc-500 text-xs">
-                  {yandexAddedAt && `Добавлена: ${format(yandexAddedAt, 'd MMM yyyy', { locale: ru })}`}
-                  {yandexExpiresAt && ` · Истекает: ${format(yandexExpiresAt, 'd MMM yyyy', { locale: ru })}`}
-                </p>
-                {/* Живая подсказка по формату — считается от того, что СЕЙЧАС
-                    введено в поле, а не от того, что уже сохранено. Только
-                    подсказка, никогда не блокирует "Сохранить". */}
-                <span className={`text-xs ${
-                  !yandexUrlTrimmedLive ? 'text-zinc-500' : looksLikeYandexLink ? 'text-[#00c26b]' : 'text-amber-400'
-                }`}>
-                  {!yandexUrlTrimmedLive
-                    ? 'Ссылка не указана'
-                    : looksLikeYandexLink
-                      ? 'Ссылка указана'
-                      : 'Не похоже на ссылку Яндекс.Диска — сохранить всё равно можно'}
-                </span>
-              </div>
-            )}
-            {!yandexLinkRequired && (
-              <p className="text-zinc-500 text-xs mt-1.5">
-                {annotation?.yandexNotRequiredConfirmedByName && annotation?.yandexNotRequiredConfirmedAt
-                  ? `Подтверждено: ${annotation.yandexNotRequiredConfirmedByName}, ${format(parseISO(annotation.yandexNotRequiredConfirmedAt), 'd MMM yyyy, HH:mm', { locale: ru })}`
-                  : 'Подтверждено администратором'}
-              </p>
-            )}
-            <div className="mt-1.5">
-              <ConfirmableStatusToggle
-                active={!yandexLinkRequired}
-                onConfirm={reason => { setYandexLinkRequired(false); setYandexNotRequiredReason(reason) }}
-                onDeactivate={() => { setYandexLinkRequired(true); setYandexNotRequiredReason(null) }}
-                normalLabel="Яндекс.Диск обязателен"
-                exceptionLabel="Ссылка не требуется"
-                dialogTitle="Сохранить заказ без ссылки на Яндекс.Диск?"
-                dialogBody="После подтверждения система перестанет требовать ссылку на Яндекс.Диск для этого заказа. Клиентская ссылка на материалы может отсутствовать. Убедитесь, что это соответствует договорённости и материалы переданы или будут переданы другим способом."
-                escalatedNotice={!nasLinkRequired ? 'После этого у заказа не останется ни одной обязательной ссылки на материалы.' : undefined}
-                size="sm"
-              />
-            </div>
-          </div>
-
-          <div>
-            <label className={LABEL}>Ссылка на бэкап / NAS</label>
-            <div className="flex items-center gap-2">
-              <input
-                className={`${INPUT} ${!nasLinkRequired ? 'border-red-800/60 bg-red-950/20 text-red-200/80' : ''}`}
-                placeholder={nasLinkRequired ? '\\\\nas\\... или https://...' : 'Бэкап материалов на NAS отсутствует'}
-                value={nasBackupUrl}
-                readOnly={!nasLinkRequired}
-                onChange={e => setNasBackupUrl(e.target.value)}
-              />
-              {annotation?.nasBackupUrl && (
-                <button type="button" onClick={() => copyLink(annotation.nasBackupUrl!, 'nas')}
-                  className="flex-shrink-0 w-9 h-9 flex items-center justify-center rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300" title="Скопировать ссылку">
-                  {copiedField === 'nas' ? <Check className="w-4 h-4 text-[#00c26b]" /> : <Copy className="w-4 h-4" />}
-                </button>
-              )}
-            </div>
-            {!nasLinkRequired && nasBackupUrl.trim() && (
-              <p className="text-amber-400/80 text-xs mt-1.5">
-                В поле уже указана ссылка. Она будет сохранена, но перестанет считаться обязательной.
-              </p>
-            )}
-            {nasLinkRequired && (
-              <div className="flex items-center justify-end mt-1.5">
-                <span className="text-xs text-zinc-400">{hasNasNow ? 'Бэкап указан' : 'Нет NAS-бэкапа'}</span>
-              </div>
-            )}
-            {!nasLinkRequired && (
-              <p className="text-zinc-500 text-xs mt-1.5">
-                {annotation?.nasNotRequiredConfirmedByName && annotation?.nasNotRequiredConfirmedAt
-                  ? `Подтверждено: ${annotation.nasNotRequiredConfirmedByName}, ${format(parseISO(annotation.nasNotRequiredConfirmedAt), 'd MMM yyyy, HH:mm', { locale: ru })}`
-                  : 'Подтверждено администратором'}
-              </p>
-            )}
-            <div className="mt-1.5">
-              <ConfirmableStatusToggle
-                active={!nasLinkRequired}
-                onConfirm={reason => { setNasLinkRequired(false); setNasNotRequiredReason(reason) }}
-                onDeactivate={() => { setNasLinkRequired(true); setNasNotRequiredReason(null) }}
-                normalLabel="Бэкап на NAS требуется"
-                exceptionLabel="NAS не требуется"
-                dialogTitle="Сохранить заказ без бэкапа на NAS?"
-                dialogBody="После подтверждения система перестанет требовать NAS-ссылку для этого заказа. В платформе не будет подтверждения наличия долгосрочного бэкапа материалов. Убедитесь, что хранение действительно не требуется или организовано другим способом."
-                escalatedNotice={!yandexLinkRequired ? 'После этого у заказа не останется ни одной обязательной ссылки на материалы.' : undefined}
-                normalIcon={HardDrive}
-                size="sm"
-              />
-            </div>
-          </div>
-
-          <div>
-            <label className={LABEL}>Комментарий по материалам</label>
-            <textarea className={`${INPUT} resize-none`} rows={2} value={materialsComment}
-              onChange={e => setMaterialsComment(e.target.value)} />
-          </div>
-          </>
-          )}
-
-          {annotation?.orderId && (
-            <>
-              <p className={SECTION}>Документы</p>
-              <WorkDocumentsSection orderId={annotation.orderId} clientId={annotation.clientId} onBeforeEditRelated={() => autosave.flush()} />
-            </>
           )}
 
           {error && (
@@ -976,19 +246,9 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
           )}
         </div>
 
-        {/* Причина блокировки "Сохранить" — вне скролл-области, всегда видна
-            рядом с самой кнопкой. Без этого администратор, редактируя
-            Материалы внизу формы, не видел бы, что кнопку заблокировал
-            совсем другой, не прокрученный в этот момент раздел "Оплата". */}
-        {subscriptionBlocksSave && (
-          <p className="px-6 pt-3 text-amber-400 text-xs flex-shrink-0">
-            Сохранение недоступно: в разделе «Оплата» выберите действующий абонемент или переключитесь на «Разовая оплата».
-          </p>
-        )}
-
         <div className="flex items-center gap-3 px-6 py-4 border-t border-zinc-800 flex-shrink-0">
           <SaveStatusIndicator status={autosave.status} error={autosave.error} />
-          <button type="button" onClick={() => handleSave()} disabled={saving || subscriptionBlocksSave}
+          <button type="button" onClick={handleSave} disabled={saving}
             className="flex-1 bg-[#00c26b] hover:bg-[#00b360] disabled:opacity-50 text-white font-semibold text-sm py-2.5 rounded-lg transition-colors">
             {saving ? 'Сохранение...' : 'Сохранить'}
           </button>
@@ -999,30 +259,5 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
         </div>
       </DialogContent>
     </Dialog>
-    {addClientOpen && (
-      <AddClientModal
-        open={addClientOpen}
-        onOpenChange={setAddClientOpen}
-        onSuccess={() => {}}
-        initialValues={{
-          firstName: guessedClientName,
-          contactPerson: clientNameRaw.trim(),
-          phone: contactRaw.trim(),
-          companyName: companyRaw.trim(),
-          source: 'OTHER',
-          customSource: 'Google Calendar',
-        }}
-        onCreated={client => { setAddClientOpen(false); handleLinkClient(client.id, client.name) }}
-      />
-    )}
-    {montageDisableDialogOpen && activeMontageProjects[0] && (
-      <MontageDisableChoiceDialog
-        open={montageDisableDialogOpen}
-        onOpenChange={setMontageDisableDialogOpen}
-        project={activeMontageProjects[0]}
-        onResolve={() => { if (pendingEditingRequired !== 'unset') setEditingRequired(pendingEditingRequired); setPendingEditingRequired('unset') }}
-      />
-    )}
-    </>
   )
 }

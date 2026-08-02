@@ -10,6 +10,7 @@ import GlowPill from '@/components/ui/glow-pill'
 import { createOrder, updateOrder, updateOrderStatus, unarchiveOrder, type OrderDTO, type OrderInput } from '@/lib/actions/orders'
 import { getClients } from '@/lib/actions/clients'
 import { findSimilarClientsForEvent, type SimilarClientMatch } from '@/lib/actions/schedule'
+import { chargeEventToSubscription, createSubscription, removeEventSubscriptionCharge } from '@/lib/actions/subscriptions'
 import { ORDER_BOARD_COLUMNS, ORDER_STATUS_LABELS, ORDER_PAYMENT_STATUS_LABELS, ORDER_PAYMENT_METHOD_LABELS, ARCHIVE_REASON_LABELS } from '@/lib/order-model'
 import { CLIENT_TYPE_LABELS } from '@/lib/client-model'
 import { ROOM_DICTIONARY, FORMAT_DICTIONARY } from '@/lib/import/normalize'
@@ -18,13 +19,13 @@ import {
   MAKEUP_QUICK_OPTIONS, MAKEUP_DURATION_MAX_MINUTES, normalizeMakeupDurationMinutes, computeMakeupInterval, formatMakeupRange,
 } from '@/lib/schedule-model'
 import { getOrderPromotion, getVisibleOrderComment, PROMOTION_PILL_LABEL, type OrderPromotionType } from '@/lib/promotion-model'
-import { getOrderPaymentSummary } from '@/lib/payment-model'
 import type { ClientType, OrderStatus, OrderPaymentStatus, PaymentMethod } from '@prisma/client'
 import AddClientModal from '../clients/AddClientModal'
 import WorkDocumentsSection from '@/components/documents/WorkDocumentsSection'
 import ConfirmableStatusToggle from '@/components/ui/confirmable-status-toggle'
 import OrderFinanceBlock, { type OrderFinanceBlockHandle } from '@/components/orders/OrderFinanceBlock'
 import MontageDisableChoiceDialog from '@/components/orders/MontageDisableChoiceDialog'
+import SubscriptionPaymentBlock, { type SubscriptionPaymentHandle } from '../schedule/SubscriptionPaymentBlock'
 import type { MontageProjectDTO } from '@/lib/actions/montage'
 import { useAutosave, readAutosaveDraft, clearAutosaveDraft, type StoredDraft } from '@/lib/hooks/use-autosave'
 import SaveStatusIndicator from '@/components/ui/save-status-indicator'
@@ -143,14 +144,16 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
   const [paymentStatus, setPaymentStatus] = useState<OrderPaymentStatus>(
     order?.paymentStatus ?? initialValues?.paymentStatus ?? 'NOT_SPECIFIED'
   )
-  // Оплата абонементом — структурная связь на записи расписания, редактируется
-  // только через карточку записи (EventCardModal/SubscriptionPaymentBlock), не
-  // здесь. Пока она есть, поля суммы/способа/статуса ниже не отправляются при
-  // сохранении (см. handleSave) — иначе случайный "Сохранить" из этой формы
-  // мог бы перезаписать реальную стоимость записи устаревшим null/'' из формы,
-  // которая эту оплату вообще не видит и не умеет редактировать.
-  const hasSubscriptionPayment = !!order?.subscriptionUsage
-  const paymentSummary = order ? getOrderPaymentSummary(order) : null
+  // Оплата абонементом — редактируется прямо здесь через SubscriptionPaymentBlock
+  // (2026-08-02: перенесено из EventCardModal, тот же компонент — не вторая
+  // независимая реализация, см. AGENTS.md, правило 11). Доступна только когда
+  // есть клиент и есть (или появится этим же сохранением) запись в расписании
+  // — структурно необходим scheduleEventId, см. SubscriptionUsage в схеме.
+  const [paymentMode, setPaymentMode] = useState<'ONE_TIME' | 'SUBSCRIPTION'>(
+    order?.subscriptionUsage ? 'SUBSCRIPTION' : 'ONE_TIME',
+  )
+  const [subscriptionValid, setSubscriptionValid] = useState(true)
+  const subscriptionRef = useRef<SubscriptionPaymentHandle>(null)
   const [status, setStatus] = useState<OrderStatus>(order?.status ?? 'LEAD')
 
   // Материалы/гримёр/монтаж — есть чему их редактировать только когда у
@@ -198,6 +201,19 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
   // что сервер использует для решения "создавать ли ScheduleEvent" (см.
   // hasBookingTime в createOrder, src/lib/actions/orders.ts).
   const willHaveBooking = isEdit ? !!order!.hasBooking : !!(date && startTime && endTime)
+
+  // Оплата абонементом показывается только когда есть клиент и запись — та же
+  // связка условий, что в EventCardModal (hasClient && requiresFullBookingForm).
+  // Для isEdit willHaveBooking завязан на order.hasBooking (уже сохранённый
+  // факт) — значит order.scheduleEventId здесь гарантированно не null, когда
+  // это условие истинно (см. handleSave, где этот id и используется).
+  const payingBySubscription = willHaveBooking && !!clientId && paymentMode === 'SUBSCRIPTION'
+  const subscriptionBlocksSave = willHaveBooking && !!clientId && paymentMode === 'SUBSCRIPTION' && !subscriptionValid
+  const eventDurationHours = Math.max(0, (() => {
+    const start = combineDateTime(date, startTime)
+    const end = combineDateTime(date, endTime)
+    return start && end ? (new Date(end).getTime() - new Date(start).getTime()) / 3600000 : 0
+  })())
 
   const makeupDurationMinutes = normalizeMakeupDurationMinutes(makeupDurationInput, makeupDurationUnit)
   const makeupShootStart = combineDateTime(date, startTime)
@@ -322,7 +338,7 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
       room: room.trim(),
       comment: comment.trim(),
       promotionType,
-      ...(hasSubscriptionPayment ? {} : {
+      ...(payingBySubscription ? {} : {
         preliminaryAmount: preliminaryAmount ? parseFloat(preliminaryAmount) : null,
         paymentMethod: paymentMethod || null,
         paymentStatus,
@@ -427,6 +443,12 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
     setSaving(true)
     setError(null)
 
+    // Id записи расписания для списания/снятия абонемента — после этой же
+    // функции определяем его либо из уже известного order.scheduleEventId
+    // (isEdit: willHaveBooking требует order.hasBooking, значит id уже есть
+    // до сохранения), либо из ответа createOrder (только что созданная запись).
+    let scheduleEventIdForCharge: string | null = isEdit ? order!.scheduleEventId : null
+
     if (isEdit) {
       const result = await autosave.flush()
       if (!result.ok) {
@@ -441,6 +463,7 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
         setError(result.error)
         return
       }
+      scheduleEventIdForCharge = result.data.scheduleEventId
       // Заказ только что создан этим сохранением — если администратор уже
       // успел ввести прибыль/комментарий к ней (заказа тогда ещё не было,
       // OrderFinanceBlock не мог их сохранить), досылаем прямо сейчас, пока
@@ -454,6 +477,35 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
         setSaving(false)
         setError(statusResult.error)
         return
+      }
+    }
+
+    // Абонемент — тот же перенос логики из EventCardModal.handleSave (2026-08-02):
+    // списание/снятие/создание нового абонемента после того, как заказ и его
+    // запись в расписании уже точно сохранены.
+    if (willHaveBooking && clientId && scheduleEventIdForCharge) {
+      if (paymentMode === 'ONE_TIME') {
+        if (order?.subscriptionUsage) {
+          const removed = await removeEventSubscriptionCharge(scheduleEventIdForCharge)
+          if (!removed.ok) { setSaving(false); setError(removed.error); return }
+        }
+      } else {
+        const value = subscriptionRef.current?.getValue()
+        if (value?.paymentType === 'EXISTING') {
+          const charged = await chargeEventToSubscription({
+            scheduleEventId: scheduleEventIdForCharge, subscriptionId: value.subscriptionId, usedHours: value.usedHours,
+          })
+          if (!charged.ok) { setSaving(false); setError(charged.error); return }
+        } else if (value?.paymentType === 'NEW') {
+          const created = await createSubscription({
+            clientId, packageHours: value.packageHours, paidAmount: value.paidAmount, purchasedAt: value.purchasedAt,
+          })
+          if (!created.ok) { setSaving(false); setError(created.error); return }
+          const charged = await chargeEventToSubscription({
+            scheduleEventId: scheduleEventIdForCharge, subscriptionId: created.data.id, usedHours: value.usedHours,
+          })
+          if (!charged.ok) { setSaving(false); setError(charged.error); return }
+        }
       }
     }
 
@@ -898,15 +950,19 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
             )}
 
             <p className={SECTION}>Оплата</p>
-            {hasSubscriptionPayment ? (
-              <div className="bg-blue-950/20 border border-blue-800/40 rounded-lg px-3 py-2.5 text-sm">
-                <p className="text-blue-300 font-medium">{paymentSummary!.displayPrimary}</p>
-                <p className="text-blue-400/80 text-xs mt-0.5">{paymentSummary!.displaySecondary}</p>
-                <p className="text-zinc-500 text-xs mt-1.5">
-                  Изменить абонемент или списанные часы можно в карточке записи (Расписание).
-                </p>
-              </div>
-            ) : (
+            {willHaveBooking && clientId ? (
+              <SubscriptionPaymentBlock
+                ref={subscriptionRef}
+                clientId={clientId}
+                eventDurationHours={eventDurationHours}
+                initialUsage={order?.subscriptionUsage ?? null}
+                onModeChange={setPaymentMode}
+                onValidityChange={setSubscriptionValid}
+              />
+            ) : willHaveBooking ? (
+              <p className="text-zinc-500 text-xs">Оплата через абонемент доступна после привязки клиента к записи.</p>
+            ) : null}
+            {(!willHaveBooking || !clientId || paymentMode === 'ONE_TIME') && (
               <>
                 <OrderFinanceBlock
                   ref={financeBlockRef}
@@ -950,6 +1006,12 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
             )}
           </div>
 
+          {subscriptionBlocksSave && (
+            <p className="px-6 pt-3 text-amber-400 text-xs flex-shrink-0">
+              Сохранение недоступно: в разделе «Оплата» выберите действующий абонемент или переключитесь на «Разовая оплата».
+            </p>
+          )}
+
           <div className="flex items-center gap-3 px-6 py-4 border-t border-zinc-800 flex-shrink-0">
             {isEdit && <SaveStatusIndicator status={autosave.status} error={autosave.error} />}
             {order?.isArchived && (
@@ -959,7 +1021,7 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
                 {unarchiving ? 'Возвращаем...' : 'Вернуть из архива'}
               </button>
             )}
-            <button type="button" onClick={handleSave} disabled={saving}
+            <button type="button" onClick={handleSave} disabled={saving || subscriptionBlocksSave}
               className="flex-1 bg-[#00c26b] hover:bg-[#00b360] disabled:opacity-50 text-white font-semibold text-sm py-2.5 rounded-lg transition-colors">
               {saving ? 'Сохранение...' : 'Сохранить'}
             </button>

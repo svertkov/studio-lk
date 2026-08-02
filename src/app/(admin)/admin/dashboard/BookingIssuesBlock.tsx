@@ -5,12 +5,14 @@ import { subDays } from 'date-fns'
 import { AlertTriangle } from 'lucide-react'
 import type { CalendarEvent } from '@/lib/google-calendar'
 import { getScheduleAnnotations } from '@/lib/actions/schedule'
+import { getOrder, type OrderDTO } from '@/lib/actions/orders'
 import {
   mergeScheduleEvent, getEffectiveEventType, getBookingAttentionInfo,
   type ScheduleEventDTO, type ScheduleEventVM,
 } from '@/lib/schedule-model'
 import { requiresFullBookingForm } from '@/lib/event-type'
 import EventCardModal from '../schedule/EventCardModal'
+import OrderFormModal from '../crm/OrderFormModal'
 import AttentionSubsection, { type AttentionRecord } from './AttentionSubsection'
 
 const LOOKBACK_DAYS = 30
@@ -36,7 +38,12 @@ export default function BookingIssuesBlock() {
   const [events, setEvents] = useState<CalendarEvent[]>([])
   const [annotations, setAnnotations] = useState<Record<string, ScheduleEventDTO>>({})
   const [loaded, setLoaded] = useState(false)
-  const [selectedEventId, setSelectedEventId] = useState<string | null>(null)
+  // Все записи здесь уже коммерческие (см. фильтр requiresFullBookingForm
+  // ниже) — открывают каноническую OrderFormModal, если уже привязан заказ
+  // (см. ScheduleView.tsx, тот же паттерн), иначе — прежний EventCardModal.
+  type SelectedCard = { kind: 'order'; order: OrderDTO } | { kind: 'event'; vm: ScheduleEventVM }
+  const [selectedCard, setSelectedCard] = useState<SelectedCard | null>(null)
+  const [loadingCard, setLoadingCard] = useState(false)
 
   const fetchProblems = useCallback(async () => {
     try {
@@ -78,8 +85,17 @@ export default function BookingIssuesBlock() {
   const criticalRecords = attentionRecords.filter(r => r.attention.severity === 'critical').sort(byStart)
   const warningRecords = attentionRecords.filter(r => r.attention.severity === 'warning').sort(byStart)
 
-  const selectedVm: ScheduleEventVM | null =
-    [...criticalRecords, ...warningRecords].find(r => r.vm.calendarEvent.id === selectedEventId)?.vm ?? null
+  async function handleOpen(eventId: string) {
+    const record = [...criticalRecords, ...warningRecords].find(r => r.vm.calendarEvent.id === eventId)
+    if (!record) return
+    if (record.vm.annotation?.orderId) {
+      setLoadingCard(true)
+      const result = await getOrder(record.vm.annotation.orderId)
+      setLoadingCard(false)
+      if (result.ok) { setSelectedCard({ kind: 'order', order: result.data }); return }
+    }
+    setSelectedCard({ kind: 'event', vm: record.vm })
+  }
 
   if (!loaded || attentionRecords.length === 0) return null
 
@@ -112,7 +128,7 @@ export default function BookingIssuesBlock() {
           title="Незаполненные карточки"
           severity="critical"
           records={criticalRecords}
-          onOpen={setSelectedEventId}
+          onOpen={handleOpen}
         />
       )}
 
@@ -121,16 +137,30 @@ export default function BookingIssuesBlock() {
           title="Заполнены частично"
           severity="warning"
           records={warningRecords}
-          onOpen={setSelectedEventId}
+          onOpen={handleOpen}
         />
       )}
 
-      {selectedVm && (
-        <EventCardModal
-          vm={selectedVm}
-          onOpenChange={open => { if (!open) setSelectedEventId(null) }}
+      {selectedCard?.kind === 'order' && (
+        <OrderFormModal
+          order={selectedCard.order}
+          onOpenChange={open => { if (!open) setSelectedCard(null) }}
           onSaved={fetchProblems}
         />
+      )}
+      {selectedCard?.kind === 'event' && (
+        <EventCardModal
+          vm={selectedCard.vm}
+          onOpenChange={open => { if (!open) setSelectedCard(null) }}
+          onSaved={fetchProblems}
+        />
+      )}
+      {loadingCard && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40">
+          <div className="flex items-center gap-2 bg-zinc-900 border border-zinc-800 rounded-lg px-4 py-3 text-sm text-zinc-300">
+            Открываем заказ...
+          </div>
+        </div>
       )}
     </div>
   )

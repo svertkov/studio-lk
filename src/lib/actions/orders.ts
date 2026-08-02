@@ -10,7 +10,7 @@ import type {
 } from '@prisma/client'
 import { getDocumentDisplayNumber } from '@/lib/document-model'
 import { computeDurationMinutes, isOrderReadyForArchive, archiveReasonForStatus } from '@/lib/order-model'
-import { computeMaterialsStatus, computeYandexLinkExpiry } from '@/lib/schedule-model'
+import { computeMaterialsStatus, computeYandexLinkExpiry, type ScheduleEventSubscriptionInfo } from '@/lib/schedule-model'
 import { parseEventTitle } from '@/lib/event-category'
 import type { EventType } from '@/lib/event-type'
 import { ensureMontageProjectForOrder } from '@/lib/actions/montage'
@@ -59,8 +59,9 @@ type OrderScheduleEvent = Pick<ScheduleEvent,
   'yandexLinkRequired' | 'nasLinkRequired' |
   'yandexNotRequiredConfirmedAt' | 'yandexNotRequiredReason' | 'nasNotRequiredConfirmedAt' | 'nasNotRequiredReason'> & {
     subscriptionUsage: {
+      subscriptionId: string
       usedHours: number
-      subscription: { packageHours: number; openingUsedHours: number; usages: { usedHours: number }[] }
+      subscription: { packageHours: number; openingUsedHours: number; purchasedAt: Date; usages: { usedHours: number }[] }
     } | null
     yandexNotRequiredConfirmedBy: { name: string | null; email: string } | null
     nasNotRequiredConfirmedBy: { name: string | null; email: string } | null
@@ -114,8 +115,9 @@ const ORDER_INCLUDE = {
       // риска накопления дублей при повторных чтениях/сохранениях.
       subscriptionUsage: {
         select: {
+          subscriptionId: true,
           usedHours: true,
-          subscription: { select: { packageHours: true, openingUsedHours: true, usages: { select: { usedHours: true } } } },
+          subscription: { select: { packageHours: true, openingUsedHours: true, purchasedAt: true, usages: { select: { usedHours: true } } } },
         },
       },
     },
@@ -167,8 +169,11 @@ export interface OrderDTO {
   // Оплата абонементом — структурная связь на ScheduleEvent.subscriptionUsage,
   // не текст и не отдельная копия для заказа. null — абонемент не привязан
   // (и у заявок без записи в расписании — всегда null, привязать абонемент
-  // можно только к реальной записи).
-  subscriptionUsage: { usedHours: number; remainingHours: number } | null
+  // можно только к реальной записи). Тот же тип, что уже использует
+  // EventCardModal/SubscriptionPaymentBlock (annotation.subscriptionUsage,
+  // schedule-model.ts) — не заводим второй, чуть более узкий shape только
+  // для карточки заказа (см. AGENTS.md, правило 4).
+  subscriptionUsage: ScheduleEventSubscriptionInfo | null
   comment: string | null
   // Структурированная пометка акции — источник правды для карточки заказа и
   // для отображения (см. src/lib/promotion-model.ts: getOrderPromotion). Тот
@@ -282,7 +287,10 @@ function toDTO(row: OrderWithRelations): OrderDTO {
     financeComment: row.financeComment,
     hasActiveMontageProject: activeMontageProjects.length > 0,
     subscriptionUsage: row.scheduleEvent?.subscriptionUsage ? {
+      subscriptionId: row.scheduleEvent.subscriptionUsage.subscriptionId,
       usedHours: row.scheduleEvent.subscriptionUsage.usedHours,
+      purchasedAt: row.scheduleEvent.subscriptionUsage.subscription.purchasedAt.toISOString(),
+      packageHours: row.scheduleEvent.subscriptionUsage.subscription.packageHours,
       remainingHours: row.scheduleEvent.subscriptionUsage.subscription.packageHours
         - row.scheduleEvent.subscriptionUsage.subscription.openingUsedHours
         - row.scheduleEvent.subscriptionUsage.subscription.usages.reduce((sum, u) => sum + u.usedHours, 0),

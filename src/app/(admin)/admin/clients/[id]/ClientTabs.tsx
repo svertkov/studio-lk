@@ -33,7 +33,9 @@ import { isValidHttpUrl } from '@/lib/url'
 import type { CalendarEvent } from '@/lib/google-calendar'
 import DonutChart from '@/components/ui/donut-chart'
 import MetricCard, { METRIC_GRID_CLASSNAME } from '@/components/ui/metric-card'
+import { getOrder, type OrderDTO } from '@/lib/actions/orders'
 import EventCardModal from '../../schedule/EventCardModal'
+import OrderFormModal from '../../crm/OrderFormModal'
 import SubscriptionActionsMenu from '@/components/subscriptions/SubscriptionActionsMenu'
 import SubscriptionDetailModal from '../../finance/subscriptions/SubscriptionDetailModal'
 import type { MontageProjectDTO } from '@/lib/actions/montage'
@@ -396,12 +398,16 @@ export default function ClientTabs({ client, subscriptions, shoots, shootsSummar
   const [noteText, setNoteText] = useState('')
   const [savingNote, setSavingNote] = useState(false)
   const [noteError, setNoteError] = useState<string | null>(null)
-  // Карточка конкретной съёмки открывается прямо отсюда — переиспользует тот
-  // же EventCardModal, что и раздел "Расписание". calendarEvent для него
-  // строится из снэпшот-полей самой аннотации (у ScheduleEvent всегда есть
-  // аннотация, если он вообще существует, см. schedule-model.ts) — с этой
-  // страницы нет доступа к живому Google Calendar, а он и не нужен.
-  const [openVm, setOpenVm] = useState<ScheduleEventVM | null>(null)
+  // Карточка конкретной съёмки открывается прямо отсюда — переиспользует ту
+  // же каноническую OrderFormModal, что «Заказы»/CRM/Расписание, если у
+  // записи уже есть привязанный заказ (см. ScheduleView.tsx, тот же паттерн);
+  // иначе (историческая запись до launch-даты заказов) — прежний EventCardModal.
+  // calendarEvent для EventCardModal строится из снэпшот-полей самой аннотации
+  // (у ScheduleEvent всегда есть аннотация, если он вообще существует, см.
+  // schedule-model.ts) — с этой страницы нет доступа к живому Google Calendar,
+  // а он и не нужен.
+  type SelectedCard = { kind: 'order'; order: OrderDTO } | { kind: 'event'; vm: ScheduleEventVM }
+  const [selectedCard, setSelectedCard] = useState<SelectedCard | null>(null)
   const [openingRowId, setOpeningRowId] = useState<string | null>(null)
   // Открытие единой карточки абонемента (SubscriptionDetailModal) — та же
   // самая, что и в Финансах, и в подборе абонемента заказа.
@@ -446,7 +452,11 @@ export default function ClientTabs({ client, subscriptions, shoots, shootsSummar
       calendar: 'studio',
       color: '#00c26b',
     }
-    setOpenVm(mergeScheduleEvent(calendarEvent, annotation))
+    if (annotation?.orderId) {
+      const result = await getOrder(annotation.orderId)
+      if (result.ok) { setSelectedCard({ kind: 'order', order: result.data }); return }
+    }
+    setSelectedCard({ kind: 'event', vm: mergeScheduleEvent(calendarEvent, annotation) })
   }
 
   async function handleSaveNote() {
@@ -940,11 +950,18 @@ export default function ClientTabs({ client, subscriptions, shoots, shootsSummar
         )}
       </div>
 
-      {openVm && (
+      {selectedCard?.kind === 'order' && (
+        <OrderFormModal
+          order={selectedCard.order}
+          onOpenChange={open => { if (!open) setSelectedCard(null) }}
+          onSaved={() => { setSelectedCard(null); router.refresh() }}
+        />
+      )}
+      {selectedCard?.kind === 'event' && (
         <EventCardModal
-          vm={openVm}
-          onOpenChange={open => { if (!open) setOpenVm(null) }}
-          onSaved={() => { setOpenVm(null); router.refresh() }}
+          vm={selectedCard.vm}
+          onOpenChange={open => { if (!open) setSelectedCard(null) }}
+          onSaved={() => { setSelectedCard(null); router.refresh() }}
         />
       )}
 
