@@ -13,11 +13,14 @@ import { ru } from 'date-fns/locale'
 import { ChevronLeft, ChevronRight, RefreshCw, HelpCircle } from 'lucide-react'
 import type { CalendarEvent } from '@/lib/google-calendar'
 import { getScheduleAnnotations } from '@/lib/actions/schedule'
-import { mergeScheduleEvent, type ScheduleEventDTO, type ScheduleEventVM } from '@/lib/schedule-model'
+import { getOrder, type OrderDTO } from '@/lib/actions/orders'
+import { mergeScheduleEvent, getEffectiveEventType, type ScheduleEventDTO, type ScheduleEventVM } from '@/lib/schedule-model'
+import { requiresFullBookingForm } from '@/lib/event-type'
 import DayView from './DayView'
 import WeekView from './WeekView'
 import MonthView from './MonthView'
 import EventCardModal from './EventCardModal'
+import OrderFormModal from '../crm/OrderFormModal'
 
 type ViewMode = 'day' | 'week' | 'month'
 
@@ -67,8 +70,21 @@ export default function ScheduleView() {
   const [annotations, setAnnotations] = useState<Record<string, ScheduleEventDTO>>({})
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [selectedEventId, setSelectedEventId] = useState<string | null>(null)
   const [showLegend, setShowLegend] = useState(false)
+
+  // Коммерческое событие, уже привязанное к заказу (annotation.orderId),
+  // открывается канонической карточкой заказа (OrderFormModal) — той же, что
+  // CRM и «Заказы» (см. AGENTS.md, "Единый источник данных": одна и та же
+  // запись не должна открывать две разные независимые карточки в зависимости
+  // от точки входа). Некоммерческие события (встречи/отсутствия/служебные
+  // пометки) и коммерческие записи, у которых ещё нет orderId (переходное
+  // состояние или историческая запись до ORDERS_AUTO_IMPORT_LAUNCH_DATE, см.
+  // schedule.ts) — по-прежнему открывают EventCardModal без изменений, чтобы
+  // не потерять работающий сценарий там, где канонической карточке нечего
+  // загружать.
+  type SelectedCard = { kind: 'order'; order: OrderDTO } | { kind: 'event'; vm: ScheduleEventVM }
+  const [selectedCard, setSelectedCard] = useState<SelectedCard | null>(null)
+  const [loadingCard, setLoadingCard] = useState(false)
 
   const fetchEvents = useCallback(async () => {
     setLoading(true)
@@ -111,9 +127,20 @@ export default function ScheduleView() {
   }, [calendarEvents])
 
   const eventVms: ScheduleEventVM[] = calendarEvents.map(ce => mergeScheduleEvent(ce, annotations[ce.id] ?? null))
-  const selectedVm = eventVms.find(vm => vm.calendarEvent.id === selectedEventId) ?? null
 
-  function handleSelectEvent(vm: ScheduleEventVM) { setSelectedEventId(vm.calendarEvent.id) }
+  async function handleSelectEvent(vm: ScheduleEventVM) {
+    const effectiveType = getEffectiveEventType(vm)
+    if (requiresFullBookingForm(effectiveType) && vm.annotation?.orderId) {
+      setLoadingCard(true)
+      const result = await getOrder(vm.annotation.orderId)
+      setLoadingCard(false)
+      if (result.ok) { setSelectedCard({ kind: 'order', order: result.data }); return }
+      // Не удалось загрузить заказ (например, гонка с параллельным удалением) —
+      // не оставляем администратора без карточки вовсе, откатываемся на
+      // прежний путь через EventCardModal, а не показываем пустой экран.
+    }
+    setSelectedCard({ kind: 'event', vm })
+  }
   function handleSelectDay(day: Date) { setAnchorDate(day); setViewMode('day') }
 
   function goPrev() {
@@ -245,6 +272,18 @@ export default function ScheduleView() {
         </div>
       )}
 
+      {/* Короткая пауза между кликом по записи и открытием карточки — уходит
+          на getOrder() для коммерческих записей (см. handleSelectEvent) —
+          без индикатора клик выглядел бы никак не отреагировавшим. */}
+      {loadingCard && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40">
+          <div className="flex items-center gap-2 bg-zinc-900 border border-zinc-800 rounded-lg px-4 py-3 text-sm text-zinc-300">
+            <RefreshCw className="w-4 h-4 animate-spin" />
+            Открываем заказ...
+          </div>
+        </div>
+      )}
+
       {/* Основной вид расписания */}
       {viewMode === 'day' && <DayView day={anchorDate} events={eventVms} onSelectEvent={handleSelectEvent} />}
       {viewMode === 'week' && <WeekView weekDays={weekDays} events={eventVms} onSelectEvent={handleSelectEvent} />}
@@ -252,11 +291,20 @@ export default function ScheduleView() {
         <MonthView month={anchorDate} events={eventVms} onSelectEvent={handleSelectEvent} onSelectDay={handleSelectDay} />
       )}
 
-      {/* Карточка события */}
-      {selectedVm && (
+      {/* Карточка события/заказа — см. SelectedCard выше: коммерческая запись
+          с уже привязанным заказом открывает каноническую OrderFormModal,
+          остальное — прежний EventCardModal. */}
+      {selectedCard?.kind === 'order' && (
+        <OrderFormModal
+          order={selectedCard.order}
+          onOpenChange={open => { if (!open) setSelectedCard(null) }}
+          onSaved={refetchAnnotations}
+        />
+      )}
+      {selectedCard?.kind === 'event' && (
         <EventCardModal
-          vm={selectedVm}
-          onOpenChange={open => { if (!open) setSelectedEventId(null) }}
+          vm={selectedCard.vm}
+          onOpenChange={open => { if (!open) setSelectedCard(null) }}
           onSaved={refetchAnnotations}
         />
       )}

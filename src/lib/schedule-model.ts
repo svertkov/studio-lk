@@ -499,6 +499,19 @@ export function computeMakeupInterval(shootStart: Date | null, makeupDurationMin
   return { start: new Date(shootStart.getTime() - makeupDurationMinutes * 60_000), end: shootStart }
 }
 
+// "08:00–09:00", либо с датой спереди, если гримёр уходит на предыдущий
+// календарный день ("9 мар., 23:00–09:00" — начало съёмки в 00:xx). Общий
+// для EventCardModal и OrderFormModal — обе карточки показывают одинаковый
+// блок "Гримёр" (см. AGENTS.md, единый источник данных).
+export function formatMakeupRange(interval: MakeupInterval): string {
+  const time = (d: Date) => d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
+  const sameDay = interval.start.toDateString() === interval.end.toDateString()
+  const startLabel = sameDay
+    ? time(interval.start)
+    : `${interval.start.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })}, ${time(interval.start)}`
+  return `${startLabel}–${time(interval.end)}`
+}
+
 // Единый helper форматирования минут — переиспользуется в карточке записи,
 // карточке клиента, списке заказов и tooltip'ах, чтобы не дублировать
 // логику "минуты -> человекочитаемая строка" в нескольких компонентах.

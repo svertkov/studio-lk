@@ -15,7 +15,7 @@ import {
   MATERIALS_WARNING_TEXT,
   getEffectiveEventType, isPastBooking, shouldShowMaterialsBadge,
   type ClientConfirmationStatus,
-  MAKEUP_QUICK_OPTIONS, MAKEUP_DURATION_MAX_MINUTES, normalizeMakeupDurationMinutes, computeMakeupInterval, type MakeupInterval,
+  MAKEUP_QUICK_OPTIONS, MAKEUP_DURATION_MAX_MINUTES, normalizeMakeupDurationMinutes, computeMakeupInterval, formatMakeupRange,
 } from '@/lib/schedule-model'
 import { EVENT_TYPE_LABELS, requiresFullBookingForm, type EventType } from '@/lib/event-type'
 import { PAYMENT_METHOD_LABELS, ONE_TIME_PAYMENT_METHODS, type PaymentMethod } from '@/lib/schedule-model'
@@ -31,17 +31,6 @@ import MontageDisableChoiceDialog from '@/components/orders/MontageDisableChoice
 import type { MontageProjectDTO } from '@/lib/actions/montage'
 import { useAutosave, readAutosaveDraft, clearAutosaveDraft, type StoredDraft } from '@/lib/hooks/use-autosave'
 import SaveStatusIndicator from '@/components/ui/save-status-indicator'
-
-// "08:00–09:00", либо с датой спереди, если гримёр уходит на предыдущий
-// календарный день ("9 мар., 23:00–09:00" — начало съёмки в 00:xx).
-function formatMakeupRange(interval: MakeupInterval): string {
-  const time = (d: Date) => d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
-  const sameDay = interval.start.toDateString() === interval.end.toDateString()
-  const startLabel = sameDay
-    ? time(interval.start)
-    : `${interval.start.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })}, ${time(interval.start)}`
-  return `${startLabel}–${time(interval.end)}`
-}
 
 const ROOM_OPTIONS = ROOM_DICTIONARY.map(e => e.canonical)
 const FORMAT_OPTIONS = FORMAT_DICTIONARY.map(e => e.canonical)

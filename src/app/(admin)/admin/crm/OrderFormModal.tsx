@@ -9,9 +9,14 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import GlowPill from '@/components/ui/glow-pill'
 import { createOrder, updateOrder, updateOrderStatus, unarchiveOrder, type OrderDTO, type OrderInput } from '@/lib/actions/orders'
 import { getClients } from '@/lib/actions/clients'
+import { findSimilarClientsForEvent, type SimilarClientMatch } from '@/lib/actions/schedule'
 import { ORDER_BOARD_COLUMNS, ORDER_STATUS_LABELS, ORDER_PAYMENT_STATUS_LABELS, ORDER_PAYMENT_METHOD_LABELS, ARCHIVE_REASON_LABELS } from '@/lib/order-model'
 import { CLIENT_TYPE_LABELS } from '@/lib/client-model'
 import { ROOM_DICTIONARY, FORMAT_DICTIONARY } from '@/lib/import/normalize'
+import { EVENT_TYPE_LABELS, type EventType } from '@/lib/event-type'
+import {
+  MAKEUP_QUICK_OPTIONS, MAKEUP_DURATION_MAX_MINUTES, normalizeMakeupDurationMinutes, computeMakeupInterval, formatMakeupRange,
+} from '@/lib/schedule-model'
 import { getOrderPromotion, getVisibleOrderComment, PROMOTION_PILL_LABEL, type OrderPromotionType } from '@/lib/promotion-model'
 import { getOrderPaymentSummary } from '@/lib/payment-model'
 import type { ClientType, OrderStatus, OrderPaymentStatus, PaymentMethod } from '@prisma/client'
@@ -109,6 +114,17 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
   const [companyName, setCompanyName] = useState(order?.companyName ?? initialValues?.companyName ?? '')
   const [serviceType, setServiceType] = useState(order?.serviceType ?? initialValues?.serviceType ?? '')
   const [room, setRoom] = useState(order?.room ?? initialValues?.room ?? '')
+  // Тип события — источник правды на ScheduleEvent (см. OrderDTO.eventType,
+  // AGENTS.md/ORDERS.md "Типы события"), не гейтится наличием брони: акцию и
+  // тип события можно отметить и на заявке без даты (тот же принцип, что у
+  // promotionType ниже).
+  const [eventType, setEventType] = useState<EventType>(order?.eventType ?? 'STUDIO_BOOKING')
+  // Блок "Выезд" — только для eventType=OFFSITE_SHOOT, живёт только на
+  // ScheduleEvent (см. schema.prisma, комментарий у ScheduleEvent.shootAddress).
+  const [shootAddress, setShootAddress] = useState(order?.shootAddress ?? '')
+  const [venueName, setVenueName] = useState(order?.venueName ?? '')
+  const [venueContact, setVenueContact] = useState(order?.venueContact ?? '')
+  const [logisticsComment, setLogisticsComment] = useState(order?.logisticsComment ?? '')
   // Комментарий инициализируется уже очищенным от текста акции (см.
   // src/lib/promotion-model.ts) — акция теперь отдельный тоггл (promotionType),
   // не часть свободного текста. Для старых заказов, где акция ещё жила только
@@ -138,9 +154,16 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
   const [status, setStatus] = useState<OrderStatus>(order?.status ?? 'LEAD')
 
   // Материалы/гримёр/монтаж — есть чему их редактировать только когда у
-  // заказа уже есть своя запись в расписании (order.hasBooking): источник
-  // правды на ScheduleEvent, см. комментарий у OrderDTO.yandexDiskUrl.
-  const [makeupDurationMinutes, setMakeupDurationMinutes] = useState(order?.makeupDurationMinutes?.toString() ?? '')
+  // заказа уже есть (или появится этим же сохранением) своя запись в
+  // расписании (см. willHaveBooking ниже): источник правды на ScheduleEvent,
+  // см. комментарий у OrderDTO.yandexDiskUrl.
+  // Гримёр — длительность хранится строкой + единицей измерения только для
+  // удобства ручного ввода; при сохранении всегда уходят целые минуты через
+  // normalizeMakeupDurationMinutes (тот же приём, что в EventCardModal).
+  const [makeupDurationInput, setMakeupDurationInput] = useState(
+    order?.makeupDurationMinutes != null ? String(order.makeupDurationMinutes) : '',
+  )
+  const [makeupDurationUnit, setMakeupDurationUnit] = useState<'minutes' | 'hours'>('minutes')
   const [editingRequired, setEditingRequired] = useState<'' | 'true' | 'false'>(
     order?.editingRequired === true ? 'true' : order?.editingRequired === false ? 'false' : ''
   )
@@ -168,10 +191,68 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
   const [startTime, setStartTime] = useState(startSplit.time)
   const [endTime, setEndTime] = useState(endSplit.time)
 
+  // Единое условие "у заказа есть или появится этим же сохранением своя
+  // запись в расписании" — заменяет прежнее "isEdit && order?.hasBooking",
+  // которое при СОЗДАНИИ заказа скрывало материалы/монтаж/тип события даже
+  // если дата/время уже заполнены в этой же форме. Ровно то же условие,
+  // что сервер использует для решения "создавать ли ScheduleEvent" (см.
+  // hasBookingTime в createOrder, src/lib/actions/orders.ts).
+  const willHaveBooking = isEdit ? !!order!.hasBooking : !!(date && startTime && endTime)
+
+  const makeupDurationMinutes = normalizeMakeupDurationMinutes(makeupDurationInput, makeupDurationUnit)
+  const makeupShootStart = combineDateTime(date, startTime)
+  const makeupInterval = computeMakeupInterval(makeupShootStart ? new Date(makeupShootStart) : null, makeupDurationMinutes)
+
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState<ClientOption[]>([])
   const [searching, setSearching] = useState(false)
   const [addClientOpen, setAddClientOpen] = useState(false)
+
+  // Проактивный подбор существующего клиента — тот же поиск, что уже
+  // используется в EventCardModal (findSimilarClientsForEvent), просто
+  // питается уже существующими раздельными полями этой формы (clientPhone/
+  // clientTelegram/clientEmail) вместо одного сырого "contact". НЕ заменяет
+  // ручной поиск выше (searchQuery/getClients) — это два взаимодополняющих
+  // способа найти клиента (см. AGENTS.md, правило 11: не вторая независимая
+  // реализация, а то же действие "привязать клиента" другим путём входа),
+  // а не два конкурирующих поиска.
+  const [similarMatches, setSimilarMatches] = useState<SimilarClientMatch[] | null>(null)
+  const [searchingSimilar, setSearchingSimilar] = useState(false)
+  const [selectedMatchId, setSelectedMatchId] = useState('')
+
+  async function runSimilarClientSearch() {
+    const contact = [clientPhone, clientTelegram, clientEmail].filter(v => v.trim()).join(' ')
+    if (!clientName.trim() && !contact.trim() && !companyName.trim()) { setSimilarMatches([]); return }
+    setSearchingSimilar(true)
+    const result = await findSimilarClientsForEvent({
+      name: clientName.trim() || undefined,
+      contact: contact.trim() || undefined,
+      company: companyName.trim() || undefined,
+    })
+    setSearchingSimilar(false)
+    setSimilarMatches(result.ok ? result.data : [])
+    setSelectedMatchId('')
+  }
+
+  // Автопоиск при открытии карточки существующей заявки без привязанного
+  // клиента — то же условие, что и у ручного триггера ниже, но без
+  // synchronous setState в теле эффекта (см. память проекта). Не запускается
+  // повторно при каждой правке полей — для этого есть кнопка "Искать".
+  useEffect(() => {
+    if (clientId) return
+    const contact = [clientPhone, clientTelegram, clientEmail].filter(v => v.trim()).join(' ')
+    if (!clientName.trim() && !contact.trim() && !companyName.trim()) return
+    let cancelled = false
+    findSimilarClientsForEvent({
+      name: clientName.trim() || undefined,
+      contact: contact.trim() || undefined,
+      company: companyName.trim() || undefined,
+    }).then(result => {
+      if (!cancelled) setSimilarMatches(result.ok ? result.data : [])
+    })
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -204,10 +285,12 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
     if (c.companyName) setCompanyName(c.companyName)
     setSearchQuery('')
     setSearchResults([])
+    setSimilarMatches(null)
   }
 
   function unlinkClient() {
     setClientId(null)
+    setSimilarMatches(null)
   }
 
   // Отключение "Монтаж требуется" при уже существующем проекте монтажа —
@@ -247,10 +330,19 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
       plannedStartTime: combineDateTime(date, startTime),
       plannedEndTime: combineDateTime(date, endTime),
       ...(telegramConversationId ? { telegramConversationId } : {}),
+      // Тип события и поля выезда не гейтятся willHaveBooking — как и акция,
+      // их можно отметить и на заявке без даты; сервер применяет их только
+      // если действительно создаёт/обновляет ScheduleEvent (см. createOrder/
+      // updateOrder, hasBookingTime).
+      eventType,
+      shootAddress: shootAddress.trim(),
+      venueName: venueName.trim(),
+      venueContact: venueContact.trim(),
+      logisticsComment: logisticsComment.trim(),
       // Материалы/гримёр/монтаж применяются только когда секция реально
-      // видна (isEdit && order.hasBooking) — см. условие рендера ниже.
-      ...(isEdit && order!.hasBooking ? {
-        makeupDurationMinutes: makeupDurationMinutes ? parseInt(makeupDurationMinutes, 10) : null,
+      // видна — см. willHaveBooking и условие рендера ниже.
+      ...(willHaveBooking ? {
+        makeupDurationMinutes,
         editingRequired: editingRequired === '' ? null : editingRequired === 'true',
         yandexDiskUrl: yandexDiskUrl.trim(),
         nasBackupUrl: nasBackupUrl.trim(),
@@ -315,7 +407,12 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
     if (input.preliminaryAmount !== undefined) setPreliminaryAmount(input.preliminaryAmount != null ? String(input.preliminaryAmount) : '')
     if (input.paymentMethod !== undefined) setPaymentMethod(input.paymentMethod ?? '')
     if (input.paymentStatus !== undefined) setPaymentStatus(input.paymentStatus ?? 'NOT_SPECIFIED')
-    if (input.makeupDurationMinutes !== undefined) setMakeupDurationMinutes(input.makeupDurationMinutes != null ? String(input.makeupDurationMinutes) : '')
+    if (input.eventType !== undefined) setEventType(input.eventType ?? 'STUDIO_BOOKING')
+    if (input.shootAddress !== undefined) setShootAddress(input.shootAddress ?? '')
+    if (input.venueName !== undefined) setVenueName(input.venueName ?? '')
+    if (input.venueContact !== undefined) setVenueContact(input.venueContact ?? '')
+    if (input.logisticsComment !== undefined) setLogisticsComment(input.logisticsComment ?? '')
+    if (input.makeupDurationMinutes !== undefined) { setMakeupDurationInput(input.makeupDurationMinutes != null ? String(input.makeupDurationMinutes) : ''); setMakeupDurationUnit('minutes') }
     if (input.editingRequired !== undefined) setEditingRequired(input.editingRequired === null || input.editingRequired === undefined ? '' : input.editingRequired ? 'true' : 'false')
     if (input.yandexDiskUrl !== undefined) setYandexDiskUrl(input.yandexDiskUrl ?? '')
     if (input.nasBackupUrl !== undefined) setNasBackupUrl(input.nasBackupUrl ?? '')
@@ -468,6 +565,48 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
                   <input className={INPUT} placeholder="Если известна" value={companyName} onChange={e => setCompanyName(e.target.value)} />
                 </Field>
 
+                {/* Проактивный подбор — заполняется автоматически по уже
+                    введённым выше полям (см. runSimilarClientSearch), не
+                    требует отдельного запроса от администратора. Тот же
+                    UX, что уже есть в EventCardModal (findSimilarClientsForEvent),
+                    перенесён сюда как отдельный, дополняющий ручной поиск ниже
+                    механизм — не замена. */}
+                {searchingSimilar && <p className="text-zinc-500 text-xs">Ищем похожего клиента...</p>}
+                {!searchingSimilar && similarMatches && similarMatches.length > 0 && (
+                  <div className="bg-zinc-800/50 border border-zinc-700 rounded-lg p-3 space-y-2">
+                    {similarMatches.length === 1 ? (
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-zinc-300 text-xs">
+                          Похожий клиент: <span className="text-zinc-100 font-medium">{similarMatches[0].name}</span>
+                        </p>
+                        <button type="button" onClick={() => selectClient({ id: similarMatches[0].id, name: similarMatches[0].name, phone: similarMatches[0].phone })}
+                          className="text-xs text-[#00c26b] hover:underline flex-shrink-0 whitespace-nowrap">
+                          Привязать
+                        </button>
+                      </div>
+                    ) : (
+                      <div>
+                        <Label>Похожие клиенты — выберите</Label>
+                        <div className="flex items-center gap-2 mt-1.5">
+                          <SelectField value={selectedMatchId} onChange={e => setSelectedMatchId(e.target.value)}>
+                            <option value="">Выберите клиента</option>
+                            {similarMatches.map(m => (
+                              <option key={m.id} value={m.id}>{m.name}{m.phone ? ` · ${m.phone}` : ''}</option>
+                            ))}
+                          </SelectField>
+                          <button type="button" disabled={!selectedMatchId} className="text-xs text-[#00c26b] hover:underline disabled:opacity-50 flex-shrink-0 whitespace-nowrap"
+                            onClick={() => {
+                              const m = similarMatches.find(x => x.id === selectedMatchId)
+                              if (m) selectClient({ id: m.id, name: m.name, phone: m.phone })
+                            }}>
+                            Привязать
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 <div>
                   <Field>
                     <Label>Найти существующего клиента</Label>
@@ -496,16 +635,30 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
                       ))}
                     </div>
                   )}
-                  <button type="button" onClick={async () => { await autosave.flush(); setAddClientOpen(true) }}
-                    className="flex items-center gap-1.5 text-xs text-zinc-400 hover:text-white underline mt-2">
-                    <UserPlus className="w-3.5 h-3.5" />
-                    Создать нового клиента
-                  </button>
+                  <div className="flex items-center gap-3 mt-2">
+                    <button type="button" onClick={async () => { await autosave.flush(); setAddClientOpen(true) }}
+                      className="flex items-center gap-1.5 text-xs text-zinc-400 hover:text-white underline">
+                      <UserPlus className="w-3.5 h-3.5" />
+                      Создать нового клиента
+                    </button>
+                    <button type="button" onClick={runSimilarClientSearch} disabled={searchingSimilar}
+                      className="text-xs text-zinc-400 hover:text-white underline disabled:opacity-50">
+                      Искать похожих по введённым данным
+                    </button>
+                  </div>
                 </div>
               </>
             )}
 
             <p className={SECTION}>Услуга</p>
+            <Field>
+              <Label>Тип события</Label>
+              <SelectField value={eventType} onChange={e => setEventType(e.target.value as EventType)}>
+                {(Object.keys(EVENT_TYPE_LABELS) as EventType[]).map(t => (
+                  <option key={t} value={t}>{EVENT_TYPE_LABELS[t]}</option>
+                ))}
+              </SelectField>
+            </Field>
             <Row>
               <Field>
                 <Label>Формат</Label>
@@ -516,10 +669,14 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
               </Field>
               <Field>
                 <Label>Зал</Label>
-                <SelectField value={room} onChange={e => setRoom(e.target.value)}>
-                  <option value="">Не указан</option>
-                  {ROOM_DICTIONARY.map(e => <option key={e.canonical} value={e.canonical}>{e.canonical}</option>)}
-                </SelectField>
+                {eventType === 'OFFSITE_SHOOT' ? (
+                  <p className="text-zinc-400 text-sm px-3 py-2">Локация: выездная</p>
+                ) : (
+                  <SelectField value={room} onChange={e => setRoom(e.target.value)}>
+                    <option value="">Не указан</option>
+                    {ROOM_DICTIONARY.map(e => <option key={e.canonical} value={e.canonical}>{e.canonical}</option>)}
+                  </SelectField>
+                )}
               </Field>
             </Row>
             <Field>
@@ -558,30 +715,110 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
                 <input className={INPUT} type="time" value={endTime} onChange={e => setEndTime(e.target.value)} />
               </Field>
             </Row>
-            {isEdit && order?.hasBooking && (
+            {willHaveBooking && (
               <p className="text-zinc-500 text-xs">
-                У заказа уже есть запись в расписании платформы — при изменении даты/времени она обновится.
+                {isEdit && order?.hasBooking
+                  ? 'У заказа уже есть запись в расписании платформы — при изменении даты/времени она обновится.'
+                  : 'После сохранения появится запись в расписании платформы.'}
               </p>
             )}
 
-            {isEdit && order?.hasBooking && (
+            {eventType === 'OFFSITE_SHOOT' && willHaveBooking && (
               <>
-                <p className={SECTION}>Материалы и монтаж</p>
+                <p className={SECTION}>Выезд</p>
+                <Field>
+                  <Label>Адрес съёмки</Label>
+                  <input className={INPUT} placeholder="напр. ул. Ленина, 10" value={shootAddress}
+                    onChange={e => setShootAddress(e.target.value)} />
+                </Field>
                 <Row>
                   <Field>
-                    <Label>Гримёр, мин</Label>
-                    <input className={INPUT} type="number" min="0" placeholder="напр. 30" value={makeupDurationMinutes}
-                      onChange={e => setMakeupDurationMinutes(e.target.value)} />
+                    <Label>Площадка / локация</Label>
+                    <input className={INPUT} value={venueName} onChange={e => setVenueName(e.target.value)} />
                   </Field>
                   <Field>
-                    <Label>Монтаж</Label>
-                    <SelectField value={editingRequired} onChange={e => handleEditingRequiredChange(e.target.value as '' | 'true' | 'false')}>
-                      <option value="">Не указано</option>
-                      <option value="true">Нужен</option>
-                      <option value="false">Не нужен</option>
-                    </SelectField>
+                    <Label>Контакт на площадке</Label>
+                    <input className={INPUT} value={venueContact} onChange={e => setVenueContact(e.target.value)} />
                   </Field>
                 </Row>
+                <Field>
+                  <Label>Комментарий по логистике</Label>
+                  <textarea className={TEXTAREA} rows={2} value={logisticsComment} onChange={e => setLogisticsComment(e.target.value)} />
+                </Field>
+                {!shootAddress.trim() && (
+                  <p className="bg-amber-950/40 border border-amber-900 text-amber-300 text-xs rounded-lg px-3 py-2">
+                    Для выездной съёмки не указан адрес
+                  </p>
+                )}
+              </>
+            )}
+
+            {willHaveBooking && (
+              <>
+                <p className={SECTION}>Материалы и монтаж</p>
+                <Field>
+                  <Label>Время на гримёра до съёмки</Label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      className={`${INPUT} flex-1`}
+                      type="number"
+                      min="0"
+                      inputMode="decimal"
+                      placeholder="0"
+                      value={makeupDurationInput}
+                      onChange={e => setMakeupDurationInput(e.target.value)}
+                    />
+                    <div className="flex items-center gap-1 bg-zinc-800 border border-zinc-700 rounded-lg p-1 flex-shrink-0">
+                      {(['minutes', 'hours'] as const).map(u => (
+                        <button
+                          key={u}
+                          type="button"
+                          onClick={() => setMakeupDurationUnit(u)}
+                          className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
+                            makeupDurationUnit === u ? 'bg-zinc-700 text-white' : 'text-zinc-400 hover:text-zinc-200'
+                          }`}
+                        >
+                          {u === 'minutes' ? 'мин' : 'ч'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </Field>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {MAKEUP_QUICK_OPTIONS.map(opt => {
+                    const active = makeupDurationUnit === 'minutes' && makeupDurationMinutes === opt.minutes
+                    return (
+                      <GlowPill
+                        key={opt.minutes}
+                        as="button"
+                        color={active ? 'green' : 'zinc'}
+                        onClick={() => { setMakeupDurationInput(String(opt.minutes)); setMakeupDurationUnit('minutes') }}
+                        title={`Гримёр: ${opt.label}`}
+                        ariaLabel={`Установить время гримёра: ${opt.label}`}
+                      >
+                        {opt.label}
+                      </GlowPill>
+                    )
+                  })}
+                </div>
+                {makeupDurationMinutes != null && (
+                  makeupInterval ? (
+                    <p className="text-zinc-400 text-xs">Гримёр: {formatMakeupRange(makeupInterval)}</p>
+                  ) : (
+                    <p className="text-zinc-500 text-xs">Интервал будет рассчитан после выбора времени съёмки</p>
+                  )
+                )}
+                <p className="text-zinc-600 text-[11px]">
+                  Не входит в длительность и стоимость основной съёмки. Максимум — {MAKEUP_DURATION_MAX_MINUTES / 60} часов.
+                </p>
+                <Field>
+                  <Label>Монтаж</Label>
+                  <SelectField value={editingRequired} onChange={e => handleEditingRequiredChange(e.target.value as '' | 'true' | 'false')}>
+                    <option value="">Не указано</option>
+                    <option value="true">Нужен</option>
+                    <option value="false">Не нужен</option>
+                  </SelectField>
+                </Field>
                 <Field>
                   <Label>Яндекс.Диск</Label>
                   <input

@@ -12,6 +12,7 @@ import { getDocumentDisplayNumber } from '@/lib/document-model'
 import { computeDurationMinutes, isOrderReadyForArchive, archiveReasonForStatus } from '@/lib/order-model'
 import { computeMaterialsStatus, computeYandexLinkExpiry } from '@/lib/schedule-model'
 import { parseEventTitle } from '@/lib/event-category'
+import type { EventType } from '@/lib/event-type'
 import { ensureMontageProjectForOrder } from '@/lib/actions/montage'
 import { writeAuditLog, resolveValidUserId } from '@/lib/audit'
 import type { ArchiveReason } from '@prisma/client'
@@ -52,7 +53,8 @@ function revalidateOrderPaths(clientId?: string | null): void {
 
 type OrderClient = Pick<Client, 'name' | 'phone' | 'telegram' | 'email' | 'type' | 'companyName' | 'contractState'>
 type OrderScheduleEvent = Pick<ScheduleEvent,
-  'id' | 'camerasCount' | 'editingRequired' | 'yandexDiskUrl' | 'yandexDiskUrlExpiresAt' | 'nasBackupUrl' |
+  'id' | 'eventType' | 'shootAddress' | 'venueName' | 'venueContact' | 'logisticsComment' |
+  'camerasCount' | 'editingRequired' | 'yandexDiskUrl' | 'yandexDiskUrlExpiresAt' | 'nasBackupUrl' |
   'materialsComment' | 'notes' | 'makeupDurationMinutes' | 'promotionType' | 'estimatedPrice' | 'paymentMethod' |
   'yandexLinkRequired' | 'nasLinkRequired' |
   'yandexNotRequiredConfirmedAt' | 'yandexNotRequiredReason' | 'nasNotRequiredConfirmedAt' | 'nasNotRequiredReason'> & {
@@ -93,7 +95,8 @@ const ORDER_INCLUDE = {
   montageProjects: { select: { id: true, editorAmount: true, clientAmount: true, status: true } },
   scheduleEvent: {
     select: {
-      id: true, camerasCount: true, editingRequired: true,
+      id: true, eventType: true, shootAddress: true, venueName: true, venueContact: true, logisticsComment: true,
+      camerasCount: true, editingRequired: true,
       yandexDiskUrl: true, yandexDiskUrlExpiresAt: true, nasBackupUrl: true, materialsComment: true,
       yandexLinkRequired: true, nasLinkRequired: true,
       yandexNotRequiredConfirmedAt: true, yandexNotRequiredReason: true,
@@ -174,6 +177,23 @@ export interface OrderDTO {
   promotionType: OrderPromotionType | null
   googleEventId: string | null
   hasBooking: boolean
+  // Id связанной ScheduleEvent — нужен, чтобы карточка заказа могла работать
+  // с сущностями, которые технически ключуются по scheduleEventId, а не
+  // orderId (см. SubscriptionUsage.scheduleEventId в schema.prisma — не
+  // дублируем это поле на Order, читаем через существующую связь). null у
+  // заявок без записи в расписании (hasBooking === false).
+  scheduleEventId: string | null
+  // Тип события (см. AGENTS.md/ORDERS.md, "Типы события") — источник правды
+  // всегда на ScheduleEvent (см. event-type.ts), у заявок без записи в
+  // расписании ещё не определён (null, форма показывает выбор по умолчанию).
+  eventType: EventType | null
+  // Блок "Выезд" — только для eventType=OFFSITE_SHOOT, живут только на
+  // ScheduleEvent, не дублируются на Order (см. schema.prisma, комментарий
+  // над ScheduleEvent.shootAddress).
+  shootAddress: string | null
+  venueName: string | null
+  venueContact: string | null
+  logisticsComment: string | null
   // Снимок части полей связанной записи расписания (см. ScheduleEvent) — их
   // источник правды там, здесь только для отображения на карточке заказа,
   // чтобы не открывать отдельно карточку записи ради зала/камер/монтажа.
@@ -276,6 +296,12 @@ function toDTO(row: OrderWithRelations): OrderDTO {
     promotionType: row.scheduleEvent?.promotionType ?? row.promotionType,
     googleEventId: row.googleEventId,
     hasBooking: !!row.scheduleEvent,
+    scheduleEventId: row.scheduleEvent?.id ?? null,
+    eventType: row.scheduleEvent?.eventType ?? null,
+    shootAddress: row.scheduleEvent?.shootAddress ?? null,
+    venueName: row.scheduleEvent?.venueName ?? null,
+    venueContact: row.scheduleEvent?.venueContact ?? null,
+    logisticsComment: row.scheduleEvent?.logisticsComment ?? null,
     camerasCount: row.scheduleEvent?.camerasCount ?? null,
     editingRequired: row.scheduleEvent?.editingRequired ?? null,
     hasMaterials: !!(row.scheduleEvent?.yandexDiskUrl || row.scheduleEvent?.nasBackupUrl),
@@ -492,6 +518,14 @@ export interface OrderInput {
   room?: string
   plannedStartTime?: string | null
   plannedEndTime?: string | null
+  // Тип события и поля выезда — применяются только когда заказ имеет (или
+  // получает этим же сохранением) запись в расписании, см. OrderDTO.eventType.
+  // Не заполнено — считается STUDIO_BOOKING по умолчанию (см. createOrder).
+  eventType?: EventType
+  shootAddress?: string | null
+  venueName?: string | null
+  venueContact?: string | null
+  logisticsComment?: string | null
   // Заполняется только при создании заказа из кнопки "Создать заказ" на
   // странице Telegram-диалога (см. src/lib/actions/telegram.ts) — источник
   // заказа автоматически становится TELEGRAM_BOT, а не MANUAL.
@@ -569,7 +603,11 @@ export async function createOrder(
             promotionType: created.promotionType,
             estimatedPrice: created.preliminaryAmount,
             paymentMethod: created.paymentMethod,
-            eventType: 'STUDIO_BOOKING',
+            eventType: input.eventType ?? 'STUDIO_BOOKING',
+            shootAddress: input.shootAddress?.trim() || null,
+            venueName: input.venueName?.trim() || null,
+            venueContact: input.venueContact?.trim() || null,
+            logisticsComment: input.logisticsComment?.trim() || null,
           },
         })
       }
@@ -608,6 +646,14 @@ export async function updateOrder(
     // ScheduleEvent тем же способом, что и комментарий/акция.
     const nextPreliminaryAmount = input.preliminaryAmount !== undefined ? input.preliminaryAmount : existing.preliminaryAmount
     const nextPaymentMethod = input.paymentMethod !== undefined ? input.paymentMethod : existing.paymentMethod
+    // Тот же дуал-сорсинг, применён к типу события и полям выезда — источник
+    // правды остаётся ScheduleEvent (см. OrderDTO.eventType), у ещё не
+    // забронированного заказа умолчание — STUDIO_BOOKING (см. createOrder).
+    const nextEventType: EventType = input.eventType !== undefined ? input.eventType : (existing.scheduleEvent?.eventType ?? 'STUDIO_BOOKING')
+    const nextShootAddress = input.shootAddress !== undefined ? (input.shootAddress?.trim() || null) : (existing.scheduleEvent?.shootAddress ?? null)
+    const nextVenueName = input.venueName !== undefined ? (input.venueName?.trim() || null) : (existing.scheduleEvent?.venueName ?? null)
+    const nextVenueContact = input.venueContact !== undefined ? (input.venueContact?.trim() || null) : (existing.scheduleEvent?.venueContact ?? null)
+    const nextLogisticsComment = input.logisticsComment !== undefined ? (input.logisticsComment?.trim() || null) : (existing.scheduleEvent?.logisticsComment ?? null)
     const nextStart = input.plannedStartTime !== undefined
       ? (input.plannedStartTime ? new Date(input.plannedStartTime) : null)
       : existing.plannedStartTime
@@ -750,6 +796,11 @@ export async function updateOrder(
               promotionType: nextPromotionType,
               estimatedPrice: nextPreliminaryAmount,
               paymentMethod: nextPaymentMethod,
+              eventType: nextEventType,
+              shootAddress: nextShootAddress,
+              venueName: nextVenueName,
+              venueContact: nextVenueContact,
+              logisticsComment: nextLogisticsComment,
               yandexDiskUrl: nextYandexUrl,
               yandexDiskUrlAddedAt,
               yandexDiskUrlExpiresAt,
@@ -801,7 +852,11 @@ export async function updateOrder(
               promotionType: nextPromotionType,
               estimatedPrice: nextPreliminaryAmount,
               paymentMethod: nextPaymentMethod,
-              eventType: 'STUDIO_BOOKING',
+              eventType: nextEventType,
+              shootAddress: nextShootAddress,
+              venueName: nextVenueName,
+              venueContact: nextVenueContact,
+              logisticsComment: nextLogisticsComment,
             },
           })
         }
