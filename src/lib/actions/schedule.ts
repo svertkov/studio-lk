@@ -4,12 +4,13 @@ import { revalidatePath } from 'next/cache'
 import { prisma } from '@/lib/prisma'
 import { auth } from '@/auth'
 import {
-  type ClientConfirmationStatus, type ScheduleEvent, type SubscriptionUsage, type ClientSubscription,
+  type ClientConfirmationStatus,
   type EventType, type PaymentMethod, type MaterialsStatus, type OrderPromotionType,
   Prisma,
 } from '@prisma/client'
 import {
   computeMaterialsStatus, computeYandexLinkExpiry,
+  SCHEDULE_EVENT_INCLUDE, toScheduleEventDTO as toDTO,
   type ScheduleEventDTO,
 } from '@/lib/schedule-model'
 import { classifyEventType, requiresFullBookingForm } from '@/lib/event-type'
@@ -38,83 +39,9 @@ function writeAuditLog(params: { userId: string | null; action: string; entityId
 }
 
 // ============================================================
-// СЕРИАЛИЗАЦИЯ
+// СЕРИАЛИЗАЦИЯ — SCHEDULE_EVENT_INCLUDE/toDTO живут в schedule-model.ts (см.
+// комментарий там) — нужны и здесь, и в actions/orders.ts (buildVmFromOrder).
 // ============================================================
-
-type SubscriptionUsageWithSubscription = SubscriptionUsage & {
-  subscription: ClientSubscription & { usages: SubscriptionUsage[] }
-}
-
-type ScheduleEventWithClient = ScheduleEvent & {
-  client: { name: string } | null
-  subscriptionUsage: SubscriptionUsageWithSubscription | null
-  order: { status: string } | null
-  yandexNotRequiredConfirmedBy: { name: string | null; email: string } | null
-  nasNotRequiredConfirmedBy: { name: string | null; email: string } | null
-}
-
-const SCHEDULE_EVENT_INCLUDE = {
-  client: { select: { name: true } },
-  subscriptionUsage: { include: { subscription: { include: { usages: true } } } },
-  order: { select: { status: true } },
-  yandexNotRequiredConfirmedBy: { select: { name: true, email: true } },
-  nasNotRequiredConfirmedBy: { select: { name: true, email: true } },
-} as const
-
-function toDTO(row: ScheduleEventWithClient): ScheduleEventDTO {
-  const su = row.subscriptionUsage
-  return {
-    id: row.id,
-    calendarEventId: row.calendarEventId,
-    title: row.title,
-    description: row.description,
-    startAt: row.startAt ? row.startAt.toISOString() : null,
-    endAt: row.endAt ? row.endAt.toISOString() : null,
-    clientId: row.clientId,
-    clientName: row.client?.name ?? null,
-    clientNameRaw: row.clientNameRaw,
-    contactRaw: row.contactRaw,
-    companyRaw: row.companyRaw,
-    room: row.room,
-    format: row.format,
-    camerasCount: row.camerasCount,
-    shootAddress: row.shootAddress,
-    venueName: row.venueName,
-    venueContact: row.venueContact,
-    logisticsComment: row.logisticsComment,
-    estimatedPrice: row.estimatedPrice,
-    paymentMethod: row.paymentMethod,
-    notes: row.notes,
-    promotionType: row.promotionType,
-    yandexDiskUrl: row.yandexDiskUrl,
-    yandexDiskUrlAddedAt: row.yandexDiskUrlAddedAt ? row.yandexDiskUrlAddedAt.toISOString() : null,
-    yandexDiskUrlExpiresAt: row.yandexDiskUrlExpiresAt ? row.yandexDiskUrlExpiresAt.toISOString() : null,
-    nasBackupUrl: row.nasBackupUrl,
-    materialsComment: row.materialsComment,
-    materialsStatus: row.materialsStatus,
-    yandexLinkRequired: row.yandexLinkRequired,
-    nasLinkRequired: row.nasLinkRequired,
-    yandexNotRequiredConfirmedAt: row.yandexNotRequiredConfirmedAt ? row.yandexNotRequiredConfirmedAt.toISOString() : null,
-    yandexNotRequiredConfirmedByName: row.yandexNotRequiredConfirmedBy?.name ?? row.yandexNotRequiredConfirmedBy?.email ?? null,
-    yandexNotRequiredReason: row.yandexNotRequiredReason,
-    nasNotRequiredConfirmedAt: row.nasNotRequiredConfirmedAt ? row.nasNotRequiredConfirmedAt.toISOString() : null,
-    nasNotRequiredConfirmedByName: row.nasNotRequiredConfirmedBy?.name ?? row.nasNotRequiredConfirmedBy?.email ?? null,
-    nasNotRequiredReason: row.nasNotRequiredReason,
-    editingRequired: row.editingRequired,
-    clientConfirmationStatus: row.clientConfirmationStatus,
-    eventType: row.eventType,
-    makeupDurationMinutes: row.makeupDurationMinutes,
-    orderId: row.orderId,
-    isCancelled: row.order?.status === 'CANCELLED',
-    subscriptionUsage: su ? {
-      subscriptionId: su.subscriptionId,
-      usedHours: su.usedHours,
-      purchasedAt: su.subscription.purchasedAt.toISOString(),
-      packageHours: su.subscription.packageHours,
-      remainingHours: su.subscription.packageHours - su.subscription.openingUsedHours - su.subscription.usages.reduce((sum, u) => sum + u.usedHours, 0),
-    } : null,
-  }
-}
 
 // ============================================================
 // АННОТАЦИИ ДЛЯ ОТОБРАЖАЕМЫХ СОБЫТИЙ КАЛЕНДАРЯ

@@ -6,7 +6,9 @@ import { format, parseISO, startOfDay, endOfDay, startOfWeek, endOfWeek, startOf
 import { ru } from 'date-fns/locale'
 import { Search, Plus, Table2, ArrowUp, ArrowDown, ArrowUpDown, Cloud, CloudOff, Server, ChevronDown } from 'lucide-react'
 import GlowPill from '@/components/ui/glow-pill'
-import type { OrderDTO } from '@/lib/actions/orders'
+import { buildVmFromOrder, type OrderDTO } from '@/lib/actions/orders'
+import type { ScheduleEventVM } from '@/lib/schedule-model'
+import EventCardModal from '../schedule/EventCardModal'
 import {
   ORDER_BOARD_COLUMNS, ORDER_STATUS_LABELS, getOrderStatusConfig, getOrderStatusVars,
   ORDER_PAYMENT_STATUS_LABELS, ORDER_PAYMENT_STATUS_COLORS,
@@ -425,6 +427,12 @@ export default function OrdersListView({ initialOrders }: Props) {
   // "Показать более ранние месяцы" (см. groupOrdersByMonth, order-model.ts).
   const [visibleMonthsCount, setVisibleMonthsCount] = useState(ORDERS_MONTHS_INITIAL_VISIBLE)
 
+  // EventCardModal.tsx — единственный канонический UI карточки заказа (см.
+  // ORDERS.md, «Карточка заказа»). OrderFormModal.tsx остаётся временно (до
+  // отдельной задачи для «заявки без брони», см. [TARGET] там же) только для
+  // создания нового заказа с нуля и для заказов без ScheduleEvent —
+  // buildVmFromOrder возвращает data:null именно в этом случае.
+  const [selectedVm, setSelectedVm] = useState<ScheduleEventVM | null>(null)
   const [editingOrder, setEditingOrder] = useState<OrderDTO | null>(null)
   const [creating, setCreating] = useState(false)
 
@@ -502,7 +510,10 @@ export default function OrdersListView({ initialOrders }: Props) {
     router.refresh()
   }
 
-  function openOrder(order: OrderDTO) {
+  async function openOrder(order: OrderDTO) {
+    const result = await buildVmFromOrder(order)
+    if (result.ok && result.data) { setSelectedVm(result.data); return }
+    // Заявка без брони (или сбой загрузки) — временный fallback, см. ORDERS.md, [TARGET].
     setEditingOrder(order)
   }
 
@@ -653,6 +664,13 @@ export default function OrdersListView({ initialOrders }: Props) {
       )}
       </div>
 
+      {selectedVm && (
+        <EventCardModal
+          vm={selectedVm}
+          onOpenChange={open => { if (!open) setSelectedVm(null) }}
+          onSaved={handleChanged}
+        />
+      )}
       {creating && (
         <OrderFormModal order={null} onOpenChange={setCreating} onSaved={handleChanged} />
       )}

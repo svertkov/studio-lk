@@ -7,8 +7,10 @@ import { format, parseISO } from 'date-fns'
 import { ru } from 'date-fns/locale'
 import { ArrowLeft, Search, Archive, Paperclip } from 'lucide-react'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
-import type { OrderDTO } from '@/lib/actions/orders'
+import { buildVmFromOrder, type OrderDTO } from '@/lib/actions/orders'
 import { getOrderPaymentSummary } from '@/lib/payment-model'
+import type { ScheduleEventVM } from '@/lib/schedule-model'
+import EventCardModal from '../../schedule/EventCardModal'
 
 type Tab = 'ALL' | 'COMPLETED' | 'CANCELLED'
 
@@ -66,11 +68,15 @@ export default function OrdersArchiveView({ initialOrders }: Props) {
   const router = useRouter()
   const [tab, setTab] = useState<Tab>('ALL')
   const [search, setSearch] = useState('')
+  // EventCardModal.tsx — единственный канонический UI карточки заказа (см.
+  // ORDERS.md, «Карточка заказа»). OrderFormModal.tsx остаётся временно (см.
+  // [TARGET] там же) только для архивных заявок без ScheduleEvent (например
+  // отказ ещё на этапе "Заявка", без брони) — buildVmFromOrder возвращает
+  // data:null именно в этом случае. Динамический импорт — лениво, не тянуть
+  // лишний код в бандл архива, если такая заявка вообще встретится.
   const [openOrder, setOpenOrder] = useState<OrderDTO | null>(null)
-  // Динамический импорт формы заказа не нужен — она и так уже клиентский
-  // компонент, но подключаем её лениво через state, чтобы не тянуть лишний
-  // код в бандл архива, если карточку никто не открыл.
   const [OrderFormModal, setOrderFormModal] = useState<typeof import('../OrderFormModal').default | null>(null)
+  const [selectedVm, setSelectedVm] = useState<ScheduleEventVM | null>(null)
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -89,6 +95,9 @@ export default function OrdersArchiveView({ initialOrders }: Props) {
   }), [initialOrders])
 
   async function openCard(order: OrderDTO) {
+    const result = await buildVmFromOrder(order)
+    if (result.ok && result.data) { setSelectedVm(result.data); return }
+    // Заявка без брони (или сбой загрузки) — временный fallback, см. ORDERS.md, [TARGET].
     if (!OrderFormModal) {
       const mod = await import('../OrderFormModal')
       setOrderFormModal(() => mod.default)
@@ -210,6 +219,13 @@ export default function OrdersArchiveView({ initialOrders }: Props) {
         </div>
       )}
 
+      {selectedVm && (
+        <EventCardModal
+          vm={selectedVm}
+          onOpenChange={open => { if (!open) setSelectedVm(null) }}
+          onSaved={() => { setSelectedVm(null); router.refresh() }}
+        />
+      )}
       {openOrder && OrderFormModal && (
         <OrderFormModal
           order={openOrder}

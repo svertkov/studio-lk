@@ -175,6 +175,7 @@ function buildPastBookingVm(overrides: Partial<ScheduleEventDTO> = {}): Schedule
     nasNotRequiredConfirmedAt: null, nasNotRequiredConfirmedByName: null, nasNotRequiredReason: null,
     editingRequired: null, clientConfirmationStatus: 'NOT_REQUIRED', subscriptionUsage: null,
     eventType: 'STUDIO_BOOKING', makeupDurationMinutes: null, orderId: null, isCancelled: false,
+    orderStatus: null, orderIsArchived: false,
     ...overrides,
   }
   return {

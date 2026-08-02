@@ -20,7 +20,6 @@ import {
 } from '@/lib/subscription-model'
 import { mergeScheduleEvent, type ScheduleEventVM } from '@/lib/schedule-model'
 import type { CalendarEvent } from '@/lib/google-calendar'
-import { getOrder, type OrderDTO } from '@/lib/actions/orders'
 import SubscriptionActionsMenu from '@/components/subscriptions/SubscriptionActionsMenu'
 import HourStepper from '@/components/subscriptions/HourStepper'
 import EventCardModal from '../../schedule/EventCardModal'
@@ -72,16 +71,9 @@ export default function SubscriptionDetailModal({ subscriptionId, onOpenChange, 
   const [hoursError, setHoursError] = useState<string | null>(null)
   const [savedFlash, setSavedFlash] = useState(false)
 
-  // Открытие конкретной записи из истории списаний — каноническая OrderFormModal,
-  // если у записи уже есть привязанный заказ (см. ScheduleView.tsx, тот же
-  // паттерн), иначе прежний EventCardModal. Импорт OrderFormModal — ДИНАМИЧЕСКИЙ
-  // (как уже сделано для неё в OrdersArchiveView.tsx), не статический: этот файл
-  // сам подключается из SubscriptionPaymentBlock.tsx, который теперь используется
-  // внутри OrderFormModal.tsx (2026-08-02) — статический импорт замкнул бы цикл
-  // OrderFormModal → SubscriptionPaymentBlock → SubscriptionDetailModal → OrderFormModal.
-  type SelectedCard = { kind: 'order'; order: OrderDTO } | { kind: 'event'; vm: ScheduleEventVM }
-  const [selectedCard, setSelectedCard] = useState<SelectedCard | null>(null)
-  const [OrderFormModalComp, setOrderFormModalComp] = useState<typeof import('../../crm/OrderFormModal').default | null>(null)
+  // Открытие конкретной записи из истории списаний — единственный канонический
+  // EventCardModal.tsx (см. ORDERS.md, «Карточка заказа»).
+  const [selectedVm, setSelectedVm] = useState<ScheduleEventVM | null>(null)
   const [openingUsageId, setOpeningUsageId] = useState<string | null>(null)
 
   async function loadDetail() {
@@ -165,15 +157,7 @@ export default function SubscriptionDetailModal({ subscriptionId, onOpenChange, 
       calendar: 'studio',
       color: '#00c26b',
     }
-    if (annotation?.orderId) {
-      const [orderResult, mod] = await Promise.all([
-        getOrder(annotation.orderId),
-        OrderFormModalComp ? Promise.resolve(null) : import('../../crm/OrderFormModal'),
-      ])
-      if (mod) setOrderFormModalComp(() => mod.default)
-      if (orderResult.ok) { setSelectedCard({ kind: 'order', order: orderResult.data }); return }
-    }
-    setSelectedCard({ kind: 'event', vm: mergeScheduleEvent(calendarEvent, annotation) })
+    setSelectedVm(mergeScheduleEvent(calendarEvent, annotation))
   }
 
   function adjustmentLine(a: SubscriptionAdjustmentDTO): string {
@@ -448,18 +432,11 @@ export default function SubscriptionDetailModal({ subscriptionId, onOpenChange, 
         </Dialog>
       )}
 
-      {selectedCard?.kind === 'order' && OrderFormModalComp && (
-        <OrderFormModalComp
-          order={selectedCard.order}
-          onOpenChange={open => { if (!open) setSelectedCard(null) }}
-          onSaved={() => { setSelectedCard(null); loadDetail(); onChanged?.() }}
-        />
-      )}
-      {selectedCard?.kind === 'event' && (
+      {selectedVm && (
         <EventCardModal
-          vm={selectedCard.vm}
-          onOpenChange={open => { if (!open) setSelectedCard(null) }}
-          onSaved={() => { setSelectedCard(null); loadDetail(); onChanged?.() }}
+          vm={selectedVm}
+          onOpenChange={open => { if (!open) setSelectedVm(null) }}
+          onSaved={() => { setSelectedVm(null); loadDetail(); onChanged?.() }}
         />
       )}
     </Dialog>

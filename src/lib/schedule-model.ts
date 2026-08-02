@@ -7,7 +7,10 @@
 // снэпшот только для контекстов, которые не могут дёрнуть Google Calendar API
 // (например блок "Клиенты из расписания" на странице Клиентов).
 
-import type { ClientConfirmationStatus, MaterialsStatus, PaymentMethod, OrderPromotionType } from '@prisma/client'
+import type {
+  ClientConfirmationStatus, MaterialsStatus, PaymentMethod, OrderPromotionType, OrderStatus,
+  ScheduleEvent, SubscriptionUsage, ClientSubscription,
+} from '@prisma/client'
 import type { CalendarEvent } from '@/lib/google-calendar'
 import { type EventType, classifyEventType, requiresFullBookingForm } from '@/lib/event-type'
 
@@ -394,6 +397,93 @@ export interface ScheduleEventDTO {
   // Order (у самого ScheduleEvent нет отдельного статуса отмены, см.
   // client-shoots-model.ts). false, если заказа нет вовсе.
   isCancelled: boolean
+  // Статус воронки связанного Order и архивный оверлей — для блока «Статус» в
+  // EventCardModal.tsx (единый канонический UI карточки заказа). null/false,
+  // если заказа ещё нет вовсе (см. ORDERS.md, «Карточка заказа»).
+  orderStatus: OrderStatus | null
+  orderIsArchived: boolean
+}
+
+// Перенесено из actions/schedule.ts (2026-08) — нужно и в actions/orders.ts
+// (адаптер buildVmFromOrder, см. ORDERS.md), а schedule.ts уже импортирует из
+// orders.ts (ensureOrderForNewBooking/updateOrderStatus). Общий include/toDTO
+// живут здесь, в файле без 'use server', чтобы оба action-файла могли их
+// использовать без циклического импорта друг из друга.
+type SubscriptionUsageWithSubscription = SubscriptionUsage & {
+  subscription: ClientSubscription & { usages: SubscriptionUsage[] }
+}
+
+type ScheduleEventWithClient = ScheduleEvent & {
+  client: { name: string } | null
+  subscriptionUsage: SubscriptionUsageWithSubscription | null
+  order: { status: string; isArchived: boolean } | null
+  yandexNotRequiredConfirmedBy: { name: string | null; email: string } | null
+  nasNotRequiredConfirmedBy: { name: string | null; email: string } | null
+}
+
+export const SCHEDULE_EVENT_INCLUDE = {
+  client: { select: { name: true } },
+  subscriptionUsage: { include: { subscription: { include: { usages: true } } } },
+  order: { select: { status: true, isArchived: true } },
+  yandexNotRequiredConfirmedBy: { select: { name: true, email: true } },
+  nasNotRequiredConfirmedBy: { select: { name: true, email: true } },
+} as const
+
+export function toScheduleEventDTO(row: ScheduleEventWithClient): ScheduleEventDTO {
+  const su = row.subscriptionUsage
+  return {
+    id: row.id,
+    calendarEventId: row.calendarEventId,
+    title: row.title,
+    description: row.description,
+    startAt: row.startAt ? row.startAt.toISOString() : null,
+    endAt: row.endAt ? row.endAt.toISOString() : null,
+    clientId: row.clientId,
+    clientName: row.client?.name ?? null,
+    clientNameRaw: row.clientNameRaw,
+    contactRaw: row.contactRaw,
+    companyRaw: row.companyRaw,
+    room: row.room,
+    format: row.format,
+    camerasCount: row.camerasCount,
+    shootAddress: row.shootAddress,
+    venueName: row.venueName,
+    venueContact: row.venueContact,
+    logisticsComment: row.logisticsComment,
+    estimatedPrice: row.estimatedPrice,
+    paymentMethod: row.paymentMethod,
+    notes: row.notes,
+    promotionType: row.promotionType,
+    yandexDiskUrl: row.yandexDiskUrl,
+    yandexDiskUrlAddedAt: row.yandexDiskUrlAddedAt ? row.yandexDiskUrlAddedAt.toISOString() : null,
+    yandexDiskUrlExpiresAt: row.yandexDiskUrlExpiresAt ? row.yandexDiskUrlExpiresAt.toISOString() : null,
+    nasBackupUrl: row.nasBackupUrl,
+    materialsComment: row.materialsComment,
+    materialsStatus: row.materialsStatus,
+    yandexLinkRequired: row.yandexLinkRequired,
+    nasLinkRequired: row.nasLinkRequired,
+    yandexNotRequiredConfirmedAt: row.yandexNotRequiredConfirmedAt ? row.yandexNotRequiredConfirmedAt.toISOString() : null,
+    yandexNotRequiredConfirmedByName: row.yandexNotRequiredConfirmedBy?.name ?? row.yandexNotRequiredConfirmedBy?.email ?? null,
+    yandexNotRequiredReason: row.yandexNotRequiredReason,
+    nasNotRequiredConfirmedAt: row.nasNotRequiredConfirmedAt ? row.nasNotRequiredConfirmedAt.toISOString() : null,
+    nasNotRequiredConfirmedByName: row.nasNotRequiredConfirmedBy?.name ?? row.nasNotRequiredConfirmedBy?.email ?? null,
+    nasNotRequiredReason: row.nasNotRequiredReason,
+    editingRequired: row.editingRequired,
+    clientConfirmationStatus: row.clientConfirmationStatus,
+    eventType: row.eventType,
+    makeupDurationMinutes: row.makeupDurationMinutes,
+    orderId: row.orderId,
+    isCancelled: row.order?.status === 'CANCELLED',
+    orderStatus: (row.order?.status as OrderStatus | undefined) ?? null,
+    orderIsArchived: row.order?.isArchived ?? false,
+    subscriptionUsage: su ? {
+      subscriptionId: su.subscriptionId,
+      usedHours: su.usedHours,
+      purchasedAt: su.subscription.purchasedAt.toISOString(),
+      packageHours: su.subscription.packageHours,
+      remainingHours: su.subscription.packageHours - su.subscription.openingUsedHours - su.subscription.usages.reduce((sum, u) => sum + u.usedHours, 0),
+    } : null,
+  }
 }
 
 // Снэпшот абонемента, которым оплачена эта конкретная запись — только для
@@ -415,6 +505,14 @@ export interface ScheduleEventSubscriptionInfo {
 export interface ScheduleEventVM {
   calendarEvent: CalendarEvent
   annotation: ScheduleEventDTO | null
+  // Заполнено только адаптером buildVmFromOrder (actions/orders.ts) — заказ,
+  // чья запись в расписании ещё никогда не была синхронизирована с Google
+  // Calendar (calendarEventId === null, бронь создана через CRM/«Заказы»/
+  // Telegram). calendarEvent в этом случае — снэпшот из ScheduleEvent/Order,
+  // не живые данные календаря. EventCardModal.tsx сохраняет такую запись
+  // через updateOrder(orderOnly.orderId, …), а не upsertScheduleEvent (см.
+  // ORDERS.md, «Карточка заказа»).
+  orderOnly?: { orderId: string }
 }
 
 export function mergeScheduleEvent(calendarEvent: CalendarEvent, annotation: ScheduleEventDTO | null): ScheduleEventVM {

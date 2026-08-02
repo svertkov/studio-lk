@@ -9,11 +9,13 @@ import {
   type DragEndEvent, type DragStartEvent,
 } from '@dnd-kit/core'
 import type { CSSProperties } from 'react'
-import { updateOrderStatus, type OrderDTO } from '@/lib/actions/orders'
+import { updateOrderStatus, buildVmFromOrder, type OrderDTO } from '@/lib/actions/orders'
 import { ORDER_BOARD_COLUMNS, ORDER_STATUS_LABELS, getOrderStatusConfig, getOrderStatusVars, sortOrdersForColumn, type OrderStatus, type OrderStatusConfig } from '@/lib/order-model'
+import type { ScheduleEventVM } from '@/lib/schedule-model'
 import ToggleChip from '@/components/ui/toggle-chip'
 import OrderCard from './OrderCard'
 import OrderFormModal from './OrderFormModal'
+import EventCardModal from '../schedule/EventCardModal'
 
 // Реестр документов (см. AGENTS.md) — компактные фильтры CRM. Не заводим
 // отдельную Kanban-колонку "Не оплачено": стадии доски описывают
@@ -33,6 +35,11 @@ function isOrderStatus(value: string): value is OrderStatus {
 export default function OrdersBoard({ initialOrders }: Props) {
   const router = useRouter()
   const [search, setSearch] = useState('')
+  // EventCardModal.tsx — единственный канонический UI карточки заказа (см.
+  // ORDERS.md, «Карточка заказа»). OrderFormModal.tsx остаётся временно (см.
+  // [TARGET] там же) только для создания заказа с нуля и для заявок без
+  // ScheduleEvent — buildVmFromOrder возвращает data:null именно в этом случае.
+  const [selectedVm, setSelectedVm] = useState<ScheduleEventVM | null>(null)
   const [editingOrder, setEditingOrder] = useState<OrderDTO | null>(null)
   const [creating, setCreating] = useState(false)
   // Оптимистичная подмена статуса поверх серверных данных — не копируем
@@ -86,6 +93,13 @@ export default function OrdersBoard({ initialOrders }: Props) {
 
   function handleChanged() {
     router.refresh()
+  }
+
+  async function openOrder(order: OrderDTO) {
+    const result = await buildVmFromOrder(order)
+    if (result.ok && result.data) { setSelectedVm(result.data); return }
+    // Заявка без брони (или сбой загрузки) — временный fallback, см. ORDERS.md, [TARGET].
+    setEditingOrder(order)
   }
 
   async function handleStatusChange(order: OrderDTO, status: OrderStatus) {
@@ -187,7 +201,7 @@ export default function OrdersBoard({ initialOrders }: Props) {
                 <OrderColumn
                   status={columnStatus}
                   orders={byStatus.get(columnStatus) ?? []}
-                  onCardClick={setEditingOrder}
+                  onCardClick={openOrder}
                   onStatusSelect={handleStatusChange}
                 />
               </div>
@@ -203,6 +217,13 @@ export default function OrdersBoard({ initialOrders }: Props) {
         </DndContext>
       )}
 
+      {selectedVm && (
+        <EventCardModal
+          vm={selectedVm}
+          onOpenChange={open => { if (!open) setSelectedVm(null) }}
+          onSaved={handleChanged}
+        />
+      )}
       {creating && (
         <OrderFormModal
           order={null}

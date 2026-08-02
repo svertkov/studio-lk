@@ -13,10 +13,8 @@ import { mergeScheduleEvent, type ScheduleEventVM } from '@/lib/schedule-model'
 import { classifyEventType, requiresFullBookingForm } from '@/lib/event-type'
 import { parseEventTitle } from '@/lib/event-category'
 import type { CalendarEvent } from '@/lib/google-calendar'
-import { getOrder, type OrderDTO } from '@/lib/actions/orders'
 import AddClientModal from './AddClientModal'
 import EventCardModal from '../schedule/EventCardModal'
-import OrderFormModal from '../crm/OrderFormModal'
 
 interface Props {
   events: PendingScheduleEventDTO[]
@@ -43,13 +41,9 @@ export default function PendingScheduleClients({ events, onChanged }: Props) {
   const [matches, setMatches] = useState<Record<string, SimilarClientMatch[]>>({})
   const [busyId, setBusyId] = useState<string | null>(null)
   const [addModalEventId, setAddModalEventId] = useState<string | null>(null)
-  // Эти события всегда коммерческие (см. фильтр requiresFullBookingForm в
-  // фоновой сверке выше) — "Открыть" ведёт на каноническую OrderFormModal,
-  // если заказ уже привязан (см. ScheduleView.tsx, тот же паттерн), иначе на
-  // прежний EventCardModal (например, старая запись до launch-даты заказов).
-  type SelectedCard = { kind: 'order'; order: OrderDTO } | { kind: 'event'; vm: ScheduleEventVM }
-  const [selectedCard, setSelectedCard] = useState<SelectedCard | null>(null)
-  const [loadingCard, setLoadingCard] = useState(false)
+  // EventCardModal.tsx — единственный канонический UI карточки заказа (см.
+  // ORDERS.md, «Карточка заказа»).
+  const [selectedVm, setSelectedVm] = useState<ScheduleEventVM | null>(null)
 
   // Фоновая сверка: находит studio_booking события с распознанным именем
   // клиента в названии/описании, которое не совпало ни с одним существующим
@@ -157,13 +151,7 @@ export default function PendingScheduleClients({ events, onChanged }: Props) {
       calendar: 'studio',
       color: '#00c26b',
     }
-    if (annotation?.orderId) {
-      setLoadingCard(true)
-      const result = await getOrder(annotation.orderId)
-      setLoadingCard(false)
-      if (result.ok) { setSelectedCard({ kind: 'order', order: result.data }); return }
-    }
-    setSelectedCard({ kind: 'event', vm: mergeScheduleEvent(calendarEvent, annotation) })
+    setSelectedVm(mergeScheduleEvent(calendarEvent, annotation))
   }
 
   return (
@@ -276,26 +264,12 @@ export default function PendingScheduleClients({ events, onChanged }: Props) {
         })}
       </div>
 
-      {selectedCard?.kind === 'order' && (
-        <OrderFormModal
-          order={selectedCard.order}
-          onOpenChange={open => { if (!open) setSelectedCard(null) }}
-          onSaved={() => { setSelectedCard(null); onChanged() }}
-        />
-      )}
-      {selectedCard?.kind === 'event' && (
+      {selectedVm && (
         <EventCardModal
-          vm={selectedCard.vm}
-          onOpenChange={open => { if (!open) setSelectedCard(null) }}
-          onSaved={() => { setSelectedCard(null); onChanged() }}
+          vm={selectedVm}
+          onOpenChange={open => { if (!open) setSelectedVm(null) }}
+          onSaved={() => { setSelectedVm(null); onChanged() }}
         />
-      )}
-      {loadingCard && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40">
-          <div className="flex items-center gap-2 bg-zinc-900 border border-zinc-800 rounded-lg px-4 py-3 text-sm text-zinc-300">
-            Открываем заказ...
-          </div>
-        </div>
       )}
     </div>
   )

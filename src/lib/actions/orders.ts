@@ -10,7 +10,11 @@ import type {
 } from '@prisma/client'
 import { getDocumentDisplayNumber } from '@/lib/document-model'
 import { computeDurationMinutes, isOrderReadyForArchive, archiveReasonForStatus } from '@/lib/order-model'
-import { computeMaterialsStatus, computeYandexLinkExpiry, type ScheduleEventSubscriptionInfo } from '@/lib/schedule-model'
+import {
+  computeMaterialsStatus, computeYandexLinkExpiry, SCHEDULE_EVENT_INCLUDE, toScheduleEventDTO,
+  type ScheduleEventSubscriptionInfo, type ScheduleEventVM,
+} from '@/lib/schedule-model'
+import type { CalendarEvent } from '@/lib/google-calendar'
 import { parseEventTitle } from '@/lib/event-category'
 import type { EventType } from '@/lib/event-type'
 import { ensureMontageProjectForOrder } from '@/lib/actions/montage'
@@ -524,6 +528,10 @@ export interface OrderInput {
   paymentMethod?: PaymentMethod | null
   paymentStatus?: OrderPaymentStatus
   room?: string
+  // Число камер — поле "Съёмка" в канонической карточке (EventCardModal.tsx),
+  // добавлено при унификации карточек 2026-08 (раньше писалось только через
+  // upsertScheduleEvent для записей с calendarEventId).
+  camerasCount?: number | null
   plannedStartTime?: string | null
   plannedEndTime?: string | null
   // Тип события и поля выезда — применяются только когда заказ имеет (или
@@ -607,6 +615,7 @@ export async function createOrder(
             endAt: created.plannedEndTime,
             room: created.room,
             format: created.serviceType,
+            camerasCount: input.camerasCount ?? null,
             notes: created.comment,
             promotionType: created.promotionType,
             estimatedPrice: created.preliminaryAmount,
@@ -825,6 +834,7 @@ export async function updateOrder(
               ...(input.materialsComment !== undefined && { materialsComment: input.materialsComment?.trim() || null }),
               ...(input.editingRequired !== undefined && { editingRequired: input.editingRequired }),
               ...(input.makeupDurationMinutes !== undefined && { makeupDurationMinutes: input.makeupDurationMinutes }),
+              ...(input.camerasCount !== undefined && { camerasCount: input.camerasCount }),
             },
           })
 
@@ -856,6 +866,7 @@ export async function updateOrder(
               endAt: nextEnd,
               room: nextRoom,
               format: nextServiceType,
+              camerasCount: input.camerasCount ?? null,
               notes: nextComment,
               promotionType: nextPromotionType,
               estimatedPrice: nextPreliminaryAmount,
@@ -926,6 +937,72 @@ export async function getOrder(
   } catch (e) {
     console.error('[getOrder]', e)
     return { ok: false, error: 'Не удалось загрузить заказ' }
+  }
+}
+
+// ============================================================
+// АДАПТЕР ДЛЯ КАНОНИЧЕСКОЙ КАРТОЧКИ ЗАКАЗА (EventCardModal.tsx) — единый UI
+// карточки коммерческого заказа теперь один и тот же для всех точек входа
+// (см. ORDERS.md, «Карточка заказа»). Точки входа, у которых на руках только
+// OrderDTO (CRM-доска/архив, «Заказы», создание из Telegram — они никогда не
+// имели дела с живым Google Calendar), строят ScheduleEventVM через эту
+// функцию, а не открывают OrderFormModal.tsx. Точкам входа, у которых уже
+// есть живой calendarEvent (Дашборд, Расписание, карточка клиента, Финансы →
+// Абонементы), этот адаптер не нужен — у них ScheduleEventVM уже собран.
+// ============================================================
+
+export async function buildVmFromOrder(
+  order: OrderDTO
+): Promise<{ ok: true; data: ScheduleEventVM | null } | { ok: false; error: string }> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, error: authResult.error }
+
+  // Заявка без брони (scheduleEventId === null) — вне рамок этого адаптера,
+  // отдельная задача (см. ORDERS.md, [TARGET]). data: null сигналит вызывающей
+  // стороне временно открыть старый OrderFormModal.tsx для этого случая.
+  if (!order.scheduleEventId) return { ok: true, data: null }
+
+  try {
+    const row = await prisma.scheduleEvent.findUnique({
+      where: { id: order.scheduleEventId },
+      include: SCHEDULE_EVENT_INCLUDE,
+    })
+    if (!row) return { ok: true, data: null }
+
+    const annotation = toScheduleEventDTO(row)
+
+    // Снэпшот вместо живого календаря — у этих точек входа (CRM/«Заказы»/
+    // Telegram) нет под рукой уже загруженного списка событий Google Calendar,
+    // как у Дашборда/Расписания. id намеренно тот же, что у calendarEventId
+    // (если он есть) — чтобы дальнейшее сохранение через upsertScheduleEvent
+    // попало в ТУ ЖЕ строку, а не создало новую.
+    const calendarEvent: CalendarEvent = {
+      id: annotation.calendarEventId ?? row.id,
+      title: annotation.title ?? order.title ?? 'Без названия',
+      start: annotation.startAt ?? order.plannedStartTime ?? new Date().toISOString(),
+      end: annotation.endAt ?? order.plannedEndTime ?? new Date().toISOString(),
+      allDay: false,
+      description: annotation.description ?? '',
+      location: '',
+      calendar: 'studio',
+      color: '#00c26b',
+    }
+
+    return {
+      ok: true,
+      data: {
+        calendarEvent,
+        annotation,
+        // Запись никогда не синхронизировалась с Google Calendar — сохранять
+        // нужно через updateOrder(orderId, …), не upsertScheduleEvent(...)
+        // (calendarEventId нет и не появится сам по себе, см. GOOGLE_CALENDAR.md
+        // — платформа не пишет в календарь).
+        ...(annotation.calendarEventId ? {} : { orderOnly: { orderId: order.id } }),
+      },
+    }
+  } catch (e) {
+    console.error('[buildVmFromOrder]', e)
+    return { ok: false, error: 'Не удалось загрузить данные заказа для карточки' }
   }
 }
 
