@@ -128,7 +128,6 @@ export default function EditingView({ initialProjects, initialStats, initialEdit
         <MontageProjectModal
           project={openProject}
           orders={orders}
-          editors={editors}
           existingProjects={projects}
           focusMaterialsOnOpen={openProjectFocusMaterials}
           onOpenChange={open => { if (!open) { setOpenProject(null); setCreatingProject(false); setOpenProjectFocusMaterials(false) } }}

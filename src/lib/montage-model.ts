@@ -9,6 +9,11 @@ import type {
   MontageContentType, MontageTurnaroundDayType, OrderStatus,
 } from '@prisma/client'
 import { monthKey } from '@/lib/order-model'
+// import type — стирается на этапе компиляции, поэтому не создаёт реального
+// цикла модулей несмотря на то, что actions/montage.ts сам импортирует
+// значения (не только типы) отсюда же (см. тот же приём для ScheduleEventVM/
+// OrderStatus между schedule-model.ts и actions/orders.ts).
+import type { MontageProjectDTO, MontageProjectInput } from '@/lib/actions/montage'
 
 export type {
   MontageStatus, MontageClientPaymentStatus, MontageEditorPaymentStatus, MontageDeadlineType,
@@ -762,4 +767,223 @@ export function pluralizeProjectsCount(n: number): string {
   if (mod10 === 1 && mod100 !== 11) return `${n} проект`
   if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return `${n} проекта`
   return `${n} проектов`
+}
+
+// ============================================================
+// ФОРМА КАРТОЧКИ МОНТАЖА — общий тип состояния формы + маппинг API↔форма.
+// Единственный источник для MontageProjectFields.tsx (src/components/montage/),
+// который используется и отдельной карточкой (MontageProjectModal.tsx), и
+// встроенным редактором в канонической карточке заказа (EmbeddedMontageSection.tsx,
+// через EventCardModal.tsx/OrderFormModal.tsx) — тот же принцип, что уже
+// применён для buildVmFromOrder/OrderInput (см. ORDERS.md, «Карточка заказа»):
+// одна форма, один способ прочитать в неё DTO и один способ собрать из неё
+// input, не два независимых набора полей на разных карточках.
+//
+// Все поля — строки/enum-или-пустая-строка (тот же формат, что уже был у
+// локальных useState в MontageProjectModal.tsx до выделения этого файла) —
+// удобно для controlled input/date/number-полей, преобразование в реальные
+// типы (Date/number) происходит только на границе (montageFormValuesToInput).
+// orderId/clientId/confirmDuplicateForOrder сюда намеренно НЕ входят — это
+// контекст создания (кто владелец проекта), а не поля самого монтажа,
+// решается вызывающей стороной (MontageProjectModal — выбором в linkMode,
+// EmbeddedMontageSection — уже известным orderId карточки заказа).
+// ============================================================
+
+export interface MontageProjectFormValues {
+  title: string
+  description: string
+  contentType: MontageContentType | ''
+  customContentType: string
+  status: MontageStatus
+  editorId: string
+  additionalEditorIds: string[]
+  sourceReceivedAt: string
+  startedAt: string
+  deadlineType: '' | MontageDeadlineType
+  deadlineDate: string
+  turnaroundDays: string
+  turnaroundDayType: '' | MontageTurnaroundDayType
+  deliveredAt: string
+  clientAmount: string
+  editorAmount: string
+  clientPaymentStatus: MontageClientPaymentStatus
+  editorPaymentStatus: MontageEditorPaymentStatus
+  clientPaidAt: string
+  editorPaidAt: string
+  paymentComment: string
+  sourceMaterialsUrl: string
+  sourceMaterialsNasUrl: string
+  mountedMaterialNasUrl: string
+  deliveryUrl: string
+  materialsComment: string
+  revisionsIncluded: string
+  revisionsUsed: string
+  revisionsComment: string
+  requirements: string
+  internalComment: string
+  clientComment: string
+}
+
+function toDateInputValue(iso: string | null): string {
+  return iso ? iso.slice(0, 10) : ''
+}
+
+// API (MontageProjectDTO) → форма. project === null — чистый черновик (заказ
+// ещё не сохранён/проект ещё не создан), все поля пустые/дефолтные — то же
+// самое, с чем сегодня стартует MontageProjectModal.tsx в режиме создания.
+export function buildMontageFormValues(project: MontageProjectDTO | null): MontageProjectFormValues {
+  return {
+    title: project?.title ?? '',
+    description: project?.description ?? '',
+    contentType: project?.contentType ?? '',
+    customContentType: project?.customContentType ?? '',
+    status: project?.status ?? 'NEW',
+    editorId: project?.editorId ?? '',
+    additionalEditorIds: project?.additionalEditorIds ?? [],
+    sourceReceivedAt: toDateInputValue(project?.sourceReceivedAt ?? null),
+    startedAt: toDateInputValue(project?.startedAt ?? null),
+    deadlineType: project?.deadlineType ?? '',
+    deadlineDate: toDateInputValue(project?.deadlineDate ?? null),
+    turnaroundDays: project?.turnaroundDays != null ? String(project.turnaroundDays) : '',
+    turnaroundDayType: project?.turnaroundDayType ?? '',
+    deliveredAt: toDateInputValue(project?.deliveredAt ?? null),
+    clientAmount: project?.clientAmount != null ? String(project.clientAmount) : '',
+    editorAmount: project?.editorAmount != null ? String(project.editorAmount) : '',
+    clientPaymentStatus: project?.clientPaymentStatus ?? 'NOT_SPECIFIED',
+    editorPaymentStatus: project?.editorPaymentStatus ?? 'NOT_CALCULATED',
+    clientPaidAt: toDateInputValue(project?.clientPaidAt ?? null),
+    editorPaidAt: toDateInputValue(project?.editorPaidAt ?? null),
+    paymentComment: project?.paymentComment ?? '',
+    sourceMaterialsUrl: project?.sourceMaterialsUrl ?? '',
+    sourceMaterialsNasUrl: project?.sourceMaterialsNasUrl ?? '',
+    mountedMaterialNasUrl: project?.mountedMaterialNasUrl ?? '',
+    deliveryUrl: project?.deliveryUrl ?? '',
+    materialsComment: project?.materialsComment ?? '',
+    revisionsIncluded: project?.revisionsIncluded != null ? String(project.revisionsIncluded) : '',
+    revisionsUsed: String(project?.revisionsUsed ?? 0),
+    revisionsComment: project?.revisionsComment ?? '',
+    requirements: project?.requirements ?? '',
+    internalComment: project?.internalComment ?? '',
+    clientComment: project?.clientComment ?? '',
+  }
+}
+
+// Форма → API (MontageProjectInput). Без orderId/clientId/confirmDuplicateForOrder
+// — вызывающая сторона добавляет их сама поверх результата этой функции, если
+// нужно (см. комментарий у MontageProjectFormValues выше).
+export function montageFormValuesToInput(values: MontageProjectFormValues): Omit<MontageProjectInput, 'orderId' | 'clientId' | 'confirmDuplicateForOrder'> {
+  return {
+    title: values.title || undefined,
+    description: values.description || undefined,
+    contentType: values.contentType || undefined,
+    customContentType: values.contentType === 'OTHER' ? (values.customContentType || undefined) : undefined,
+    status: values.status,
+    editorId: values.editorId || null,
+    additionalEditorIds: values.additionalEditorIds,
+    sourceReceivedAt: values.sourceReceivedAt || null,
+    startedAt: values.startedAt || null,
+    deadlineType: values.deadlineType || null,
+    deadlineDate: values.deadlineDate || null,
+    turnaroundDays: values.turnaroundDays ? Number(values.turnaroundDays) : null,
+    turnaroundDayType: values.turnaroundDayType || null,
+    deliveredAt: values.deliveredAt || null,
+    clientAmount: values.clientAmount ? Number(values.clientAmount) : null,
+    editorAmount: values.editorAmount ? Number(values.editorAmount) : null,
+    clientPaymentStatus: values.clientPaymentStatus,
+    editorPaymentStatus: values.editorPaymentStatus,
+    clientPaidAt: values.clientPaidAt || null,
+    editorPaidAt: values.editorPaidAt || null,
+    paymentComment: values.paymentComment || undefined,
+    sourceMaterialsUrl: values.sourceMaterialsUrl || null,
+    sourceMaterialsNasUrl: values.sourceMaterialsNasUrl || null,
+    mountedMaterialNasUrl: values.mountedMaterialNasUrl || null,
+    deliveryUrl: values.deliveryUrl || null,
+    materialsComment: values.materialsComment || undefined,
+    revisionsIncluded: values.revisionsIncluded ? Number(values.revisionsIncluded) : null,
+    revisionsUsed: Number(values.revisionsUsed || 0),
+    revisionsComment: values.revisionsComment || undefined,
+    requirements: values.requirements || undefined,
+    internalComment: values.internalComment || undefined,
+    clientComment: values.clientComment || undefined,
+  }
+}
+
+// Форма → API, но только ИЗМЕНИВШИЕСЯ поля (сравнение с initial, снапшотом
+// формы на момент монтирования). Нужна отдельно от montageFormValuesToInput
+// для встроенного редактора (EmbeddedMontageSection.tsx): там форма может
+// монтироваться с project=null (проекта ещё нет — черновик до первого
+// сохранения заказа), а затем ensureMontageProjectForOrder создаёт реальный
+// проект СЕРВЕРНО в фоне (например через автосохранение заказа) уже ПОСЛЕ
+// монтирования формы — сама встроенная секция об этом узнаёт только в
+// момент коммита (getMontageProjectsForOrder внутри commitMontage). Если бы
+// коммит слал montageFormValuesToInput(values) целиком, как это делает
+// отдельная карточка монтажа (там project всегда уже реальный к моменту
+// редактирования, гонки нет), он бы принудительно затирал null'ом любое
+// поле, которое админ не трогал — включая серверные значения по умолчанию
+// (sourceReceivedAt, автоугаданный title и т.п.), даже без всякой гонки.
+// Здесь же непотронутые поля всегда уходят как undefined — updateMontageProject
+// (тот же дуал-сорсинг, что у Order/ScheduleEvent) оставляет для них то, что
+// реально лежит в БД, а не то, с чем форма случайно стартовала.
+export function diffMontageFormValues(
+  initial: MontageProjectFormValues,
+  current: MontageProjectFormValues,
+): Omit<MontageProjectInput, 'orderId' | 'clientId' | 'confirmDuplicateForOrder'> {
+  const full = montageFormValuesToInput(current)
+  function changed(key: keyof MontageProjectFormValues): boolean {
+    const a = initial[key]
+    const b = current[key]
+    if (Array.isArray(a) && Array.isArray(b)) return a.length !== b.length || a.some((v, i) => v !== b[i])
+    return a !== b
+  }
+  const contentTypeChanged = changed('contentType') || changed('customContentType')
+  return {
+    title: changed('title') ? full.title : undefined,
+    description: changed('description') ? full.description : undefined,
+    contentType: contentTypeChanged ? full.contentType : undefined,
+    customContentType: contentTypeChanged ? full.customContentType : undefined,
+    status: changed('status') ? full.status : undefined,
+    editorId: changed('editorId') ? full.editorId : undefined,
+    additionalEditorIds: changed('additionalEditorIds') ? full.additionalEditorIds : undefined,
+    sourceReceivedAt: changed('sourceReceivedAt') ? full.sourceReceivedAt : undefined,
+    startedAt: changed('startedAt') ? full.startedAt : undefined,
+    deadlineType: changed('deadlineType') ? full.deadlineType : undefined,
+    deadlineDate: changed('deadlineDate') ? full.deadlineDate : undefined,
+    turnaroundDays: changed('turnaroundDays') ? full.turnaroundDays : undefined,
+    turnaroundDayType: changed('turnaroundDayType') ? full.turnaroundDayType : undefined,
+    deliveredAt: changed('deliveredAt') ? full.deliveredAt : undefined,
+    clientAmount: changed('clientAmount') ? full.clientAmount : undefined,
+    editorAmount: changed('editorAmount') ? full.editorAmount : undefined,
+    clientPaymentStatus: changed('clientPaymentStatus') ? full.clientPaymentStatus : undefined,
+    editorPaymentStatus: changed('editorPaymentStatus') ? full.editorPaymentStatus : undefined,
+    clientPaidAt: changed('clientPaidAt') ? full.clientPaidAt : undefined,
+    editorPaidAt: changed('editorPaidAt') ? full.editorPaidAt : undefined,
+    paymentComment: changed('paymentComment') ? full.paymentComment : undefined,
+    sourceMaterialsUrl: changed('sourceMaterialsUrl') ? full.sourceMaterialsUrl : undefined,
+    sourceMaterialsNasUrl: changed('sourceMaterialsNasUrl') ? full.sourceMaterialsNasUrl : undefined,
+    mountedMaterialNasUrl: changed('mountedMaterialNasUrl') ? full.mountedMaterialNasUrl : undefined,
+    deliveryUrl: changed('deliveryUrl') ? full.deliveryUrl : undefined,
+    materialsComment: changed('materialsComment') ? full.materialsComment : undefined,
+    revisionsIncluded: changed('revisionsIncluded') ? full.revisionsIncluded : undefined,
+    revisionsUsed: changed('revisionsUsed') ? full.revisionsUsed : undefined,
+    revisionsComment: changed('revisionsComment') ? full.revisionsComment : undefined,
+    requirements: changed('requirements') ? full.requirements : undefined,
+    internalComment: changed('internalComment') ? full.internalComment : undefined,
+    clientComment: changed('clientComment') ? full.clientComment : undefined,
+  }
+}
+
+// Case 1 из ТЗ (выключили "Монтаж требуется" до первого сохранения черновика)
+// — нужно понять, есть ли что терять, чтобы решить, показывать ли
+// подтверждение. "Пусто" — форма в точности как buildMontageFormValues(null)
+// для всех полей, которые реально можно набрать руками (editorId/даты/суммы/
+// ссылки/комментарии/статус-если-не-NEW) — сравнение по значению, не по
+// ссылке, никакой второй копии "что считается пустым" не заводится.
+export function isMontageFormEmpty(values: MontageProjectFormValues): boolean {
+  const blank = buildMontageFormValues(null)
+  return (Object.keys(blank) as (keyof MontageProjectFormValues)[]).every(key => {
+    const a = values[key]
+    const b = blank[key]
+    if (Array.isArray(a) && Array.isArray(b)) return a.length === b.length
+    return a === b
+  })
 }

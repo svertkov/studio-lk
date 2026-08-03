@@ -25,6 +25,8 @@ import WorkDocumentsSection from '@/components/documents/WorkDocumentsSection'
 import ConfirmableStatusToggle from '@/components/ui/confirmable-status-toggle'
 import OrderFinanceBlock, { type OrderFinanceBlockHandle } from '@/components/orders/OrderFinanceBlock'
 import MontageDisableChoiceDialog from '@/components/orders/MontageDisableChoiceDialog'
+import EmbeddedMontageSection, { type EmbeddedMontageSectionHandle } from '@/components/montage/EmbeddedMontageSection'
+import MontageDraftDiscardDialog from '@/components/montage/MontageDraftDiscardDialog'
 import SubscriptionPaymentBlock, { type SubscriptionPaymentHandle } from '../schedule/SubscriptionPaymentBlock'
 import type { MontageProjectDTO } from '@/lib/actions/montage'
 import { useAutosave, readAutosaveDraft, clearAutosaveDraft, type StoredDraft } from '@/lib/hooks/use-autosave'
@@ -182,6 +184,10 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
   const financeBlockRef = useRef<OrderFinanceBlockHandle>(null)
   const [montageDisableDialogOpen, setMontageDisableDialogOpen] = useState(false)
   const [pendingEditingRequired, setPendingEditingRequired] = useState<'' | 'true' | 'false' | null>(null)
+  // Случай 1 из ТЗ (несохранённый черновик монтажа) — см. MontageDraftDiscardDialog.tsx
+  // и то же самое в EventCardModal.tsx.
+  const [montageDraftDiscardOpen, setMontageDraftDiscardOpen] = useState(false)
+  const montageRef = useRef<EmbeddedMontageSectionHandle>(null)
   const [yandexDiskUrl, setYandexDiskUrl] = useState(order?.yandexDiskUrl ?? '')
   const [nasBackupUrl, setNasBackupUrl] = useState(order?.nasBackupUrl ?? '')
   const [materialsComment, setMaterialsComment] = useState(order?.materialsComment ?? '')
@@ -318,6 +324,11 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
       setMontageDisableDialogOpen(true)
       return
     }
+    if (editingRequired === 'true' && next !== 'true' && activeMontageProjects.length === 0 && montageRef.current?.hasDraftContent()) {
+      setPendingEditingRequired(next)
+      setMontageDraftDiscardOpen(true)
+      return
+    }
     setEditingRequired(next)
   }
 
@@ -448,6 +459,10 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
     // (isEdit: willHaveBooking требует order.hasBooking, значит id уже есть
     // до сохранения), либо из ответа createOrder (только что созданная запись).
     let scheduleEventIdForCharge: string | null = isEdit ? order!.scheduleEventId : null
+    // Тот же приём, что и scheduleEventIdForCharge — id заказа известен сразу
+    // для isEdit, а для новой заявки появляется только из ответа createOrder.
+    // Используется ниже для commitMontage (см. EventCardModal.handleSave).
+    let orderIdForMontage: string | null = isEdit ? order!.id : null
 
     if (isEdit) {
       const result = await autosave.flush()
@@ -464,6 +479,7 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
         return
       }
       scheduleEventIdForCharge = result.data.scheduleEventId
+      orderIdForMontage = result.data.id
       // Заказ только что создан этим сохранением — если администратор уже
       // успел ввести прибыль/комментарий к ней (заказа тогда ещё не было,
       // OrderFinanceBlock не мог их сохранить), досылаем прямо сейчас, пока
@@ -506,6 +522,22 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
           })
           if (!charged.ok) { setSaving(false); setError(charged.error); return }
         }
+      }
+    }
+
+    // Монтаж — после того, как заказ точно сохранён и известен orderId.
+    // ensureMontageProjectForOrder (см. schedule.ts/orders.ts) уже создал
+    // минимальный проект на сервере внутри updateOrder/createOrder выше, если
+    // это первое включение "Монтаж требуется" — commitMontage только
+    // обогащает его (или уже существующий проект) текущими значениями
+    // встроенной формы, не создаёт вторую сущность (см. MONTAGE.md,
+    // «Встраивание в карточку заказа», и то же самое в EventCardModal.tsx).
+    if (editingRequired === 'true' && orderIdForMontage) {
+      const montageResult = await montageRef.current?.commitMontage(orderIdForMontage)
+      if (montageResult && !montageResult.ok) {
+        setSaving(false)
+        setError(montageResult.error)
+        return
       }
     }
 
@@ -871,6 +903,15 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
                     <option value="false">Не нужен</option>
                   </SelectField>
                 </Field>
+                {editingRequired === 'true' && (
+                  <div className="bg-zinc-800/40 border border-zinc-800 rounded-lg p-3">
+                    <EmbeddedMontageSection
+                      ref={montageRef}
+                      orderId={order?.id ?? null}
+                      onProjectsLoaded={setActiveMontageProjects}
+                    />
+                  </div>
+                )}
                 <Field>
                   <Label>Яндекс.Диск</Label>
                   <input
@@ -969,8 +1010,6 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
                   orderId={order?.id ?? null}
                   revenueValue={preliminaryAmount}
                   onRevenueChange={setPreliminaryAmount}
-                  editingRequired={editingRequired === '' ? null : editingRequired === 'true'}
-                  onMontageProjectsLoaded={setActiveMontageProjects}
                 />
                 <Row>
                   <Field>
@@ -1041,6 +1080,16 @@ export default function OrderFormModal({ order, onOpenChange, onSaved, initialVa
           onResolve={() => { if (pendingEditingRequired !== null) setEditingRequired(pendingEditingRequired); setPendingEditingRequired(null) }}
         />
       )}
+
+      <MontageDraftDiscardDialog
+        open={montageDraftDiscardOpen}
+        onConfirm={() => {
+          setMontageDraftDiscardOpen(false)
+          if (pendingEditingRequired !== null) setEditingRequired(pendingEditingRequired)
+          setPendingEditingRequired(null)
+        }}
+        onCancel={() => { setMontageDraftDiscardOpen(false); setPendingEditingRequired(null) }}
+      />
 
       {addClientOpen && (
         <AddClientModal

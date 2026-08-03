@@ -625,12 +625,29 @@ export async function createOrder(
             venueName: input.venueName?.trim() || null,
             venueContact: input.venueContact?.trim() || null,
             logisticsComment: input.logisticsComment?.trim() || null,
+            // "Монтаж требуется" должен доходить до ScheduleEvent уже при
+            // первом создании заказа — иначе встроенный редактор монтажа
+            // (EmbeddedMontageSection, карточка заказа в CRM) заполняется до
+            // первого сохранения, но решение молча терялось бы (см.
+            // upsertScheduleEvent/updateOrder, где это же поле уже
+            // применяется). ensureMontageProjectForOrder ниже, после
+            // коммита, полагается именно на то, что здесь оно реально попало
+            // в БД.
+            editingRequired: input.editingRequired ?? null,
           },
         })
       }
 
       return tx.order.findUniqueOrThrow({ where: { id: created.id }, include: ORDER_INCLUDE })
     })
+
+    // Проект монтажа при первом же создании заказа с уже отмеченным "Монтаж
+    // требуется" — тот же приём (после коммита, идемпотентная функция), что
+    // upsertScheduleEvent/updateOrder используют для уже существующих
+    // записей (см. комментарии там же).
+    if (hasBookingTime && input.editingRequired === true) {
+      await ensureMontageProjectForOrder(order.id)
+    }
 
     revalidateOrderPaths(order.clientId)
     return { ok: true, data: toDTO(order) }

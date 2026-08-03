@@ -30,6 +30,8 @@ import AddClientModal from '../clients/AddClientModal'
 import WorkDocumentsSection from '@/components/documents/WorkDocumentsSection'
 import OrderFinanceBlock, { type OrderFinanceBlockHandle } from '@/components/orders/OrderFinanceBlock'
 import MontageDisableChoiceDialog from '@/components/orders/MontageDisableChoiceDialog'
+import EmbeddedMontageSection, { type EmbeddedMontageSectionHandle } from '@/components/montage/EmbeddedMontageSection'
+import MontageDraftDiscardDialog from '@/components/montage/MontageDraftDiscardDialog'
 import type { MontageProjectDTO } from '@/lib/actions/montage'
 import { useAutosave, readAutosaveDraft, clearAutosaveDraft, type StoredDraft } from '@/lib/hooks/use-autosave'
 import SaveStatusIndicator from '@/components/ui/save-status-indicator'
@@ -103,11 +105,16 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
   const [yandexNotRequiredReason, setYandexNotRequiredReason] = useState<string | null>(annotation?.yandexNotRequiredReason ?? null)
   const [nasNotRequiredReason, setNasNotRequiredReason] = useState<string | null>(annotation?.nasNotRequiredReason ?? null)
   const [editingRequired, setEditingRequired] = useState<boolean | null>(annotation?.editingRequired ?? null)
-  // См. OrderFinanceBlock — activeMontageProjects заполняется самим блоком,
-  // переиспользуем для MontageDisableChoiceDialog при отключении монтажа.
+  // См. EmbeddedMontageSection — activeMontageProjects заполняется самим
+  // блоком, переиспользуем для MontageDisableChoiceDialog при отключении монтажа.
   const [activeMontageProjects, setActiveMontageProjects] = useState<MontageProjectDTO[]>([])
   const [montageDisableDialogOpen, setMontageDisableDialogOpen] = useState(false)
+  // Случай 1 из ТЗ (см. MONTAGE.md) — проекта ещё нет, но в форме уже есть
+  // несохранённый черновик монтажа: отдельное, более лёгкое подтверждение,
+  // чем MontageDisableChoiceDialog (там речь о судьбе уже существующей записи).
+  const [montageDraftDiscardOpen, setMontageDraftDiscardOpen] = useState(false)
   const [pendingEditingRequired, setPendingEditingRequired] = useState<boolean | null | 'unset'>('unset')
+  const montageRef = useRef<EmbeddedMontageSectionHandle>(null)
   const [clientNameRaw, setClientNameRaw] = useState(annotation?.clientNameRaw ?? '')
   const [contactRaw, setContactRaw] = useState(annotation?.contactRaw ?? '')
   const [companyRaw, setCompanyRaw] = useState(annotation?.companyRaw ?? '')
@@ -243,13 +250,19 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
     setSimilarMatches(null)
   }
 
-  // Отключение "Монтаж требуется" при уже существующем проекте монтажа —
-  // раньше проект просто зависал без предупреждения (см. план). Перехватываем
-  // переход true -> не true, если есть непогашенный проект.
+  // Отключение "Монтаж требуется" — два разных случая (см. MONTAGE.md,
+  // «Переключение на "Монтаж не требуется"»): уже существующий проект
+  // (раньше просто зависал без предупреждения) и несохранённый черновик
+  // прямо в форме (проекта на сервере ещё нет, но есть что терять).
   function handleEditingRequiredChange(next: boolean | null) {
     if (editingRequired === true && next !== true && activeMontageProjects.length > 0) {
       setPendingEditingRequired(next)
       setMontageDisableDialogOpen(true)
+      return
+    }
+    if (editingRequired === true && next !== true && activeMontageProjects.length === 0 && montageRef.current?.hasDraftContent()) {
+      setPendingEditingRequired(next)
+      setMontageDraftDiscardOpen(true)
       return
     }
     setEditingRequired(next)
@@ -469,6 +482,17 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
             if (!charged.ok) { setError(charged.error); return }
           }
         }
+      }
+
+      // Монтаж — после того, как заказ точно сохранён и известен orderId.
+      // ensureMontageProjectForOrder (см. schedule.ts/orders.ts) уже создал
+      // минимальный проект на сервере ВНУТРИ saveCore() выше, если это первое
+      // включение "Монтаж требуется" — commitMontage только обогащает его
+      // (или уже существующий проект) текущими значениями встроенной формы,
+      // не создаёт вторую сущность (см. MONTAGE.md, «Встраивание в карточку заказа»).
+      if (editingRequired === true && result.orderId) {
+        const montageResult = await montageRef.current?.commitMontage(result.orderId)
+        if (montageResult && !montageResult.ok) { setError(montageResult.error); return }
       }
 
       onSaved()
@@ -842,6 +866,16 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
             </p>
           </div>
 
+          {editingRequired === true && (
+            <div className="bg-zinc-800/40 border border-zinc-800 rounded-lg p-3">
+              <EmbeddedMontageSection
+                ref={montageRef}
+                orderId={annotation?.orderId ?? null}
+                onProjectsLoaded={setActiveMontageProjects}
+              />
+            </div>
+          )}
+
           {(!hasClient || paymentMode === 'ONE_TIME') && (
             <>
               <OrderFinanceBlock
@@ -849,8 +883,6 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
                 orderId={annotation?.orderId ?? null}
                 revenueValue={estimatedPrice}
                 onRevenueChange={setEstimatedPrice}
-                editingRequired={editingRequired}
-                onMontageProjectsLoaded={setActiveMontageProjects}
               />
               <div>
                 <label className={LABEL}>Способ оплаты</label>
@@ -1100,6 +1132,15 @@ export default function EventCardModal({ vm, onOpenChange, onSaved }: Props) {
         onResolve={() => { if (pendingEditingRequired !== 'unset') setEditingRequired(pendingEditingRequired); setPendingEditingRequired('unset') }}
       />
     )}
+    <MontageDraftDiscardDialog
+      open={montageDraftDiscardOpen}
+      onConfirm={() => {
+        setMontageDraftDiscardOpen(false)
+        if (pendingEditingRequired !== 'unset') setEditingRequired(pendingEditingRequired)
+        setPendingEditingRequired('unset')
+      }}
+      onCancel={() => { setMontageDraftDiscardOpen(false); setPendingEditingRequired('unset') }}
+    />
     </>
   )
 }

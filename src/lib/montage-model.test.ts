@@ -11,7 +11,85 @@ import {
   MONTAGE_STATUS_LABELS, MONTAGE_STATUS_ORDER,
   computeMontageDashboardStats, type MontageStatsInput,
   computeEditorAllTimeSummary, computeEditorMonthlyStats, type EditorProjectStatsInput,
+  buildMontageFormValues, montageFormValuesToInput, isMontageFormEmpty, diffMontageFormValues, type MontageProjectFormValues,
 } from './montage-model'
+import type { MontageProjectDTO } from './actions/montage'
+
+// Полная заглушка MontageProjectDTO для тестов встроенного редактора монтажа
+// (buildMontageFormValues/montageFormValuesToInput/isMontageFormEmpty) — эти
+// три функции единственные общие для MontageProjectFields.tsx (и отдельной
+// карточки монтажа, и встроенного блока в EventCardModal.tsx/OrderFormModal.tsx,
+// см. MONTAGE.md, «Встраивание в карточку заказа»), поэтому проверяются как
+// чистые функции, а не через рендер компонента (см. конвенцию тестирования
+// проекта — vitest.config.ts ограничивает тесты чистыми функциями).
+function makeProject(overrides: Partial<MontageProjectDTO> = {}): MontageProjectDTO {
+  return {
+    id: 'project-1',
+    orderId: 'order-1',
+    orderTitle: 'Съёмка для ООО «Ромашка»',
+    orderStatus: 'EDITING',
+    clientId: 'client-1',
+    clientName: 'Иван Иванов',
+    companyName: null,
+    title: 'Монтаж интервью от 01.08.2026',
+    description: 'Интервью с основателем',
+    contentType: 'TALKING_HEAD',
+    customContentType: null,
+    status: 'NEW',
+    isPaused: false,
+    pausedAt: null,
+    pauseReason: null,
+    cancelledAt: null,
+    cancelReason: null,
+    editorId: 'editor-1',
+    editorName: 'Пётр Петров',
+    additionalEditorIds: [],
+    assignedAt: '2026-08-01T00:00:00.000Z',
+    sourceReceivedAt: '2026-08-01T00:00:00.000Z',
+    startedAt: null,
+    deadlineType: 'DURATION_DAYS',
+    deadlineDate: null,
+    turnaroundDays: 5,
+    turnaroundDayType: 'BUSINESS',
+    completedAt: null,
+    deliveredAt: null,
+    clientAmount: 20000,
+    editorAmount: 16000,
+    profit: 4000,
+    clientPaymentStatus: 'NOT_SPECIFIED',
+    editorPaymentStatus: 'NOT_CALCULATED',
+    clientPaidAt: null,
+    editorPaidAt: null,
+    paymentComment: null,
+    sourceMaterialsUrl: 'https://disk.yandex.ru/source',
+    effectiveSourceMaterialsUrl: 'https://disk.yandex.ru/source',
+    sourceMaterialsNasUrl: null,
+    mountedMaterialNasUrl: null,
+    materialsState: 'MISSING',
+    deliveryUrl: null,
+    materialsComment: null,
+    revisionsIncluded: 2,
+    revisionsUsed: 0,
+    revisionsComment: null,
+    requirements: 'Оставить фирменную заставку',
+    internalComment: null,
+    clientComment: null,
+    importSource: null,
+    createdAt: '2026-08-01T00:00:00.000Z',
+    updatedAt: '2026-08-01T00:00:00.000Z',
+    isArchived: false,
+    archivedAt: null,
+    isOverdue: false,
+    deadlineLabel: null,
+    attentionReasons: [],
+    hasNoClientLink: false,
+    isHistoricalImport: false,
+    invoiceDisplayNumber: null,
+    actDisplayNumber: null,
+    appendixDisplayNumber: null,
+    ...overrides,
+  }
+}
 
 describe('computeMontageProfit — единая формула прибыли', () => {
   it('computes clientAmount minus editorAmount when both are known', () => {
@@ -790,5 +868,175 @@ describe('MONTAGE_STATUS_LABELS / MONTAGE_STATUS_ORDER — consistency', () => {
     expect(MONTAGE_STATUS_ORDER).toHaveLength(5)
     expect(new Set(MONTAGE_STATUS_ORDER).size).toBe(5)
     expect(MONTAGE_STATUS_ORDER).not.toContain('CANCELLED')
+  })
+})
+
+// buildMontageFormValues / montageFormValuesToInput / isMontageFormEmpty —
+// единственная общая логика формы для MontageProjectFields.tsx, используемая
+// одновременно отдельной карточкой монтажа (MontageProjectModal.tsx) и
+// встроенным блоком в карточке заказа (EmbeddedMontageSection.tsx). Регрессия
+// здесь ломает синхронизацию между ними обоими одновременно.
+describe('buildMontageFormValues — API (DTO) → форма', () => {
+  it('maps every editable field of an existing project into form values', () => {
+    const values = buildMontageFormValues(makeProject())
+    expect(values).toEqual({
+      title: 'Монтаж интервью от 01.08.2026',
+      description: 'Интервью с основателем',
+      contentType: 'TALKING_HEAD',
+      customContentType: '',
+      status: 'NEW',
+      editorId: 'editor-1',
+      additionalEditorIds: [],
+      sourceReceivedAt: '2026-08-01',
+      startedAt: '',
+      deadlineType: 'DURATION_DAYS',
+      deadlineDate: '',
+      turnaroundDays: '5',
+      turnaroundDayType: 'BUSINESS',
+      deliveredAt: '',
+      clientAmount: '20000',
+      editorAmount: '16000',
+      clientPaymentStatus: 'NOT_SPECIFIED',
+      editorPaymentStatus: 'NOT_CALCULATED',
+      clientPaidAt: '',
+      editorPaidAt: '',
+      paymentComment: '',
+      sourceMaterialsUrl: 'https://disk.yandex.ru/source',
+      sourceMaterialsNasUrl: '',
+      mountedMaterialNasUrl: '',
+      deliveryUrl: '',
+      materialsComment: '',
+      revisionsIncluded: '2',
+      revisionsUsed: '0',
+      revisionsComment: '',
+      requirements: 'Оставить фирменную заставку',
+      internalComment: '',
+      clientComment: '',
+    } satisfies MontageProjectFormValues)
+  })
+
+  it('returns an empty/default draft when project is null (new order, no montage project yet)', () => {
+    const values = buildMontageFormValues(null)
+    expect(values.title).toBe('')
+    expect(values.status).toBe('NEW')
+    expect(values.additionalEditorIds).toEqual([])
+    expect(values.clientPaymentStatus).toBe('NOT_SPECIFIED')
+    expect(values.editorPaymentStatus).toBe('NOT_CALCULATED')
+    expect(values.revisionsUsed).toBe('0')
+  })
+
+  it('truncates ISO date-times to YYYY-MM-DD for date inputs', () => {
+    const values = buildMontageFormValues(makeProject({ deadlineDate: '2026-08-10T15:30:00.000Z' }))
+    expect(values.deadlineDate).toBe('2026-08-10')
+  })
+})
+
+describe('montageFormValuesToInput — форма → API (MontageProjectInput)', () => {
+  it('round-trips numeric/date fields back to the API shape', () => {
+    const input = montageFormValuesToInput(buildMontageFormValues(makeProject()))
+    expect(input.clientAmount).toBe(20000)
+    expect(input.editorAmount).toBe(16000)
+    expect(input.turnaroundDays).toBe(5)
+    expect(input.revisionsIncluded).toBe(2)
+    expect(input.revisionsUsed).toBe(0)
+    expect(input.sourceReceivedAt).toBe('2026-08-01')
+  })
+
+  it('sends customContentType only when contentType is OTHER', () => {
+    const notOther = montageFormValuesToInput(buildMontageFormValues(makeProject({ contentType: 'TALKING_HEAD', customContentType: 'leftover text' })))
+    expect(notOther.customContentType).toBeUndefined()
+
+    const other = montageFormValuesToInput(buildMontageFormValues(makeProject({ contentType: 'OTHER', customContentType: 'Рекламный ролик' })))
+    expect(other.customContentType).toBe('Рекламный ролик')
+  })
+
+  it('maps blank optional strings to null/undefined rather than empty strings', () => {
+    const input = montageFormValuesToInput(buildMontageFormValues(null))
+    expect(input.editorId).toBeNull()
+    expect(input.sourceReceivedAt).toBeNull()
+    expect(input.clientAmount).toBeNull()
+    expect(input.deadlineType).toBeNull()
+    expect(input.title).toBeUndefined()
+  })
+
+  it('does not include orderId/clientId/confirmDuplicateForOrder — supplied by the caller, not the shared form', () => {
+    const input = montageFormValuesToInput(buildMontageFormValues(makeProject()))
+    expect(input).not.toHaveProperty('orderId')
+    expect(input).not.toHaveProperty('clientId')
+    expect(input).not.toHaveProperty('confirmDuplicateForOrder')
+  })
+})
+
+describe('isMontageFormEmpty — Случай 1 (снятие "Монтаж требуется" до первого сохранения)', () => {
+  it('is empty for a fresh draft (project === null)', () => {
+    expect(isMontageFormEmpty(buildMontageFormValues(null))).toBe(true)
+  })
+
+  it('is not empty once any single field was filled in', () => {
+    const values = buildMontageFormValues(null)
+    expect(isMontageFormEmpty({ ...values, title: 'Монтаж для нового заказа' })).toBe(false)
+    expect(isMontageFormEmpty({ ...values, clientAmount: '15000' })).toBe(false)
+    expect(isMontageFormEmpty({ ...values, additionalEditorIds: ['editor-2'] })).toBe(false)
+  })
+
+  it('is not empty for an existing, already-saved project (never asks to discard real data here)', () => {
+    expect(isMontageFormEmpty(buildMontageFormValues(makeProject()))).toBe(false)
+  })
+})
+
+// diffMontageFormValues — regression coverage for a real bug found while
+// testing the embedded editor live: a montage project can be created on the
+// server (ensureMontageProjectForOrder, e.g. via order autosave) AFTER
+// MontageProjectFields already mounted with project=null. Sending the full
+// montageFormValuesToInput(values) at commit time silently overwrote server
+// defaults (sourceReceivedAt, auto-guessed title) with null/blank for every
+// field the admin never touched. Only EmbeddedMontageSection uses this path —
+// MontageProjectModal.tsx keeps full-overwrite semantics via getValues().
+describe('diffMontageFormValues — только реально изменённые поля (встроенный редактор)', () => {
+  it('sends undefined (not null) for fields the admin never touched', () => {
+    const initial = buildMontageFormValues(null)
+    const current = { ...initial, title: 'ТЕСТ Монтаж проекта' }
+    const input = diffMontageFormValues(initial, current)
+    expect(input.title).toBe('ТЕСТ Монтаж проекта')
+    expect(input.sourceReceivedAt).toBeUndefined()
+    expect(input.clientAmount).toBeUndefined()
+    expect(input.editorId).toBeUndefined()
+    expect(input.status).toBeUndefined()
+  })
+
+  it('sends null when the admin actively clears a previously-filled field', () => {
+    const initial = buildMontageFormValues(makeProject({ sourceMaterialsUrl: 'https://disk.yandex.ru/source' }))
+    const current = { ...initial, sourceMaterialsUrl: '' }
+    const input = diffMontageFormValues(initial, current)
+    expect(input.sourceMaterialsUrl).toBeNull()
+  })
+
+  it('keeps contentType and customContentType paired when either changes', () => {
+    const initial = buildMontageFormValues(null)
+    const current = { ...initial, contentType: 'OTHER' as const, customContentType: 'Рекламный ролик' }
+    const input = diffMontageFormValues(initial, current)
+    expect(input.contentType).toBe('OTHER')
+    expect(input.customContentType).toBe('Рекламный ролик')
+  })
+
+  it('omits both contentType and customContentType when neither changed', () => {
+    const initial = buildMontageFormValues(makeProject({ contentType: 'TALKING_HEAD', customContentType: null }))
+    const input = diffMontageFormValues(initial, { ...initial })
+    expect(input.contentType).toBeUndefined()
+    expect(input.customContentType).toBeUndefined()
+  })
+
+  it('detects additionalEditorIds changes by content, not just reference', () => {
+    const initial = buildMontageFormValues(null)
+    const sameContent = diffMontageFormValues(initial, { ...initial, additionalEditorIds: [...initial.additionalEditorIds] })
+    expect(sameContent.additionalEditorIds).toBeUndefined()
+    const changed = diffMontageFormValues(initial, { ...initial, additionalEditorIds: ['editor-2'] })
+    expect(changed.additionalEditorIds).toEqual(['editor-2'])
+  })
+
+  it('returns nothing but undefined when nothing changed at all', () => {
+    const initial = buildMontageFormValues(makeProject())
+    const input = diffMontageFormValues(initial, { ...initial })
+    expect(Object.values(input).every(v => v === undefined)).toBe(true)
   })
 })

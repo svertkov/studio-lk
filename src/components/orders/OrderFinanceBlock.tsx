@@ -4,12 +4,8 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 're
 import SaveStatusIndicator from '@/components/ui/save-status-indicator'
 import GlowPill from '@/components/ui/glow-pill'
 import { useAutosave, readAutosaveDraft, clearAutosaveDraft, type StoredDraft } from '@/lib/hooks/use-autosave'
-import { getMontageProjectsForOrder, updateMontageProject, assignMontageEditor, type MontageProjectDTO } from '@/lib/actions/montage'
 import { getOrder, updateOrderProfit, type UpdateOrderProfitInput } from '@/lib/actions/orders'
 import { FINANCE_COMMENT_TEMPLATES, appendFinanceCommentTemplate } from '@/lib/finance-comment-model'
-import EditorAssignField from './EditorAssignField'
-import EditorReassignDialog from './EditorReassignDialog'
-import type { EditorProfileListItemDTO } from '@/lib/actions/editors'
 
 const FIELD_BASE = 'w-full h-10 bg-zinc-800 border border-zinc-700 rounded-lg text-sm outline-none focus:border-[#00c26b] transition-colors'
 const INPUT = `${FIELD_BASE} px-3 text-zinc-100 placeholder-zinc-600`
@@ -52,38 +48,31 @@ interface Props {
   // остальных денежных полей в обеих модалках.
   revenueValue: string
   onRevenueChange: (v: string) => void
-  editingRequired: boolean | null
-  // Отдаёт родителю список непогашенных (не CANCELLED) проектов монтажа —
-  // нужен MontageDisableChoiceDialog при отключении "Монтаж требуется"
-  // (см. EditingRequiredControl в самих модалках), чтобы не делать второй
-  // такой же запрос.
-  onMontageProjectsLoaded?: (projects: MontageProjectDTO[]) => void
 }
 
-// Общий финансовый блок карточки заказа — используется и в OrderFormModal
-// (CRM), и в EventCardModal (расписание/дашборд/карточка клиента), чтобы обе
-// карточки одного заказа показывали одинаковую логику вместо двух разных
-// независимых виджетов (см. AGENTS.md, единый источник данных). Выплата за
-// монтаж и финансы заказа (прибыль/комментарий) — самостоятельные overlay-
-// мутации (тот же приём, что pause/cancel/archiveMontageProject и
-// WorkDocumentsSection): сохраняются через собственный автосейв, не через
-// общую кнопку "Сохранить" карточки — так EventCardModal, у которого нет
-// полного OrderDTO под рукой (только annotation.orderId), может показывать и
-// редактировать эти данные без изменений в своей общей форме/handleSave.
+// Финансовый блок заказа (выручка + прибыль + комментарий к прибыли) —
+// используется и в OrderFormModal (CRM), и в EventCardModal (расписание/
+// дашборд/карточка клиента), чтобы обе карточки одного заказа показывали
+// одинаковую логику вместо двух разных независимых виджетов (см. AGENTS.md,
+// единый источник данных). Прибыль/комментарий — самостоятельная overlay-
+// мутация (тот же приём, что WorkDocumentsSection): сохраняется через
+// собственный автосейв, не через общую кнопку "Сохранить" карточки — так
+// EventCardModal, у которого нет полного OrderDTO под рукой (только
+// annotation.orderId), может показывать и редактировать эти данные без
+// изменений в своей общей форме/handleSave.
+//
+// 2026-08: редактирование монтажа (финансы монтажа, исполнитель, статус и
+// т.д.) больше не живёт здесь — вынесено в единый встроенный редактор
+// EmbeddedMontageSection.tsx (используется тем же MontageProjectFields.tsx,
+// что и отдельная карточка монтажа), который EventCardModal.tsx/
+// OrderFormModal.tsx рендерят отдельно, сразу под переключателем "Монтаж
+// требуется/не требуется" (см. MONTAGE.md, «Встраивание в карточку заказа»).
 // forwardRef — родитель дёргает flushToOrder() из своего handleSave в момент
 // первого появления orderId (см. OrderFinanceBlockHandle выше).
 const OrderFinanceBlock = forwardRef<OrderFinanceBlockHandle, Props>(function OrderFinanceBlock({
-  orderId, revenueValue, onRevenueChange, editingRequired, onMontageProjectsLoaded,
+  orderId, revenueValue, onRevenueChange,
 }, ref) {
-  const [projects, setProjects] = useState<MontageProjectDTO[] | null>(null)
-  const [editorAmountDraft, setEditorAmountDraft] = useState('')
-  const [clientAmountDraft, setClientAmountDraft] = useState('')
-  const [savingPayout, setSavingPayout] = useState(false)
-  const [payoutSaved, setPayoutSaved] = useState(false)
   const [finance, setFinance] = useState<FinanceData | null>(null)
-  const [pendingEditor, setPendingEditor] = useState<EditorProfileListItemDTO | null>(null)
-  const [reassignDialogOpen, setReassignDialogOpen] = useState(false)
-  const [assigningEditor, setAssigningEditor] = useState(false)
   const financeEditorRef = useRef<FinanceEditorHandle>(null)
 
   useImperativeHandle(ref, () => ({
@@ -100,21 +89,11 @@ const OrderFinanceBlock = forwardRef<OrderFinanceBlockHandle, Props>(function Or
     let cancelled = false
     if (!orderId) {
       const timer = setTimeout(() => {
-        setProjects([])
         setFinance({ profitAmount: null, financeComment: null, profitUpdatedByName: null, profitUpdatedAt: null })
       }, 0)
       return () => clearTimeout(timer)
     }
 
-    getMontageProjectsForOrder(orderId).then(res => {
-      if (cancelled) return
-      const active = res.data.filter(p => p.status !== 'CANCELLED')
-      setProjects(res.data)
-      onMontageProjectsLoaded?.(active)
-      const primary = active[0]
-      setEditorAmountDraft(primary?.editorAmount != null ? String(primary.editorAmount) : '')
-      setClientAmountDraft(primary?.clientAmount != null ? String(primary.clientAmount) : '')
-    })
     getOrder(orderId).then(res => {
       if (cancelled) return
       if (res.ok) {
@@ -127,124 +106,20 @@ const OrderFinanceBlock = forwardRef<OrderFinanceBlockHandle, Props>(function Or
       }
     })
     return () => { cancelled = true }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orderId])
 
-  const activeProject = projects?.find(p => p.status !== 'CANCELLED') ?? null
-
-  async function handleSavePayout() {
-    if (!activeProject) return
-    setSavingPayout(true)
-    const result = await updateMontageProject(activeProject.id, {
-      editorAmount: editorAmountDraft.trim() ? parseFloat(editorAmountDraft) : null,
-      clientAmount: clientAmountDraft.trim() ? parseFloat(clientAmountDraft) : null,
-    })
-    setSavingPayout(false)
-    if (result.ok) {
-      setProjects(prev => prev?.map(p => p.id === activeProject.id ? result.data : p) ?? null)
-      setPayoutSaved(true)
-      setTimeout(() => setPayoutSaved(false), 2000)
-    }
-  }
-
-  // Прямое назначение (проект ещё без монтажёра) не требует подтверждения —
-  // предупреждение нужно только при СМЕНЕ уже назначенного (ТЗ п.9).
-  function handleEditorSelect(editor: EditorProfileListItemDTO | null) {
-    if (!activeProject) return
-    const newEditorId = editor?.id ?? null
-    if (newEditorId === activeProject.editorId) return
-    if (!activeProject.editorId || !editor) {
-      void doAssignEditor(newEditorId)
-      return
-    }
-    setPendingEditor(editor)
-    setReassignDialogOpen(true)
-  }
-
-  async function doAssignEditor(editorId: string | null) {
-    if (!activeProject) return
-    setAssigningEditor(true)
-    const result = await assignMontageEditor(activeProject.id, editorId)
-    setAssigningEditor(false)
-    if (result.ok) {
-      setProjects(prev => prev?.map(p => (p.id === activeProject.id ? result.data : p)) ?? null)
-    }
-  }
-
-  async function handleConfirmReassign() {
-    if (!pendingEditor) return
-    await doAssignEditor(pendingEditor.id)
-    setReassignDialogOpen(false)
-    setPendingEditor(null)
-  }
-
   return (
-    <>
-      <div className="space-y-3">
-        {editingRequired && (
-          <div className="bg-zinc-800/40 border border-zinc-800 rounded-lg p-3 space-y-2.5">
-            <p className="text-zinc-500 text-[11px] font-semibold uppercase tracking-wider">Финансы и исполнитель монтажа</p>
-            {projects === null ? (
-              <p className="text-zinc-500 text-xs">Загрузка...</p>
-            ) : !activeProject ? (
-              <p className="text-zinc-500 text-xs">Проект монтажа ещё не создан — появится после сохранения.</p>
-            ) : (
-              <>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <Label>Клиент платит за монтаж, ₽</Label>
-                    <input className={INPUT} type="number" min="0" placeholder="напр. 20000" value={clientAmountDraft}
-                      onChange={e => setClientAmountDraft(e.target.value)} />
-                  </div>
-                  <div>
-                    <Label>Выплата монтажёру, ₽</Label>
-                    <input className={INPUT} type="number" min="0" placeholder="напр. 15000" value={editorAmountDraft}
-                      onChange={e => setEditorAmountDraft(e.target.value)} />
-                  </div>
-                </div>
-                <EditorAssignField
-                  value={activeProject.editorId}
-                  valueLabel={activeProject.editorName}
-                  onSelect={handleEditorSelect}
-                />
-                <div className="flex items-center gap-3">
-                  {/* Отдельная кнопка сохранения — не часть общего autosave/"Сохранить"
-                      карточки: этот блок самодостаточен (см. комментарий компонента
-                      выше) специально потому, что у EventCardModal нет полного OrderDTO. */}
-                  <button type="button" onClick={handleSavePayout} disabled={savingPayout}
-                    className="bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 text-zinc-100 text-xs font-medium px-3 py-1.5 rounded-lg transition-colors">
-                    {savingPayout ? 'Сохранение...' : 'Обновить данные монтажа'}
-                  </button>
-                  {(payoutSaved || assigningEditor) && <span className="text-[#00c26b] text-xs">{assigningEditor ? 'Назначаем...' : 'Сохранено'}</span>}
-                </div>
-              </>
-            )}
-          </div>
-        )}
-
-        <div>
-          <Label>Выручка по заказу, ₽</Label>
-          <input className={`${INPUT} mt-1.5`} type="number" min="0" placeholder="напр. 15000" value={revenueValue}
-            onChange={e => onRevenueChange(e.target.value)} />
-        </div>
-
-        {finance && (
-          <FinanceEditor ref={financeEditorRef} orderId={orderId} initialFinance={finance} />
-        )}
+    <div className="space-y-3">
+      <div>
+        <Label>Выручка по заказу, ₽</Label>
+        <input className={`${INPUT} mt-1.5`} type="number" min="0" placeholder="напр. 15000" value={revenueValue}
+          onChange={e => onRevenueChange(e.target.value)} />
       </div>
 
-      {pendingEditor && activeProject && (
-        <EditorReassignDialog
-          open={reassignDialogOpen}
-          onOpenChange={next => { setReassignDialogOpen(next); if (!next) setPendingEditor(null) }}
-          currentEditorName={activeProject.editorName ?? 'Не назначен'}
-          newEditorName={pendingEditor.displayName}
-          currentPayout={activeProject.editorAmount}
-          isProjectDelivered={activeProject.status === 'DELIVERED'}
-          onConfirm={handleConfirmReassign}
-        />
+      {finance && (
+        <FinanceEditor ref={financeEditorRef} orderId={orderId} initialFinance={finance} />
       )}
-    </>
+    </div>
   )
 })
 
