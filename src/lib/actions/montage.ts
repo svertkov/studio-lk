@@ -866,52 +866,78 @@ export async function unarchiveMontageProject(
 
 // ============================================================
 // АВТОСОЗДАНИЕ ПРОЕКТА ИЗ ЗАКАЗА (ТЗ п.6) — вызывается из upsertScheduleEvent
-// (schedule.ts) и updateOrder (orders.ts) в момент, когда editingRequired
-// становится true. Идемпотентно: если у заказа УЖЕ есть хотя бы один проект
-// (созданный автоматически или вручную), новый не создаётся — повторное
-// сохранение карточки заказа/записи не плодит дубли.
+// (schedule.ts) и updateOrder/createOrder (orders.ts) в момент, когда
+// editingRequired становится true. Идемпотентно: если у заказа УЖЕ есть хотя
+// бы один проект (созданный автоматически или вручную), новый не создаётся —
+// повторное сохранение карточки заказа/записи не плодит дубли.
+//
+// [RULE] Гонка конкурентных вызовов (аудит 2026-08-04). Раньше идемпотентность
+// держалась на паре "count() затем create()" без единой транзакции — если два
+// вызова для ОДНОГО orderId стартуют почти одновременно (реалистичный случай:
+// автосохранение карточки заказа сработало на долю секунды раньше явного
+// "Сохранить", см. EmbeddedMontageSection.tsx), оба могли увидеть count()===0
+// ДО того, как первый закоммитил create(), и оба создать свой проект — classic
+// TOCTOU. Не UNIQUE-ограничение на MontageProject.orderId в схеме, потому что
+// платформа СОЗНАТЕЛЬНО допускает второй проект на тот же заказ через ручное
+// подтверждение (см. createMontageProject.confirmDuplicateForOrder, ТЗ п.18,
+// и комментарий у MontageProject.orderId в schema.prisma) — жёсткий unique
+// сломал бы эту существующую, документированную возможность. Вместо этого —
+// Postgres advisory-lock, сериализующий именно автосоздающий путь САМ С СОБОЙ
+// по конкретному orderId (hashtext даёт стабильный ключ из cuid-строки);
+// снимается сам при коммите/откате транзакции, ручной путь создания не задет.
+// Проверено конкурентным тестом — см. montage-concurrency.check.mjs.
 // ============================================================
 
 export async function ensureMontageProjectForOrder(orderId: string): Promise<void> {
   try {
-    const existingCount = await prisma.montageProject.count({ where: { orderId } })
-    if (existingCount > 0) return
+    const result = await prisma.$transaction(async tx => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${orderId}))`
 
-    const order = await prisma.order.findUnique({
-      where: { id: orderId },
-      select: {
-        title: true, serviceType: true, clientId: true,
-        client: { select: { name: true } },
-        clientName: true,
-      },
+      const existingCount = await tx.montageProject.count({ where: { orderId } })
+      if (existingCount > 0) return { created: false as const }
+
+      const order = await tx.order.findUnique({
+        where: { id: orderId },
+        select: {
+          title: true, serviceType: true, clientId: true,
+          client: { select: { name: true } },
+          clientName: true,
+        },
+      })
+      if (!order) return { created: false as const }
+
+      const clientLabel = order.client?.name ?? order.clientName
+      // serviceType заказа — свободный текст ("Подкаст", "Видеовизитка" и т.п.),
+      // не enum — прогоняем через тот же классификатор, что и исторический
+      // импорт (classifyMontageContentType, montage-model.ts), а не заводим
+      // вторую эвристику здесь (AGENTS.md, п.4: не дублировать логику).
+      const classification = order.serviceType ? classifyMontageContentType(order.serviceType) : null
+      await tx.montageProject.create({
+        data: {
+          orderId,
+          title: order.title ?? (clientLabel ? `Монтаж — ${clientLabel}` : null),
+          contentType: classification?.contentType ?? null,
+          customContentType: classification?.customContentType ?? null,
+          // NEW — "ещё не начали", покрывает и то, что раньше было NEEDS_INFO
+          // (см. MONTAGE_ATTENTION_EXEMPT_STATUSES, montage-model.ts).
+          status: 'NEW',
+          // "Дата поступления" — момент, когда решение "монтаж нужен" было
+          // сохранено, а не дата съёмки (ТЗ п.14: "дата, когда проект был
+          // передан в монтаж"). Суммы клиента/монтажёра НЕ переносятся из
+          // preliminaryAmount заказа — это стоимость СЪЁМКИ, а не монтажа,
+          // отдельного продукта с собственной ценой (см. ГЛАВНУЮ КОНЦЕПЦИЮ ТЗ).
+          sourceReceivedAt: new Date(),
+        },
+      })
+
+      return { created: true as const, clientId: order.clientId }
     })
-    if (!order) return
 
-    const clientLabel = order.client?.name ?? order.clientName
-    // serviceType заказа — свободный текст ("Подкаст", "Видеовизитка" и т.п.),
-    // не enum — прогоняем через тот же классификатор, что и исторический
-    // импорт (classifyMontageContentType, montage-model.ts), а не заводим
-    // вторую эвристику здесь (AGENTS.md, п.4: не дублировать логику).
-    const classification = order.serviceType ? classifyMontageContentType(order.serviceType) : null
-    await prisma.montageProject.create({
-      data: {
-        orderId,
-        title: order.title ?? (clientLabel ? `Монтаж — ${clientLabel}` : null),
-        contentType: classification?.contentType ?? null,
-        customContentType: classification?.customContentType ?? null,
-        // NEW — "ещё не начали", покрывает и то, что раньше было NEEDS_INFO
-        // (см. MONTAGE_ATTENTION_EXEMPT_STATUSES, montage-model.ts).
-        status: 'NEW',
-        // "Дата поступления" — момент, когда решение "монтаж нужен" было
-        // сохранено, а не дата съёмки (ТЗ п.14: "дата, когда проект был
-        // передан в монтаж"). Суммы клиента/монтажёра НЕ переносятся из
-        // preliminaryAmount заказа — это стоимость СЪЁМКИ, а не монтажа,
-        // отдельного продукта с собственной ценой (см. ГЛАВНУЮ КОНЦЕПЦИЮ ТЗ).
-        sourceReceivedAt: new Date(),
-      },
-    })
-
-    revalidateMontagePaths(order.clientId)
+    // revalidatePath — не операция с БД, специально вызвана уже ПОСЛЕ коммита
+    // транзакции (тот же приём, что revalidateOrderPaths в orders.ts).
+    if (result.created) {
+      revalidateMontagePaths(result.clientId)
+    }
   } catch (e) {
     // Намеренно не пробрасываем ошибку — автосоздание проекта монтажа не
     // должно заблокировать сохранение самого заказа/записи расписания

@@ -2,7 +2,7 @@
 
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import {
-  getMontageProjectsForOrder, updateMontageProject, type MontageProjectDTO,
+  getMontageProjectsForOrder, updateMontageProject, ensureMontageProjectForOrder, type MontageProjectDTO,
 } from '@/lib/actions/montage'
 import { MONTAGE_STATUS_LABELS, isMontageFormEmpty } from '@/lib/montage-model'
 import MontageProjectFields, { type MontageProjectFieldsHandle } from './MontageProjectFields'
@@ -73,12 +73,28 @@ const EmbeddedMontageSection = forwardRef<EmbeddedMontageSectionHandle, Props>(f
       const changedInput = fieldsRef.current?.getChangedInput()
       if (!changedInput) return { ok: true }
       const projectsRes = await getMontageProjectsForOrder(committedOrderId)
-      const active = projectsRes.data.find(p => p.status !== 'CANCELLED')
+      let active = projectsRes.data.find(p => p.status !== 'CANCELLED')
       if (!active) {
-        // Не должно происходить — ensureMontageProjectForOrder уже создал
-        // минимальный проект на сервере (см. orders.ts/schedule.ts) к этому
-        // моменту. Если всё же нет — явная ошибка, а не тихий пропуск (ТЗ:
-        // "ошибка создания проекта не должна выглядеть как успешное сохранение").
+        // Восстановление после частичного сбоя (аудит 2026-08-04): обычно
+        // ensureMontageProjectForOrder уже создал минимальный проект на
+        // сервере ВНУТРИ сохранения заказа (см. orders.ts/schedule.ts) к
+        // этому моменту. Но если та попытка сама по себе упала (сеть, БД) —
+        // заказ мог остаться сохранённым с editingRequired=true и БЕЗ
+        // проекта, а сервер САМ это не перепроверит на следующем сохранении
+        // (условие там — "editingRequired только что стало true", не
+        // "true, но проекта так и нет"). Поэтому здесь — самостоятельный
+        // повторный вызов той же идемпотентной функции перед тем, как сдаться:
+        // безопасно позвать сколько угодно раз, дубль не создаст (advisory
+        // lock + count-внутри-транзакции, см. actions/montage.ts).
+        await ensureMontageProjectForOrder(committedOrderId)
+        const retryRes = await getMontageProjectsForOrder(committedOrderId)
+        active = retryRes.data.find(p => p.status !== 'CANCELLED')
+      }
+      if (!active) {
+        // Всё ещё нет — заказ не найден или что-то более фундаментально не
+        // так (не сетевой сбой, который повторный вызов уже исправил бы).
+        // Явная ошибка, а не тихий пропуск (ТЗ: "ошибка создания проекта не
+        // должна выглядеть как успешное сохранение").
         return { ok: false, error: 'Проект монтажа не найден после сохранения заказа' }
       }
       // getChangedInput() (не getValues()+montageFormValuesToInput()) — форма
