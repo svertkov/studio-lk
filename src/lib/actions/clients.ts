@@ -5,7 +5,7 @@ import { prisma } from '@/lib/prisma'
 import { auth } from '@/auth'
 import { type ClientType, type ClientStatus, type ClientSource, Prisma } from '@prisma/client'
 import { computeVisitStats } from '@/lib/visit-stats'
-import { computeStatusFromVisitCount } from '@/lib/client-model'
+import { computeStatusFromVisitCount, describeClientActionError } from '@/lib/client-model'
 import { writeAuditLog as writeAuditLogEntry } from '@/lib/audit'
 
 // ============================================================
@@ -24,6 +24,7 @@ async function getAuthUserId(): Promise<string | null> {
 function writeAuditLog(params: { userId: string | null; action: string; entityId: string; metadata?: Record<string, unknown> }) {
   return writeAuditLogEntry({ ...params, entityType: 'Client' })
 }
+
 
 // ============================================================
 // СПИСОК КЛИЕНТОВ
@@ -259,7 +260,7 @@ export async function createClient(input: CreateClientInput) {
       return { ok: false as const, error: 'Этот Telegram-диалог уже связан с другим клиентом' }
     }
     console.error('[createClient]', e)
-    return { ok: false as const, error: 'Не удалось создать клиента' }
+    return { ok: false as const, error: describeClientActionError(e, 'Не удалось создать клиента') }
   }
 }
 
@@ -326,7 +327,7 @@ export async function updateClient(id: string, input: UpdateClientInput) {
     return { ok: true as const, data: client }
   } catch (e) {
     console.error('[updateClient]', e)
-    return { ok: false as const, error: 'Не удалось обновить клиента' }
+    return { ok: false as const, error: describeClientActionError(e, 'Не удалось обновить клиента') }
   }
 }
 

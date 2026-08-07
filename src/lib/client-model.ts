@@ -1,6 +1,8 @@
 // Типы и лейблы клиентов — зеркало Prisma-энумов для использования в UI
 // Сами энумы импортируются из @prisma/client, здесь только UI-лейблы и цвета
 
+import { Prisma } from '@prisma/client'
+
 export type ClientType = 'INDIVIDUAL' | 'SELF_EMPLOYED' | 'IP' | 'LLC' | 'AGENCY'
 export type ClientStatus = 'NEW' | 'ACTIVE' | 'REPEAT' | 'REGULAR' | 'SLEEPING' | 'PROBLEM' | 'ARCHIVED'
 export type ClientSource =
@@ -55,6 +57,31 @@ export function computeStatusFromVisitCount(visitCount: number): ClientStatus {
   if (visitCount > CLIENT_STATUS_VISIT_THRESHOLDS.regular) return 'REGULAR'
   if (visitCount > CLIENT_STATUS_VISIT_THRESHOLDS.repeat) return 'REPEAT'
   return 'NEW'
+}
+
+// Расшифровка ошибки Prisma в понятное сообщение для createClient/updateClient
+// (actions/clients.ts) — раньше обе функции ловили ЛЮБУЮ ошибку в один и тот
+// же generic текст ("Не удалось создать/обновить клиента"), включая обрыв
+// связи с БД (реальный случай: управляемый кластер PostgreSQL был остановлен,
+// 2026-08-08 — с этим текстом невозможно было понять, что дело не во введённых
+// данных). Различаем ПО ТИПУ ошибки Prisma, не по тексту сообщения (текст —
+// деталь реализации конкретной версии Prisma/Postgres, на неё нельзя
+// полагаться) — и никогда не отдаём наружу сырое e.message/stack, только
+// заранее заданные безопасные формулировки. Сейчас в Client нет ни одного
+// @unique-поля (см. prisma/schema.prisma) — ветка P2002 на будущее, а не для
+// существующего ограничения. Живёт здесь, а не в actions/clients.ts — та же
+// функция чистая (без обращения к БД), но клиентские actions тянут за собой
+// '@/auth' (NextAuth), который ломает импорт файла в vitest; здесь только
+// @prisma/client, тестируется как обычная модельная функция.
+export function describeClientActionError(e: unknown, fallback: string): string {
+  if (e instanceof Prisma.PrismaClientInitializationError) {
+    return 'Нет связи с базой данных. Попробуйте ещё раз через минуту — если не поможет, сообщите администратору.'
+  }
+  if (e instanceof Prisma.PrismaClientKnownRequestError) {
+    if (e.code === 'P2002') return 'Клиент с такими данными уже существует.'
+    if (e.code === 'P2003') return 'Не удалось сохранить: указана несуществующая связанная запись (например, ответственный сотрудник).'
+  }
+  return fallback
 }
 
 export const CLIENT_SOURCE_LABELS: Record<ClientSource, string> = {
