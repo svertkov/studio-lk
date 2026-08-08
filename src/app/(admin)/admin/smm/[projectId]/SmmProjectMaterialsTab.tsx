@@ -3,13 +3,13 @@
 import { useMemo, useState } from 'react'
 import { Plus, Pencil, Trash2, ExternalLink, Search } from 'lucide-react'
 import { addSmmMaterialLink, updateSmmMaterialLink, deleteSmmMaterialLink, type SmmMaterialLinkDTO, type SmmMaterialLinkInput, type SmmContentItemDTO } from '@/lib/actions/smm'
-import { SMM_MATERIAL_CATEGORY_LABELS } from '@/lib/smm-model'
-import type { SmmMaterialCategory } from '@prisma/client'
+import { SMM_MATERIAL_CATEGORY_LABELS, SMM_MATERIAL_TYPE_LABELS, SMM_SERVICE_TYPE_LABELS } from '@/lib/smm-model'
+import type { SmmMaterialCategory, SmmMaterialType } from '@prisma/client'
 
 const INPUT = 'w-full bg-zinc-800 border border-zinc-700 text-zinc-100 placeholder-zinc-600 rounded-lg px-3 py-2 text-sm outline-none focus:border-[#00c26b] transition-colors'
 const SELECT = 'w-full h-9 bg-zinc-800 border border-zinc-700 text-zinc-200 rounded-lg px-3 text-sm outline-none focus:border-[#00c26b] transition-colors cursor-pointer'
 
-const EMPTY_FORM: SmmMaterialLinkInput = { category: 'SOURCE', title: '', url: '', description: '' }
+const EMPTY_FORM: SmmMaterialLinkInput = { category: 'SOURCE', materialType: null, title: '', url: '', description: '', relatedContentId: null }
 
 interface Props {
   smmProjectId: string
@@ -18,13 +18,19 @@ interface Props {
   contentItems: SmmContentItemDTO[]
 }
 
-export default function SmmProjectMaterialsTab({ smmProjectId, materialLinks, setMaterialLinks }: Props) {
+export default function SmmProjectMaterialsTab({ smmProjectId, materialLinks, setMaterialLinks, contentItems }: Props) {
   const [editingId, setEditingId] = useState<string | 'new' | null>(null)
   const [form, setForm] = useState<SmmMaterialLinkInput>(EMPTY_FORM)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [categoryFilter, setCategoryFilter] = useState<'ALL' | SmmMaterialCategory>('ALL')
+
+  const contentTitle = (id: string) => {
+    const c = contentItems.find(c => c.id === id)
+    if (!c) return null
+    return c.contentCode ? `${c.contentCode} — ${c.title || SMM_SERVICE_TYPE_LABELS[c.serviceType]}` : (c.title || SMM_SERVICE_TYPE_LABELS[c.serviceType])
+  }
 
   const filtered = useMemo(() => materialLinks.filter(l => {
     if (categoryFilter !== 'ALL' && l.category !== categoryFilter) return false
@@ -34,7 +40,7 @@ export default function SmmProjectMaterialsTab({ smmProjectId, materialLinks, se
 
   function startEdit(l: SmmMaterialLinkDTO) {
     setEditingId(l.id)
-    setForm({ category: l.category, title: l.title, url: l.url, description: l.description ?? '' })
+    setForm({ category: l.category, materialType: l.materialType, title: l.title, url: l.url, description: l.description ?? '', relatedContentId: l.relatedContentId })
   }
 
   async function handleSave() {
@@ -80,11 +86,18 @@ export default function SmmProjectMaterialsTab({ smmProjectId, materialLinks, se
 
       {editingId && (
         <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 space-y-3">
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-3 gap-3">
             <div>
               <label className="block text-zinc-400 text-xs mb-1.5">Категория</label>
               <select className={SELECT} value={form.category} onChange={e => setForm(f => ({ ...f, category: e.target.value as SmmMaterialCategory }))}>
                 {(Object.keys(SMM_MATERIAL_CATEGORY_LABELS) as SmmMaterialCategory[]).map(c => <option key={c} value={c}>{SMM_MATERIAL_CATEGORY_LABELS[c]}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-zinc-400 text-xs mb-1.5">Тип материала</label>
+              <select className={SELECT} value={form.materialType ?? ''} onChange={e => setForm(f => ({ ...f, materialType: (e.target.value || null) as SmmMaterialType | null }))}>
+                <option value="">Не указан</option>
+                {(Object.keys(SMM_MATERIAL_TYPE_LABELS) as SmmMaterialType[]).map(t => <option key={t} value={t}>{SMM_MATERIAL_TYPE_LABELS[t]}</option>)}
               </select>
             </div>
             <div>
@@ -95,6 +108,13 @@ export default function SmmProjectMaterialsTab({ smmProjectId, materialLinks, se
           <div>
             <label className="block text-zinc-400 text-xs mb-1.5">Ссылка</label>
             <input className={INPUT} placeholder="https://disk.yandex.ru/..." value={form.url} onChange={e => setForm(f => ({ ...f, url: e.target.value }))} />
+          </div>
+          <div>
+            <label className="block text-zinc-400 text-xs mb-1.5">Единица контента</label>
+            <select className={SELECT} value={form.relatedContentId ?? ''} onChange={e => setForm(f => ({ ...f, relatedContentId: e.target.value || null }))}>
+              <option value="">Не привязан</option>
+              {contentItems.map(c => <option key={c.id} value={c.id}>{contentTitle(c.id)}</option>)}
+            </select>
           </div>
           <div>
             <label className="block text-zinc-400 text-xs mb-1.5">Комментарий</label>
@@ -114,8 +134,11 @@ export default function SmmProjectMaterialsTab({ smmProjectId, materialLinks, se
         {filtered.map(l => (
           <div key={l.id} className="flex items-center justify-between gap-3 px-5 py-3">
             <div className="min-w-0">
-              <p className="text-zinc-100 text-sm">{l.title} <span className="text-zinc-500 text-xs">({SMM_MATERIAL_CATEGORY_LABELS[l.category]})</span></p>
+              <p className="text-zinc-100 text-sm">
+                {l.title} <span className="text-zinc-500 text-xs">({SMM_MATERIAL_CATEGORY_LABELS[l.category]}{l.materialType ? ` · ${SMM_MATERIAL_TYPE_LABELS[l.materialType]}` : ''})</span>
+              </p>
               {l.description && <p className="text-zinc-500 text-xs mt-0.5">{l.description}</p>}
+              {l.relatedContentId && contentTitle(l.relatedContentId) && <p className="text-zinc-600 text-xs mt-0.5">{contentTitle(l.relatedContentId)}</p>}
             </div>
             <div className="flex items-center gap-2 flex-shrink-0">
               <a href={l.url} target="_blank" rel="noopener noreferrer" className="text-zinc-500 hover:text-zinc-200 transition-colors"><ExternalLink className="w-3.5 h-3.5" /></a>

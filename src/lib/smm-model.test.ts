@@ -2,8 +2,9 @@ import { describe, it, expect } from 'vitest'
 import {
   computeSmmBillingPeriod, isWithinPeriod, computePackageProgress,
   isSmmContentOverdue, getPrimaryResponsibleMember, computeSmmMonthlyRevenue,
+  wouldCreateContentParentCycle, getLatestMetricByType, CONTENT_SERVICE_TYPES,
 } from './smm-model'
-import type { SmmProjectDTO, SmmPackageItemDTO, SmmContentItemDTO, SmmProjectMemberDTO } from './actions/smm'
+import type { SmmProjectDTO, SmmPackageItemDTO, SmmContentItemDTO, SmmProjectMemberDTO, SmmPublicationDTO, SmmPublicationMetricDTO } from './actions/smm'
 
 function makePackageItem(overrides: Partial<SmmPackageItemDTO> = {}): SmmPackageItemDTO {
   return {
@@ -16,10 +17,11 @@ function makePackageItem(overrides: Partial<SmmPackageItemDTO> = {}): SmmPackage
 function makeContentItem(overrides: Partial<SmmContentItemDTO> = {}): SmmContentItemDTO {
   return {
     id: 'content-1', smmProjectId: 'project-1', serviceType: 'SHORT_VIDEO', customServiceType: null,
-    title: 'Ролик', description: null, plannedPublishDate: null, deadline: null, status: 'IDEA',
+    title: 'Ролик', description: null, productionBrief: null, plannedPublishDate: null, deadline: null, status: 'IDEA',
     responsibleUserId: null, responsibleUserName: null, editorId: null, editorName: null,
     editingProjectId: null, editingProjectStatus: null, editingProjectStatusLabel: null, editingProjectDeliveryUrl: null,
-    scheduleEventId: null, sourceUrl: null, resultUrl: null, publishedUrl: null, indexCode: null,
+    scheduleEventId: null, scheduleEvents: [], sourceUrl: null, resultUrl: null, publishedUrl: null, contentCode: null,
+    parentContentId: null, parentContentTitle: null, parentContentCode: null, childContent: [], publications: [],
     clientApprovalStatus: 'NOT_REQUIRED', notes: null, createdAt: '2026-08-08T00:00:00.000Z', updatedAt: '2026-08-08T00:00:00.000Z',
     ...overrides,
   }
@@ -38,6 +40,23 @@ function makeProject(overrides: Partial<SmmProjectDTO> = {}): SmmProjectDTO {
     id: 'project-1', clientId: 'client-1', clientName: 'Diamed', status: 'ACTIVE', monthlyFee: 185000,
     currency: 'RUB', startDate: '2026-08-08T00:00:00.000Z', endDate: null, billingPeriodType: 'CUSTOM',
     paymentTerms: null, notes: null, createdAt: '2026-08-08T00:00:00.000Z', updatedAt: '2026-08-08T00:00:00.000Z',
+    ...overrides,
+  }
+}
+
+function makeMetric(overrides: Partial<SmmPublicationMetricDTO> = {}): SmmPublicationMetricDTO {
+  return {
+    id: 'metric-1', publicationId: 'pub-1', metricType: 'VIEWS', value: 100,
+    capturedAt: '2026-08-08T00:00:00.000Z', source: 'MANUAL', createdAt: '2026-08-08T00:00:00.000Z',
+    ...overrides,
+  }
+}
+
+function makePublication(overrides: Partial<SmmPublicationDTO> = {}): SmmPublicationDTO {
+  return {
+    id: 'pub-1', contentItemId: 'content-1', platform: 'INSTAGRAM', customPlatform: null, status: 'PLANNED',
+    plannedPublishAt: null, publishedAt: null, url: null, externalId: null, titleOverride: null, caption: null,
+    notes: null, createdAt: '2026-08-08T00:00:00.000Z', updatedAt: '2026-08-08T00:00:00.000Z', metrics: [],
     ...overrides,
   }
 }
@@ -188,5 +207,117 @@ describe('computeSmmMonthlyRevenue', () => {
 
   it('returns 0 for an empty list', () => {
     expect(computeSmmMonthlyRevenue([])).toBe(0)
+  })
+})
+
+describe('computePackageProgress — 2A regression: Publication count must not inflate progress', () => {
+  it('counts one unit of progress per ContentItem regardless of how many Publication rows it conceptually has (SMM.md, «Content vs Publication»)', () => {
+    const period = { start: new Date(2026, 7, 8), end: new Date(2026, 8, 7, 23, 59, 59, 999) }
+    const packageItems = [makePackageItem({ quantity: 25 })]
+    // Один и тот же ролик "опубликован" на 4 площадках — но это не поле
+    // computePackageProgress вообще не принимает Publication на вход,
+    // значит физически не может задвоить счёт по числу площадок.
+    const contentItems = [
+      makeContentItem({
+        id: 'c1', plannedPublishDate: '2026-08-10',
+        publications: [
+          makePublication({ id: 'p1', platform: 'INSTAGRAM' }),
+          makePublication({ id: 'p2', platform: 'TELEGRAM' }),
+          makePublication({ id: 'p3', platform: 'VK' }),
+          makePublication({ id: 'p4', platform: 'YOUTUBE' }),
+        ],
+      }),
+    ]
+    const progress = computePackageProgress(packageItems, contentItems, period)
+    expect(progress[0].done).toBe(1)
+  })
+})
+
+describe('wouldCreateContentParentCycle', () => {
+  it('rejects direct self-reference (A → A)', () => {
+    expect(wouldCreateContentParentCycle([{ id: 'a', parentContentId: null }], 'a', 'a')).toBe(true)
+  })
+
+  it('allows a legitimate parent assignment with no cycle', () => {
+    const items = [{ id: 'a', parentContentId: null }, { id: 'b', parentContentId: null }]
+    expect(wouldCreateContentParentCycle(items, 'b', 'a')).toBe(false)
+  })
+
+  it('rejects an indirect cycle (A → B → A)', () => {
+    // b уже указывает на a как на родителя; попытка сделать a ребёнком b создаёт цикл.
+    const items = [{ id: 'a', parentContentId: null }, { id: 'b', parentContentId: 'a' }]
+    expect(wouldCreateContentParentCycle(items, 'a', 'b')).toBe(true)
+  })
+
+  it('rejects a longer cycle (A → B → C → A)', () => {
+    const items = [
+      { id: 'a', parentContentId: null },
+      { id: 'b', parentContentId: 'a' },
+      { id: 'c', parentContentId: 'b' },
+    ]
+    expect(wouldCreateContentParentCycle(items, 'a', 'c')).toBe(true)
+  })
+
+  it('allows clearing the parent (null never creates a cycle)', () => {
+    const items = [{ id: 'a', parentContentId: null }]
+    expect(wouldCreateContentParentCycle(items, 'a', null)).toBe(false)
+  })
+
+  it('allows the same parent to have multiple independent children (not a cycle)', () => {
+    const items = [{ id: 'parent', parentContentId: null }, { id: 'child1', parentContentId: 'parent' }, { id: 'child2', parentContentId: null }]
+    expect(wouldCreateContentParentCycle(items, 'child2', 'parent')).toBe(false)
+  })
+})
+
+describe('getLatestMetricByType', () => {
+  it('returns an empty object for no metrics', () => {
+    expect(getLatestMetricByType([])).toEqual({})
+  })
+
+  it('keeps the most recent snapshot per metricType — history is not lost, just not shown in the compact summary', () => {
+    const metrics = [
+      makeMetric({ id: 'm1', metricType: 'VIEWS', value: 12000, capturedAt: '2026-08-10T00:00:00.000Z' }),
+      makeMetric({ id: 'm2', metricType: 'VIEWS', value: 18400, capturedAt: '2026-08-17T00:00:00.000Z' }),
+      makeMetric({ id: 'm3', metricType: 'VIEWS', value: 25100, capturedAt: '2026-08-31T00:00:00.000Z' }),
+    ]
+    const latest = getLatestMetricByType(metrics)
+    expect(latest.VIEWS?.id).toBe('m3')
+    expect(latest.VIEWS?.value).toBe(25100)
+  })
+
+  it('tracks each metricType independently', () => {
+    const metrics = [
+      makeMetric({ id: 'm1', metricType: 'VIEWS', value: 25516 }),
+      makeMetric({ id: 'm2', metricType: 'COMMENTS', value: 45 }),
+      makeMetric({ id: 'm3', metricType: 'SHARES', value: 194 }),
+      makeMetric({ id: 'm4', metricType: 'FOLLOWERS_GAINED', value: 55 }),
+    ]
+    const latest = getLatestMetricByType(metrics)
+    expect(latest.VIEWS?.value).toBe(25516)
+    expect(latest.COMMENTS?.value).toBe(45)
+    expect(latest.SHARES?.value).toBe(194)
+    expect(latest.FOLLOWERS_GAINED?.value).toBe(55)
+  })
+
+  it('is order-independent — an out-of-order snapshot list still resolves the true latest by capturedAt', () => {
+    const metrics = [
+      makeMetric({ id: 'newer', metricType: 'VIEWS', value: 999, capturedAt: '2026-08-31T00:00:00.000Z' }),
+      makeMetric({ id: 'older', metricType: 'VIEWS', value: 1, capturedAt: '2026-08-01T00:00:00.000Z' }),
+    ]
+    expect(getLatestMetricByType(metrics).VIEWS?.id).toBe('newer')
+  })
+})
+
+describe('CONTENT_SERVICE_TYPES', () => {
+  it('excludes package-only contractual service types (they are not a produced content format)', () => {
+    for (const t of ['STUDIO_SHOOT', 'LOCATION_SHOOT', 'SHOOTING_HOURS', 'CONTENT_PLAN', 'PUBLICATION', 'DESIGN']) {
+      expect(CONTENT_SERVICE_TYPES).not.toContain(t)
+    }
+  })
+
+  it('includes the minimum content formats required by ТЗ 2A п.22', () => {
+    for (const t of ['SHORT_VIDEO', 'LONG_VIDEO', 'POST', 'CAROUSEL', 'STORY', 'TEASER', 'OTHER']) {
+      expect(CONTENT_SERVICE_TYPES).toContain(t)
+    }
   })
 })

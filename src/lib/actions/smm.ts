@@ -9,12 +9,14 @@ import { prisma } from '@/lib/prisma'
 import { auth } from '@/auth'
 import type {
   SmmProjectStatus, SmmBillingPeriodType, SmmServiceType, SmmPackageUnit, SmmPackagePeriod,
-  SmmContentStatus, SmmClientApprovalStatus, SmmMaterialCategory, SmmProjectRole, SmmWorkType,
+  SmmContentStatus, SmmClientApprovalStatus, SmmMaterialCategory, SmmMaterialType, SmmProjectRole, SmmWorkType,
   SmmWorkStatus, SmmWorkPaymentStatus, SmmPayoutType, SmmClientPaymentStatus, MontageStatus, PaymentMethod, EventType,
+  SmmPublicationPlatform, SmmPublicationStatus, SmmMetricType, SmmMetricSource,
 } from '@prisma/client'
 import { createMontageProject } from '@/lib/actions/montage'
 import { MONTAGE_STATUS_LABELS } from '@/lib/montage-model'
 import { writeAuditLog, resolveValidUserId } from '@/lib/audit'
+import { wouldCreateContentParentCycle } from '@/lib/smm-model'
 
 async function requireStaffSession(): Promise<{ ok: true; userId: string | null } | { ok: false; error: string }> {
   try {
@@ -393,6 +395,9 @@ export interface SmmContentItemDTO {
   customServiceType: string | null
   title: string | null
   description: string | null
+  // ТЗ исполнителю ("Монтаж с 2:58...") — отдельно от description
+  // (концепция/идея материала), см. schema.prisma.
+  productionBrief: string | null
   plannedPublishDate: string | null
   deadline: string | null
   status: SmmContentStatus
@@ -407,11 +412,25 @@ export interface SmmContentItemDTO {
   editingProjectStatus: MontageStatus | null
   editingProjectStatusLabel: string | null
   editingProjectDeliveryUrl: string | null
+  // [DEPRECATED, 2A] см. schema.prisma — источник правды теперь scheduleEvents ниже.
   scheduleEventId: string | null
+  scheduleEvents: { linkId: string; scheduleEventId: string; title: string | null; startAt: string | null }[]
+  // [DEPRECATED, 2A] источник правды теперь SmmMaterialLink (см. schema.prisma).
   sourceUrl: string | null
+  // [DEPRECATED, 2A] источник правды теперь editingProjectDeliveryUrl или
+  // SmmMaterialLink с materialType=MASTER (см. schema.prisma).
   resultUrl: string | null
+  // [DEPRECATED, 2A] источник правды теперь publications[].url (см. schema.prisma).
   publishedUrl: string | null
-  indexCode: string | null
+  // Постоянный человекочитаемый бизнес-идентификатор ("Д186") — НЕ индекс
+  // файла монтажёра, физически та же колонка, что раньше называлась
+  // indexCode (см. schema.prisma).
+  contentCode: string | null
+  parentContentId: string | null
+  parentContentTitle: string | null
+  parentContentCode: string | null
+  childContent: { id: string; title: string | null; contentCode: string | null }[]
+  publications: SmmPublicationDTO[]
   clientApprovalStatus: SmmClientApprovalStatus
   notes: string | null
   createdAt: string
@@ -423,16 +442,21 @@ export interface SmmContentItemInput {
   customServiceType?: string | null
   title?: string | null
   description?: string | null
+  productionBrief?: string | null
   plannedPublishDate?: string | null
   deadline?: string | null
   status?: SmmContentStatus
   responsibleUserId?: string | null
   editorId?: string | null
+  parentContentId?: string | null
+  contentCode?: string | null
+  // Legacy-поля (2A, deprecated) — принимаются на вход только ради обратной
+  // совместимости уже написанного кода/будущих скриптов миграции истории;
+  // новый UI их больше не выставляет (см. SmmProjectContentTab.tsx).
   scheduleEventId?: string | null
   sourceUrl?: string | null
   resultUrl?: string | null
   publishedUrl?: string | null
-  indexCode?: string | null
   clientApprovalStatus?: SmmClientApprovalStatus
   notes?: string | null
 }
@@ -441,6 +465,10 @@ const CONTENT_ITEM_INCLUDE = {
   responsibleUser: { select: { name: true, email: true } },
   editor: { select: { displayName: true } },
   editingProject: { select: { status: true, deliveryUrl: true } },
+  parentContent: { select: { title: true, contentCode: true } },
+  childContent: { select: { id: true, title: true, contentCode: true }, orderBy: { createdAt: 'asc' } },
+  scheduleLinks: { include: { scheduleEvent: { select: { id: true, title: true, startAt: true } } }, orderBy: { createdAt: 'desc' } },
+  publications: { include: { metrics: { orderBy: { capturedAt: 'desc' } } }, orderBy: { createdAt: 'asc' } },
 } as const
 
 type ContentItemRow = Awaited<ReturnType<typeof prisma.smmContentItem.findFirstOrThrow<{ include: typeof CONTENT_ITEM_INCLUDE }>>>
@@ -453,6 +481,7 @@ function toContentItemDTO(row: ContentItemRow): SmmContentItemDTO {
     customServiceType: row.customServiceType,
     title: row.title,
     description: row.description,
+    productionBrief: row.productionBrief,
     plannedPublishDate: row.plannedPublishDate?.toISOString() ?? null,
     deadline: row.deadline?.toISOString() ?? null,
     status: row.status,
@@ -465,10 +494,18 @@ function toContentItemDTO(row: ContentItemRow): SmmContentItemDTO {
     editingProjectStatusLabel: row.editingProject ? MONTAGE_STATUS_LABELS[row.editingProject.status] : null,
     editingProjectDeliveryUrl: row.editingProject?.deliveryUrl ?? null,
     scheduleEventId: row.scheduleEventId,
+    scheduleEvents: row.scheduleLinks.map(l => ({
+      linkId: l.id, scheduleEventId: l.scheduleEventId, title: l.scheduleEvent.title, startAt: l.scheduleEvent.startAt?.toISOString() ?? null,
+    })),
     sourceUrl: row.sourceUrl,
     resultUrl: row.resultUrl,
     publishedUrl: row.publishedUrl,
-    indexCode: row.indexCode,
+    contentCode: row.contentCode,
+    parentContentId: row.parentContentId,
+    parentContentTitle: row.parentContent?.title ?? null,
+    parentContentCode: row.parentContent?.contentCode ?? null,
+    childContent: row.childContent.map(c => ({ id: c.id, title: c.title, contentCode: c.contentCode })),
+    publications: row.publications.map(toPublicationDTO),
     clientApprovalStatus: row.clientApprovalStatus,
     notes: row.notes,
     createdAt: row.createdAt.toISOString(),
@@ -509,6 +546,13 @@ export async function createSmmContentItem(smmProjectId: string, input: SmmConte
   try {
     const project = await prisma.smmProject.findUnique({ where: { id: smmProjectId }, select: { clientId: true } })
     if (!project) return { ok: false, error: 'SMM-проект не найден' }
+    // Новая единица контента не может быть чьим-то предком (id ещё не
+    // существует) — цикл здесь невозможен по определению, достаточно
+    // проверить, что родитель принадлежит тому же проекту.
+    if (input.parentContentId) {
+      const parent = await prisma.smmContentItem.findUnique({ where: { id: input.parentContentId }, select: { smmProjectId: true } })
+      if (!parent || parent.smmProjectId !== smmProjectId) return { ok: false, error: 'Родительская единица контента не найдена в этом проекте' }
+    }
     const created = await prisma.smmContentItem.create({
       data: {
         smmProjectId,
@@ -516,16 +560,18 @@ export async function createSmmContentItem(smmProjectId: string, input: SmmConte
         customServiceType: input.serviceType === 'OTHER' ? (input.customServiceType?.trim() || null) : null,
         title: input.title?.trim() || null,
         description: input.description?.trim() || null,
+        productionBrief: input.productionBrief?.trim() || null,
         plannedPublishDate: input.plannedPublishDate ? new Date(input.plannedPublishDate) : null,
         deadline: input.deadline ? new Date(input.deadline) : null,
         status: input.status ?? 'IDEA',
         responsibleUserId: input.responsibleUserId || null,
         editorId: input.editorId || null,
+        parentContentId: input.parentContentId || null,
+        contentCode: input.contentCode?.trim() || null,
         scheduleEventId: input.scheduleEventId || null,
         sourceUrl: input.sourceUrl?.trim() || null,
         resultUrl: input.resultUrl?.trim() || null,
         publishedUrl: input.publishedUrl?.trim() || null,
-        indexCode: input.indexCode?.trim() || null,
         clientApprovalStatus: input.clientApprovalStatus ?? 'NOT_REQUIRED',
         notes: input.notes?.trim() || null,
       },
@@ -544,6 +590,20 @@ export async function updateSmmContentItem(id: string, input: SmmContentItemInpu
   if (!authResult.ok) return { ok: false, error: authResult.error }
   try {
     const nextServiceType = input.serviceType
+    // Защита от self-reference/цикла (ТЗ 2A, п.16) — только когда parent
+    // реально меняется на непустое значение; снятие родителя (null) цикл
+    // создать не может.
+    if (input.parentContentId !== undefined && input.parentContentId) {
+      const current = await prisma.smmContentItem.findUnique({ where: { id }, select: { smmProjectId: true } })
+      if (!current) return { ok: false, error: 'Единица контента не найдена' }
+      const siblings = await prisma.smmContentItem.findMany({ where: { smmProjectId: current.smmProjectId }, select: { id: true, parentContentId: true } })
+      if (!siblings.some(s => s.id === input.parentContentId)) {
+        return { ok: false, error: 'Родительская единица контента не найдена в этом проекте' }
+      }
+      if (wouldCreateContentParentCycle(siblings, id, input.parentContentId)) {
+        return { ok: false, error: 'Нельзя назначить эту единицу родителем — это создаст цикл' }
+      }
+    }
     const updated = await prisma.smmContentItem.update({
       where: { id },
       data: {
@@ -551,16 +611,18 @@ export async function updateSmmContentItem(id: string, input: SmmContentItemInpu
         ...(input.customServiceType !== undefined && { customServiceType: nextServiceType === 'OTHER' ? (input.customServiceType?.trim() || null) : null }),
         ...(input.title !== undefined && { title: input.title?.trim() || null }),
         ...(input.description !== undefined && { description: input.description?.trim() || null }),
+        ...(input.productionBrief !== undefined && { productionBrief: input.productionBrief?.trim() || null }),
         ...(input.plannedPublishDate !== undefined && { plannedPublishDate: input.plannedPublishDate ? new Date(input.plannedPublishDate) : null }),
         ...(input.deadline !== undefined && { deadline: input.deadline ? new Date(input.deadline) : null }),
         ...(input.status !== undefined && { status: input.status }),
         ...(input.responsibleUserId !== undefined && { responsibleUserId: input.responsibleUserId || null }),
         ...(input.editorId !== undefined && { editorId: input.editorId || null }),
+        ...(input.parentContentId !== undefined && { parentContentId: input.parentContentId || null }),
+        ...(input.contentCode !== undefined && { contentCode: input.contentCode?.trim() || null }),
         ...(input.scheduleEventId !== undefined && { scheduleEventId: input.scheduleEventId || null }),
         ...(input.sourceUrl !== undefined && { sourceUrl: input.sourceUrl?.trim() || null }),
         ...(input.resultUrl !== undefined && { resultUrl: input.resultUrl?.trim() || null }),
         ...(input.publishedUrl !== undefined && { publishedUrl: input.publishedUrl?.trim() || null }),
-        ...(input.indexCode !== undefined && { indexCode: input.indexCode?.trim() || null }),
         ...(input.clientApprovalStatus !== undefined && { clientApprovalStatus: input.clientApprovalStatus }),
         ...(input.notes !== undefined && { notes: input.notes?.trim() || null }),
       },
@@ -623,6 +685,284 @@ export async function linkSmmContentToMontage(contentItemId: string): Promise<{ 
 }
 
 // ============================================================
+// ПУБЛИКАЦИИ (2A, SMM.md, «SmmContentItem → SmmPublication») — одна
+// единица контента может быть опубликована на нескольких площадках
+// одновременно (Instagram/Telegram/VK/YouTube — разные строки), у каждой
+// своя дата/URL/статус, независимый от production-статуса ContentItem.
+// ============================================================
+
+export interface SmmPublicationMetricDTO {
+  id: string
+  publicationId: string
+  metricType: SmmMetricType
+  value: number
+  capturedAt: string
+  source: SmmMetricSource
+  createdAt: string
+}
+
+export interface SmmPublicationMetricInput {
+  metricType: SmmMetricType
+  value: number
+  capturedAt?: string
+  source?: SmmMetricSource
+}
+
+export interface SmmPublicationDTO {
+  id: string
+  contentItemId: string
+  platform: SmmPublicationPlatform
+  customPlatform: string | null
+  status: SmmPublicationStatus
+  plannedPublishAt: string | null
+  publishedAt: string | null
+  url: string | null
+  externalId: string | null
+  titleOverride: string | null
+  caption: string | null
+  notes: string | null
+  createdAt: string
+  updatedAt: string
+  metrics: SmmPublicationMetricDTO[]
+}
+
+export interface SmmPublicationInput {
+  platform: SmmPublicationPlatform
+  customPlatform?: string | null
+  status?: SmmPublicationStatus
+  plannedPublishAt?: string | null
+  publishedAt?: string | null
+  url?: string | null
+  externalId?: string | null
+  titleOverride?: string | null
+  caption?: string | null
+  notes?: string | null
+}
+
+function toMetricDTO(row: {
+  id: string; publicationId: string; metricType: SmmMetricType; value: number
+  capturedAt: Date; source: SmmMetricSource; createdAt: Date
+}): SmmPublicationMetricDTO {
+  return {
+    id: row.id,
+    publicationId: row.publicationId,
+    metricType: row.metricType,
+    value: row.value,
+    capturedAt: row.capturedAt.toISOString(),
+    source: row.source,
+    createdAt: row.createdAt.toISOString(),
+  }
+}
+
+const PUBLICATION_INCLUDE = { metrics: { orderBy: { capturedAt: 'desc' } } } as const
+type PublicationRow = Awaited<ReturnType<typeof prisma.smmPublication.findFirstOrThrow<{ include: typeof PUBLICATION_INCLUDE }>>>
+
+function toPublicationDTO(row: PublicationRow): SmmPublicationDTO {
+  return {
+    id: row.id,
+    contentItemId: row.contentItemId,
+    platform: row.platform,
+    customPlatform: row.customPlatform,
+    status: row.status,
+    plannedPublishAt: row.plannedPublishAt?.toISOString() ?? null,
+    publishedAt: row.publishedAt?.toISOString() ?? null,
+    url: row.url,
+    externalId: row.externalId,
+    titleOverride: row.titleOverride,
+    caption: row.caption,
+    notes: row.notes,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+    metrics: row.metrics.map(toMetricDTO),
+  }
+}
+
+export async function addSmmPublication(contentItemId: string, input: SmmPublicationInput): Promise<{ ok: true; data: SmmPublicationDTO } | { ok: false; error: string }> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, error: authResult.error }
+  try {
+    const content = await prisma.smmContentItem.findUnique({ where: { id: contentItemId }, include: { smmProject: { select: { clientId: true } } } })
+    if (!content) return { ok: false, error: 'Единица контента не найдена' }
+    const created = await prisma.smmPublication.create({
+      data: {
+        contentItemId,
+        platform: input.platform,
+        customPlatform: input.platform === 'OTHER' ? (input.customPlatform?.trim() || null) : null,
+        status: input.status ?? 'PLANNED',
+        plannedPublishAt: input.plannedPublishAt ? new Date(input.plannedPublishAt) : null,
+        publishedAt: input.publishedAt ? new Date(input.publishedAt) : null,
+        url: input.url?.trim() || null,
+        externalId: input.externalId?.trim() || null,
+        titleOverride: input.titleOverride?.trim() || null,
+        caption: input.caption?.trim() || null,
+        notes: input.notes?.trim() || null,
+      },
+      include: PUBLICATION_INCLUDE,
+    })
+    revalidateSmmPaths(content.smmProject.clientId, content.smmProjectId)
+    return { ok: true, data: toPublicationDTO(created) }
+  } catch (e) {
+    console.error('[addSmmPublication]', e)
+    return { ok: false, error: 'Не удалось добавить публикацию' }
+  }
+}
+
+export async function updateSmmPublication(id: string, input: SmmPublicationInput): Promise<{ ok: true; data: SmmPublicationDTO } | { ok: false; error: string }> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, error: authResult.error }
+  try {
+    const nextPlatform = input.platform
+    const updated = await prisma.smmPublication.update({
+      where: { id },
+      data: {
+        ...(input.platform !== undefined && { platform: input.platform }),
+        ...(input.customPlatform !== undefined && { customPlatform: nextPlatform === 'OTHER' ? (input.customPlatform?.trim() || null) : null }),
+        ...(input.status !== undefined && { status: input.status }),
+        ...(input.plannedPublishAt !== undefined && { plannedPublishAt: input.plannedPublishAt ? new Date(input.plannedPublishAt) : null }),
+        ...(input.publishedAt !== undefined && { publishedAt: input.publishedAt ? new Date(input.publishedAt) : null }),
+        ...(input.url !== undefined && { url: input.url?.trim() || null }),
+        ...(input.externalId !== undefined && { externalId: input.externalId?.trim() || null }),
+        ...(input.titleOverride !== undefined && { titleOverride: input.titleOverride?.trim() || null }),
+        ...(input.caption !== undefined && { caption: input.caption?.trim() || null }),
+        ...(input.notes !== undefined && { notes: input.notes?.trim() || null }),
+      },
+      include: { ...PUBLICATION_INCLUDE, contentItem: { include: { smmProject: { select: { clientId: true } } } } },
+    })
+    revalidateSmmPaths(updated.contentItem.smmProject.clientId, updated.contentItem.smmProjectId)
+    return { ok: true, data: toPublicationDTO(updated) }
+  } catch (e) {
+    console.error('[updateSmmPublication]', e)
+    return { ok: false, error: 'Не удалось обновить публикацию' }
+  }
+}
+
+export async function deleteSmmPublication(id: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, error: authResult.error }
+  try {
+    const deleted = await prisma.smmPublication.delete({ where: { id }, include: { contentItem: { include: { smmProject: { select: { clientId: true } } } } } })
+    revalidateSmmPaths(deleted.contentItem.smmProject.clientId, deleted.contentItem.smmProjectId)
+    return { ok: true }
+  } catch (e) {
+    console.error('[deleteSmmPublication]', e)
+    return { ok: false, error: 'Не удалось удалить публикацию' }
+  }
+}
+
+// Снимок метрики — ВСЕГДА добавление новой строки, никогда не
+// перезаписывает существующую (SMM.md, «Metrics snapshots»): история
+// набора просмотров/лайков сохраняется по capturedAt.
+export async function addSmmPublicationMetric(publicationId: string, input: SmmPublicationMetricInput): Promise<{ ok: true; data: SmmPublicationMetricDTO } | { ok: false; error: string }> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, error: authResult.error }
+  try {
+    const publication = await prisma.smmPublication.findUnique({
+      where: { id: publicationId },
+      include: { contentItem: { include: { smmProject: { select: { clientId: true } } } } },
+    })
+    if (!publication) return { ok: false, error: 'Публикация не найдена' }
+    const createdById = await resolveValidUserId(prisma, authResult.userId)
+    const created = await prisma.smmPublicationMetric.create({
+      data: {
+        publicationId,
+        metricType: input.metricType,
+        value: input.value,
+        capturedAt: input.capturedAt ? new Date(input.capturedAt) : new Date(),
+        source: input.source ?? 'MANUAL',
+        createdById,
+      },
+    })
+    revalidateSmmPaths(publication.contentItem.smmProject.clientId, publication.contentItem.smmProjectId)
+    return { ok: true, data: toMetricDTO(created) }
+  } catch (e) {
+    console.error('[addSmmPublicationMetric]', e)
+    return { ok: false, error: 'Не удалось добавить метрику' }
+  }
+}
+
+export async function deleteSmmPublicationMetric(id: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, error: authResult.error }
+  try {
+    const deleted = await prisma.smmPublicationMetric.delete({
+      where: { id },
+      include: { publication: { include: { contentItem: { include: { smmProject: { select: { clientId: true } } } } } } },
+    })
+    revalidateSmmPaths(deleted.publication.contentItem.smmProject.clientId, deleted.publication.contentItem.smmProjectId)
+    return { ok: true }
+  } catch (e) {
+    console.error('[deleteSmmPublicationMetric]', e)
+    return { ok: false, error: 'Не удалось удалить метрику' }
+  }
+}
+
+// ============================================================
+// СВЯЗЬ ЕДИНИЦЫ КОНТЕНТА СО СЪЁМКАМИ — many-to-many (2A, SMM.md, «Content ↔
+// ScheduleEvent»). НЕ то же самое, что SmmScheduleLink (тот на уровне
+// ПРОЕКТА, для вкладки «Съёмки»/пакета) — здесь одна съёмка легитимно
+// связана сразу с несколькими единицами контента, и наоборот.
+// ============================================================
+
+// Записи расписания клиента, ещё НЕ привязанные к ЭТОЙ конкретной единице
+// контента (в отличие от getUnlinkedScheduleEventsForClient выше — та
+// исключает съёмки, уже занятые ЛЮБЫМ SMM-проектом целиком; здесь одна и
+// та же съёмка может быть законно предложена для нескольких ContentItem).
+export async function getClientScheduleEventsForContentLink(
+  clientId: string, contentItemId: string,
+): Promise<{ ok: true; data: { id: string; title: string | null; startAt: string | null }[] } | { ok: false; data: never[]; error: string }> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, data: [], error: authResult.error }
+  try {
+    const rows = await prisma.scheduleEvent.findMany({
+      where: { clientId, smmContentScheduleLinks: { none: { contentItemId } } },
+      select: { id: true, title: true, startAt: true },
+      orderBy: { startAt: 'desc' },
+      take: 50,
+    })
+    return { ok: true, data: rows.map(r => ({ id: r.id, title: r.title, startAt: r.startAt?.toISOString() ?? null })) }
+  } catch (e) {
+    console.error('[getClientScheduleEventsForContentLink]', e)
+    return { ok: false, data: [], error: 'Не удалось загрузить съёмки клиента' }
+  }
+}
+
+export async function addSmmContentScheduleLink(
+  contentItemId: string, scheduleEventId: string,
+): Promise<{ ok: true; data: { linkId: string; scheduleEventId: string; title: string | null; startAt: string | null } } | { ok: false; error: string }> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, error: authResult.error }
+  try {
+    const content = await prisma.smmContentItem.findUnique({ where: { id: contentItemId }, include: { smmProject: { select: { clientId: true } } } })
+    if (!content) return { ok: false, error: 'Единица контента не найдена' }
+    const created = await prisma.smmContentScheduleLink.create({
+      data: { contentItemId, scheduleEventId },
+      include: { scheduleEvent: { select: { title: true, startAt: true } } },
+    })
+    revalidateSmmPaths(content.smmProject.clientId, content.smmProjectId)
+    return { ok: true, data: { linkId: created.id, scheduleEventId: created.scheduleEventId, title: created.scheduleEvent.title, startAt: created.scheduleEvent.startAt?.toISOString() ?? null } }
+  } catch (e) {
+    console.error('[addSmmContentScheduleLink]', e)
+    return { ok: false, error: 'Не удалось привязать съёмку' }
+  }
+}
+
+export async function removeSmmContentScheduleLink(id: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, error: authResult.error }
+  try {
+    const deleted = await prisma.smmContentScheduleLink.delete({
+      where: { id },
+      include: { contentItem: { include: { smmProject: { select: { clientId: true } } } } },
+    })
+    revalidateSmmPaths(deleted.contentItem.smmProject.clientId, deleted.contentItem.smmProjectId)
+    return { ok: true }
+  } catch (e) {
+    console.error('[removeSmmContentScheduleLink]', e)
+    return { ok: false, error: 'Не удалось отвязать съёмку' }
+  }
+}
+
+// ============================================================
 // МАТЕРИАЛЫ (SMM.md, п.16)
 // ============================================================
 
@@ -630,6 +970,7 @@ export interface SmmMaterialLinkDTO {
   id: string
   smmProjectId: string
   category: SmmMaterialCategory
+  materialType: SmmMaterialType | null
   title: string
   url: string
   description: string | null
@@ -641,6 +982,7 @@ export interface SmmMaterialLinkDTO {
 
 export interface SmmMaterialLinkInput {
   category: SmmMaterialCategory
+  materialType?: SmmMaterialType | null
   title: string
   url: string
   description?: string | null
@@ -656,6 +998,7 @@ function toMaterialLinkDTO(row: MaterialLinkRow): SmmMaterialLinkDTO {
     id: row.id,
     smmProjectId: row.smmProjectId,
     category: row.category,
+    materialType: row.materialType,
     title: row.title,
     url: row.url,
     description: row.description,
@@ -690,6 +1033,7 @@ export async function addSmmMaterialLink(smmProjectId: string, input: SmmMateria
       data: {
         smmProjectId,
         category: input.category,
+        materialType: input.materialType ?? null,
         title: input.title.trim(),
         url: input.url.trim(),
         description: input.description?.trim() || null,
@@ -715,9 +1059,11 @@ export async function updateSmmMaterialLink(id: string, input: SmmMaterialLinkIn
       where: { id },
       data: {
         category: input.category,
+        materialType: input.materialType ?? null,
         title: input.title.trim(),
         url: input.url.trim(),
         description: input.description?.trim() || null,
+        relatedContentId: input.relatedContentId || null,
       },
       include: { ...MATERIAL_LINK_INCLUDE, smmProject: { select: { clientId: true } } },
     })

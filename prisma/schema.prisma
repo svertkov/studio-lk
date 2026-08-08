@@ -367,6 +367,7 @@ model User {
   smmMaterialLinksCreated                     SmmMaterialLink[]
   smmWorkItemsCreated                         SmmWorkItem[]
   smmPaymentsCreated                          SmmPayment[]
+  smmPublicationMetricsCreated                SmmPublicationMetric[]
 
   @@map("cms_user")
 }
@@ -863,14 +864,18 @@ model ScheduleEvent {
   // календаря, тоже могут иметь orderId — см. Order.googleEventId.
   orderId String? @unique @map("order_id")
 
-  client                       Client?            @relation(fields: [clientId], references: [id])
-  order                        Order?             @relation(fields: [orderId], references: [id])
+  client                       Client?                  @relation(fields: [clientId], references: [id])
+  order                        Order?                   @relation(fields: [orderId], references: [id])
   subscriptionUsage            SubscriptionUsage?
-  yandexNotRequiredConfirmedBy User?              @relation("ScheduleEventYandexNotRequiredConfirmedBy", fields: [yandexNotRequiredConfirmedById], references: [id])
-  nasNotRequiredConfirmedBy    User?              @relation("ScheduleEventNasNotRequiredConfirmedBy", fields: [nasNotRequiredConfirmedById], references: [id])
+  yandexNotRequiredConfirmedBy User?                    @relation("ScheduleEventYandexNotRequiredConfirmedBy", fields: [yandexNotRequiredConfirmedById], references: [id])
+  nasNotRequiredConfirmedBy    User?                    @relation("ScheduleEventNasNotRequiredConfirmedBy", fields: [nasNotRequiredConfirmedById], references: [id])
+  // Legacy одиночная связь (SmmContentItem.scheduleEventId) — оставлена не
+  // удалённой ради существующих строк (SMM.md, «Content ↔ ScheduleEvent»),
+  // новый код пишет только через smmContentScheduleLinks ниже.
   smmContentItems              SmmContentItem[]
   smmMaterialLinks             SmmMaterialLink[]
   smmScheduleLink              SmmScheduleLink?
+  smmContentScheduleLinks      SmmContentScheduleLink[]
 
   @@index([clientId])
   @@index([clientConfirmationStatus])
@@ -1664,11 +1669,24 @@ enum SmmBillingPeriodType {
 // копии одного перечня (AGENTS.md, п.4). OTHER + свободный текст на
 // соответствующей модели — словарь не должен блокировать нестандартную
 // услугу (SMM.md, п.9).
+// 2A (аудит реальных SMM-таблиц, SMM.md, «Content type vs Package service
+// type»): CAROUSEL/TEASER добавлены аддитивно (существующие значения не
+// удалены/не переименованы — безопасно для уже сохранённых SmmPackageItem).
+// ContentItem и PackageItem продолжают использовать один и тот же enum
+// (не форк на два типа) — иначе computePackageProgress потребовал бы
+// маппинга между двумя параллельными словарями вместо прямого сравнения
+// значений; см. CONTENT_SERVICE_TYPES (smm-model.ts) — подмножество,
+// которое реально показывается в форме единицы контента (без
+// STUDIO_SHOOT/LOCATION_SHOOT/SHOOTING_HOURS/CONTENT_PLAN/PUBLICATION/
+// DESIGN — это исключительно договорные понятия пакета, не формат
+// произведённого контента).
 enum SmmServiceType {
   SHORT_VIDEO
   LONG_VIDEO
   POST
+  CAROUSEL
   STORY
+  TEASER
   STUDIO_SHOOT
   LOCATION_SHOOT
   SHOOTING_HOURS
@@ -1722,6 +1740,78 @@ enum SmmMaterialCategory {
   GRAPHICS
   DOCUMENT
   OTHER
+}
+
+// 2A: более гранулярная типизация материала поверх уже существующей
+// category (SMM.md, «Материалы») — НЕ замена: category продолжает нести
+// свой прежний смысл (этап производства/укрупнённая корзина, уже
+// используется фильтрами вкладки «Материалы»), materialType — что это
+// физически за файл (видео-исходник/аудио-исходник/master/обложка/
+// референс и т.д.), нужно отдельно для явного разделения Source/Master/
+// Publication URL (SMM.md, п.18). Nullable — существующие строки не
+// требуют заполнения задним числом.
+enum SmmMaterialType {
+  SOURCE_VIDEO
+  SOURCE_AUDIO
+  SELECTED_SOURCE
+  MASTER
+  COVER
+  REFERENCE
+  DOCUMENT
+  IMAGE
+  OTHER
+}
+
+// Площадка публикации (SMM.md, «SmmPublication») — словарь, не отдельные
+// instagramUrl/telegramUrl/... поля (запрещённая архитектура, см. ТЗ 2A
+// п.7). OTHER + customPlatform (на SmmPublication) — не блокирует
+// нестандартную площадку.
+enum SmmPublicationPlatform {
+  INSTAGRAM
+  TELEGRAM
+  VK
+  YOUTUBE
+  RUTUBE
+  OTHER
+}
+
+// Статус ПУБЛИКАЦИИ — независим от production-статуса ContentItem
+// (SmmContentStatus). Один ContentItem может быть APPROVED, а его
+// Instagram Publication — PLANNED, Telegram — PUBLISHED одновременно
+// (SMM.md, «Content vs Publication»). Сознательно всего 4 значения — не
+// дублирует детализацию производственного статуса.
+enum SmmPublicationStatus {
+  PLANNED
+  READY
+  PUBLISHED
+  CANCELLED
+}
+
+// Тип метрики — нормализованная модель (metricType/value/capturedAt)
+// вместо набора nullable-колонок на Publication (views/likes/...): один
+// показатель — одна строка, история снапшотов не теряется при появлении
+// новой метрики или новой площадки (SMM.md, «Метрики»).
+enum SmmMetricType {
+  VIEWS
+  REACH
+  LIKES
+  COMMENTS
+  SHARES
+  SAVES
+  REACTIONS
+  FOLLOWERS_GAINED
+  RETENTION_PERCENT
+  WATCH_TIME
+}
+
+// Происхождение конкретного снимка метрики — на этом этапе всегда MANUAL
+// (ручной ввод), API/IMPORT зарезервированы под будущие этапы (SMM.md,
+// «Отложено на будущие этапы»: автосбор через API соцсетей, историческая
+// миграция таблиц).
+enum SmmMetricSource {
+  MANUAL
+  API
+  IMPORT
 }
 
 // Роль УЧАСТНИКА КОНКРЕТНОГО SMM-проекта — не глобальная Role платформы (см.
@@ -1878,6 +1968,10 @@ model SmmContentItem {
   customServiceType    String?                 @map("custom_service_type")
   title                String?
   description          String?
+  // Плановая дата ГОТОВНОСТИ этой единицы контента (не путать с
+  // SmmPublication.plannedPublishAt — датой публикации на конкретной
+  // площадке, SMM.md, «Content vs Publication»). Остаётся якорем для
+  // computePackageProgress — 2A её не трогает.
   plannedPublishDate   DateTime?               @map("planned_publish_date")
   deadline             DateTime?
   status               SmmContentStatus        @default(IDEA)
@@ -1886,34 +1980,155 @@ model SmmContentItem {
   // Связанный проект монтажа (см. описание модели выше) — контент "передан
   // монтажёру" означает, что здесь появляется реальный MontageProject.id.
   editingProjectId     String?                 @unique @map("editing_project_id")
-  // Съёмка, на которой этот контент был снят — для вкладки «Съёмки» (SMM.md,
-  // п.15: "какие единицы контента были сняты" по конкретной записи).
+  // [DEPRECATED, 2A] Одиночная связь со съёмкой — заменена many-to-many
+  // через SmmContentScheduleLink (одна съёмка может породить несколько
+  // ContentItem, один ContentItem теоретически может использовать
+  // материалы нескольких съёмок, SMM.md, «Content ↔ ScheduleEvent»).
+  // Колонка и обратная связь ScheduleEvent.smmContentItems сохранены не
+  // удалёнными ради уже существующих строк — новый код читает/пишет
+  // только через scheduleLinks ниже; на момент 2A реальных строк с этим
+  // полем в проде не найдено (см. отчёт этапа).
   scheduleEventId      String?                 @map("schedule_event_id")
+  // [DEPRECATED, 2A] Ссылка на исходники — заменена SmmMaterialLink
+  // (category=SOURCE/materialType=SOURCE_VIDEO|SOURCE_AUDIO,
+  // relatedContentId на эту единицу контента). SMM.md, п.18 (Source URL).
   sourceUrl            String?                 @map("source_url")
+  // [DEPRECATED, 2A] Готовый файл — источник истины теперь
+  // MontageProject.deliveryUrl (через editingProject, если контент передан
+  // монтажёру) либо SmmMaterialLink с materialType=MASTER (если своего
+  // MontageProject нет). SMM.md, п.18 (Master URL).
   resultUrl            String?                 @map("result_url")
+  // [DEPRECATED, 2A] Ссылка на публикацию — один ContentItem может быть
+  // опубликован на нескольких площадках одновременно, поэтому единственная
+  // ссылка на всю единицу контента концептуально некорректна. Заменена
+  // SmmPublication.url (по одной строке на каждую площадку). SMM.md, п.18
+  // (Publication URL).
   publishedUrl         String?                 @map("published_url")
-  // Рабочий индекс готового ролика (SMM.md, п.14) — ручной ввод на первом
-  // этапе, формат сознательно НЕ валидируется/не парсится (ещё не утверждён
-  // окончательно), поле просто хранит то, что ввёл администратор/монтажёр.
-  indexCode            String?                 @map("index_code")
+  // Постоянный человекочитаемый бизнес-идентификатор контента (напр. "Д186",
+  // "ЗЛ1") — НЕ индекс файла монтажёра (это разные сущности, SMM.md, п.5).
+  // Физическая колонка сохранена как index_code (переименовано в схеме без
+  // миграции данных через @map — тот же физический столбец, только имя
+  // Prisma-поля/DTO стало однозначным).
+  contentCode          String?                 @map("index_code")
+  // Техническое задание исполнителю ("Монтаж с 2:58. Вставить фрагмент...")
+  // — отдельно от description (что это за материал по смыслу). Намеренно
+  // свободный текст, а не десяток микрополей (cameraFileNumber и т.п.) —
+  // структурированные ссылки живут в Materials, не здесь (ТЗ 2A, п.21).
+  productionBrief      String?                 @map("production_brief")
+  // Родительская единица контента (длинный выпуск → тизер/фрагменты,
+  // SMM.md, «Parent/child») — self-relation, onDelete: SetNull: удаление
+  // родителя не должно каскадно стирать дочерние ролики, они просто
+  // становятся без родителя. Защита от self-reference/цикла — на уровне
+  // серверного действия (wouldCreateContentParentCycle, smm-model.ts), не
+  // в БД (Prisma/Postgres не выражают произвольную ациклическую проверку
+  // декларативно).
+  parentContentId      String?                 @map("parent_content_id")
   clientApprovalStatus SmmClientApprovalStatus @default(NOT_REQUIRED) @map("client_approval_status")
   notes                String?
   createdAt            DateTime                @default(now()) @map("created_at")
   updatedAt            DateTime                @updatedAt @map("updated_at")
 
-  smmProject      SmmProject        @relation(fields: [smmProjectId], references: [id], onDelete: Cascade)
-  responsibleUser User?             @relation(fields: [responsibleUserId], references: [id])
-  editor          EditorProfile?    @relation(fields: [editorId], references: [id])
-  editingProject  MontageProject?   @relation(fields: [editingProjectId], references: [id])
-  scheduleEvent   ScheduleEvent?    @relation(fields: [scheduleEventId], references: [id])
+  smmProject      SmmProject               @relation(fields: [smmProjectId], references: [id], onDelete: Cascade)
+  responsibleUser User?                    @relation(fields: [responsibleUserId], references: [id])
+  editor          EditorProfile?           @relation(fields: [editorId], references: [id])
+  editingProject  MontageProject?          @relation(fields: [editingProjectId], references: [id])
+  scheduleEvent   ScheduleEvent?           @relation(fields: [scheduleEventId], references: [id])
+  parentContent   SmmContentItem?          @relation("SmmContentItemParent", fields: [parentContentId], references: [id], onDelete: SetNull)
+  childContent    SmmContentItem[]         @relation("SmmContentItemParent")
   workItems       SmmWorkItem[]
   materialLinks   SmmMaterialLink[]
+  publications    SmmPublication[]
+  scheduleLinks   SmmContentScheduleLink[]
 
   @@index([smmProjectId])
   @@index([status])
   @@index([editorId])
   @@index([scheduleEventId])
+  @@index([parentContentId])
   @@map("cms_smm_content_item")
+}
+
+// Публикация единицы контента на конкретной площадке (2A, SMM.md,
+// «SmmContentItem → SmmPublication») — один ContentItem может иметь
+// одновременно 0..N Publication (Instagram/Telegram/VK/YouTube — разные
+// строки), каждая со своими датами/URL/статусом. onDelete: Cascade —
+// публикация не существует сама по себе без своей единицы контента.
+model SmmPublication {
+  id               String                 @id @default(cuid())
+  contentItemId    String                 @map("content_item_id")
+  platform         SmmPublicationPlatform
+  // Значимо только при platform = OTHER — тот же принцип customName/customServiceType.
+  customPlatform   String?                @map("custom_platform")
+  status           SmmPublicationStatus   @default(PLANNED)
+  // Плановая и фактическая дата — сознательно раздельные поля (ТЗ 2A, п.9):
+  // позволяет считать соблюдение контент-плана/переносы/задержки, не
+  // смешивая план с фактом (тот же принцип, что monthlyRevenue vs
+  // receivedThisMonth на дашборде, SMM.md).
+  plannedPublishAt DateTime?              @map("planned_publish_at")
+  publishedAt      DateTime?              @map("published_at")
+  url              String?
+  externalId       String?                @map("external_id")
+  titleOverride    String?                @map("title_override")
+  caption          String?
+  notes            String?
+  createdAt        DateTime               @default(now()) @map("created_at")
+  updatedAt        DateTime               @updatedAt @map("updated_at")
+
+  contentItem SmmContentItem         @relation(fields: [contentItemId], references: [id], onDelete: Cascade)
+  metrics     SmmPublicationMetric[]
+
+  @@index([contentItemId])
+  @@index([platform])
+  @@index([status])
+  @@map("cms_smm_publication")
+}
+
+// Снимок показателя публикации (2A, SMM.md, «Метрики»/«Metrics snapshots»)
+// — НЕ последнее значение просмотров, а ИСТОРИЯ снимков: каждый вызов
+// добавляет новую строку с capturedAt, ничего не перезаписывает (иначе
+// невозможно построить динамику или сравнить скорость набора просмотров).
+// source=MANUAL сейчас; API/IMPORT зарезервированы под будущие этапы (не
+// подключаются в 2A, см. docs/business/SMM.md, «Отложено»).
+model SmmPublicationMetric {
+  id            String          @id @default(cuid())
+  publicationId String          @map("publication_id")
+  metricType    SmmMetricType   @map("metric_type")
+  value         Float
+  capturedAt    DateTime        @map("captured_at")
+  source        SmmMetricSource @default(MANUAL)
+  createdById   String?         @map("created_by_id")
+  createdAt     DateTime        @default(now()) @map("created_at")
+
+  publication SmmPublication @relation(fields: [publicationId], references: [id], onDelete: Cascade)
+  createdBy   User?          @relation(fields: [createdById], references: [id])
+
+  @@index([publicationId])
+  @@index([metricType])
+  @@index([capturedAt])
+  @@map("cms_smm_publication_metric")
+}
+
+// Many-to-many ContentItem ↔ ScheduleEvent (2A, SMM.md, «Content ↔
+// ScheduleEvent») — НЕ то же самое, что SmmScheduleLink (тот связывает
+// ПРОЕКТ целиком с съёмкой, для вкладки «Съёмки»/пакета; этот — конкретную
+// единицу КОНТЕНТА с конкретной съёмкой, "какие ролики сняты на этой
+// смене"). Две разные сущности с разной кардинальностью (SmmScheduleLink
+// уникален по scheduleEventId — одна съёмка = один SMM-проект; здесь одна
+// съёмка легитимно связана сразу с несколькими ContentItem, и наоборот).
+// @@unique предотвращает дублирующую строку той же пары при повторном клике.
+model SmmContentScheduleLink {
+  id              String   @id @default(cuid())
+  contentItemId   String   @map("content_item_id")
+  scheduleEventId String   @map("schedule_event_id")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  contentItem   SmmContentItem @relation(fields: [contentItemId], references: [id], onDelete: Cascade)
+  scheduleEvent ScheduleEvent  @relation(fields: [scheduleEventId], references: [id], onDelete: Cascade)
+
+  @@unique([contentItemId, scheduleEventId])
+  @@index([contentItemId])
+  @@index([scheduleEventId])
+  @@map("cms_smm_content_schedule_link")
 }
 
 // База ссылок на материалы клиента (SMM.md, п.16) — НЕ файловое хранилище,
@@ -1923,6 +2138,10 @@ model SmmMaterialLink {
   id                     String              @id @default(cuid())
   smmProjectId           String              @map("smm_project_id")
   category               SmmMaterialCategory
+  // 2A: более гранулярная типизация поверх category (см. enum
+  // SmmMaterialType выше) — nullable, не заменяет category, существующие
+  // строки не требуют заполнения задним числом.
+  materialType           SmmMaterialType?    @map("material_type")
   title                  String
   url                    String
   description            String?

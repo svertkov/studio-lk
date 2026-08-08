@@ -7,15 +7,17 @@
 
 import type {
   SmmProjectStatus, SmmBillingPeriodType, SmmServiceType, SmmPackageUnit, SmmPackagePeriod,
-  SmmContentStatus, SmmClientApprovalStatus, SmmMaterialCategory, SmmProjectRole, SmmWorkType,
+  SmmContentStatus, SmmClientApprovalStatus, SmmMaterialCategory, SmmMaterialType, SmmProjectRole, SmmWorkType,
   SmmWorkStatus, SmmWorkPaymentStatus, SmmPayoutType, SmmClientPaymentStatus,
+  SmmPublicationPlatform, SmmPublicationStatus, SmmMetricType, SmmMetricSource,
 } from '@prisma/client'
 import type { SmmProjectDTO, SmmPackageItemDTO, SmmContentItemDTO, SmmProjectMemberDTO } from '@/lib/actions/smm'
 
 export type {
   SmmProjectStatus, SmmBillingPeriodType, SmmServiceType, SmmPackageUnit, SmmPackagePeriod,
-  SmmContentStatus, SmmClientApprovalStatus, SmmMaterialCategory, SmmProjectRole, SmmWorkType,
+  SmmContentStatus, SmmClientApprovalStatus, SmmMaterialCategory, SmmMaterialType, SmmProjectRole, SmmWorkType,
   SmmWorkStatus, SmmWorkPaymentStatus, SmmPayoutType, SmmClientPaymentStatus,
+  SmmPublicationPlatform, SmmPublicationStatus, SmmMetricType, SmmMetricSource,
 }
 
 // ============================================================
@@ -33,7 +35,9 @@ export const SMM_SERVICE_TYPE_LABELS: Record<SmmServiceType, string> = {
   SHORT_VIDEO: 'Короткий ролик',
   LONG_VIDEO: 'Длинный ролик',
   POST: 'Публикация',
+  CAROUSEL: 'Карусель',
   STORY: 'Stories',
+  TEASER: 'Тизер',
   STUDIO_SHOOT: 'Съёмка в студии',
   LOCATION_SHOOT: 'Выездная съёмка',
   SHOOTING_HOURS: 'Часы съёмки',
@@ -42,6 +46,17 @@ export const SMM_SERVICE_TYPE_LABELS: Record<SmmServiceType, string> = {
   DESIGN: 'Дизайн/графика',
   OTHER: 'Другое',
 }
+
+// Подмножество SmmServiceType, реально показываемое в форме единицы
+// контента (2A, SMM.md, «Content type vs Package service type») —
+// STUDIO_SHOOT/LOCATION_SHOOT/SHOOTING_HOURS/CONTENT_PLAN/PUBLICATION/
+// DESIGN остаются в общем enum (используются SmmPackageItem), но не имеют
+// смысла как формат ПРОИЗВЕДЁННОГО контента, поэтому не предлагаются при
+// создании/редактировании SmmContentItem. Пакет продолжает показывать
+// полный SMM_SERVICE_TYPE_LABELS — это только фильтр для одной формы.
+export const CONTENT_SERVICE_TYPES: SmmServiceType[] = [
+  'SHORT_VIDEO', 'LONG_VIDEO', 'POST', 'CAROUSEL', 'STORY', 'TEASER', 'OTHER',
+]
 
 export const SMM_PACKAGE_UNIT_LABELS: Record<SmmPackageUnit, string> = {
   PIECE: 'шт.',
@@ -96,6 +111,21 @@ export const SMM_MATERIAL_CATEGORY_LABELS: Record<SmmMaterialCategory, string> =
   OTHER: 'Другое',
 }
 
+// 2A — более гранулярная типизация поверх category (см. enum
+// SmmMaterialType в schema.prisma). Nullable на модели — "Не указан" в UI
+// соответствует materialType === null.
+export const SMM_MATERIAL_TYPE_LABELS: Record<SmmMaterialType, string> = {
+  SOURCE_VIDEO: 'Видео-исходник',
+  SOURCE_AUDIO: 'Аудио-исходник',
+  SELECTED_SOURCE: 'Отобранный исходник',
+  MASTER: 'Мастер-файл',
+  COVER: 'Обложка',
+  REFERENCE: 'Референс',
+  DOCUMENT: 'Документ',
+  IMAGE: 'Изображение',
+  OTHER: 'Другое',
+}
+
 export const SMM_PROJECT_ROLE_LABELS: Record<SmmProjectRole, string> = {
   OWNER: 'Руководитель',
   STRATEGIST: 'Стратегический SMM-менеджер',
@@ -146,6 +176,42 @@ export const SMM_CLIENT_PAYMENT_STATUS_LABELS: Record<SmmClientPaymentStatus, st
   DUE: 'Наступает срок',
   PAID: 'Оплачен',
   CANCELLED: 'Отменён',
+}
+
+// 2A — SmmPublication/SmmPublicationMetric (SMM.md, «Content vs Publication»).
+export const SMM_PUBLICATION_PLATFORM_LABELS: Record<SmmPublicationPlatform, string> = {
+  INSTAGRAM: 'Instagram',
+  TELEGRAM: 'Telegram',
+  VK: 'VK',
+  YOUTUBE: 'YouTube',
+  RUTUBE: 'RUTUBE',
+  OTHER: 'Другое',
+}
+
+export const SMM_PUBLICATION_STATUS_LABELS: Record<SmmPublicationStatus, string> = {
+  PLANNED: 'Запланирована',
+  READY: 'Готова',
+  PUBLISHED: 'Опубликована',
+  CANCELLED: 'Отменена',
+}
+
+export const SMM_METRIC_TYPE_LABELS: Record<SmmMetricType, string> = {
+  VIEWS: 'Просмотры',
+  REACH: 'Охват',
+  LIKES: 'Лайки',
+  COMMENTS: 'Комментарии',
+  SHARES: 'Репосты',
+  SAVES: 'Сохранения',
+  REACTIONS: 'Реакции',
+  FOLLOWERS_GAINED: 'Новые подписчики',
+  RETENTION_PERCENT: 'Досмотр, %',
+  WATCH_TIME: 'Время просмотра',
+}
+
+export const SMM_METRIC_SOURCE_LABELS: Record<SmmMetricSource, string> = {
+  MANUAL: 'Вручную',
+  API: 'API',
+  IMPORT: 'Импорт',
 }
 
 // ============================================================
@@ -265,4 +331,61 @@ export interface SmmDashboardInput {
 
 export function computeSmmMonthlyRevenue(projects: SmmProjectDTO[]): number {
   return projects.filter(p => p.status === 'ACTIVE').reduce((sum, p) => sum + (p.monthlyFee ?? 0), 0)
+}
+
+// ============================================================
+// PARENT/CHILD CONTENT (2A, ТЗ п.15/16) — self-relation на SmmContentItem
+// (длинный выпуск → тизер/фрагменты). Защита от self-reference и цикла —
+// не общий graph engine, просто обход цепочки родителей НОВОГО
+// parentContentId вверх: если по пути встретилась сама единица контента —
+// это цикл. MAX_PARENT_CHAIN_DEPTH — защита от уже испорченных данных
+// (бесконечный while при повреждённой цепочке), не ожидаемый рабочий кейс.
+// ============================================================
+
+interface ContentParentLink {
+  id: string
+  parentContentId: string | null
+}
+
+const MAX_PARENT_CHAIN_DEPTH = 50
+
+export function wouldCreateContentParentCycle(
+  allItems: ContentParentLink[], itemId: string, newParentId: string | null,
+): boolean {
+  if (!newParentId) return false
+  if (newParentId === itemId) return true
+  const byId = new Map(allItems.map(i => [i.id, i]))
+  let current = byId.get(newParentId) ?? null
+  let depth = 0
+  while (current && depth < MAX_PARENT_CHAIN_DEPTH) {
+    if (current.id === itemId) return true
+    current = current.parentContentId ? (byId.get(current.parentContentId) ?? null) : null
+    depth++
+  }
+  return false
+}
+
+// ============================================================
+// МЕТРИКИ ПУБЛИКАЦИИ (2A, ТЗ п.10/11) — capturedAt-снимки, не
+// перезаписываемое "последнее значение". Для компактного отображения в UI
+// нужно только последнее значение по каждому metricType — вычисляется
+// здесь, а не хранится отдельно (та же экономия источника правды, что и
+// остальной модуль).
+// ============================================================
+
+interface MetricSnapshot {
+  metricType: SmmMetricType
+  value: number
+  capturedAt: string
+}
+
+export function getLatestMetricByType<T extends MetricSnapshot>(metrics: T[]): Partial<Record<SmmMetricType, T>> {
+  const latest: Partial<Record<SmmMetricType, T>> = {}
+  for (const m of metrics) {
+    const current = latest[m.metricType]
+    if (!current || new Date(m.capturedAt) > new Date(current.capturedAt)) {
+      latest[m.metricType] = m
+    }
+  }
+  return latest
 }
