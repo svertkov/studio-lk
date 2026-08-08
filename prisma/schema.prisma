@@ -345,23 +345,28 @@ model User {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  clients                       Client[]               @relation("ResponsibleUser")
-  notes                         ClientNote[]
-  auditLogs                     AuditLog[]
-  assignedTelegramConversations TelegramConversation[] @relation("AssignedAdmin")
-  sentTelegramMessages          TelegramMessage[]
-  telegramInternalNotes         TelegramInternalNote[]
+  clients                                     Client[]                 @relation("ResponsibleUser")
+  notes                                       ClientNote[]
+  auditLogs                                   AuditLog[]
+  assignedTelegramConversations               TelegramConversation[]   @relation("AssignedAdmin")
+  sentTelegramMessages                        TelegramMessage[]
+  telegramInternalNotes                       TelegramInternalNote[]
   // Профессиональный профиль монтажёра — задел под будущий личный кабинет
   // (см. EditorProfile). Nullable/1:1: не у каждого User с role=EDITOR профиль
   // обязательно уже создан, и не у каждого EditorProfile обязательно есть
   // учётная запись (подрядчики без доступа к платформе).
-  editorProfile                 EditorProfile?
-  documentsCreated              Document[]             @relation("DocumentCreatedBy")
-  documentsUpdated              Document[]             @relation("DocumentUpdatedBy")
-  scheduleEventYandexNotRequiredConfirmations ScheduleEvent[] @relation("ScheduleEventYandexNotRequiredConfirmedBy")
-  scheduleEventNasNotRequiredConfirmations    ScheduleEvent[] @relation("ScheduleEventNasNotRequiredConfirmedBy")
-  orderNetProfitOverrides       Order[]                @relation("OrderNetProfitOverrideBy")
-  subscriptionAdjustments        SubscriptionAdjustment[]
+  editorProfile                               EditorProfile?
+  documentsCreated                            Document[]               @relation("DocumentCreatedBy")
+  documentsUpdated                            Document[]               @relation("DocumentUpdatedBy")
+  scheduleEventYandexNotRequiredConfirmations ScheduleEvent[]          @relation("ScheduleEventYandexNotRequiredConfirmedBy")
+  scheduleEventNasNotRequiredConfirmations    ScheduleEvent[]          @relation("ScheduleEventNasNotRequiredConfirmedBy")
+  orderNetProfitOverrides                     Order[]                  @relation("OrderNetProfitOverrideBy")
+  subscriptionAdjustments                     SubscriptionAdjustment[]
+  smmProjectMemberships                       SmmProjectMember[]
+  smmContentResponsibleFor                    SmmContentItem[]
+  smmMaterialLinksCreated                     SmmMaterialLink[]
+  smmWorkItemsCreated                         SmmWorkItem[]
+  smmPaymentsCreated                          SmmPayment[]
 
   @@map("cms_user")
 }
@@ -421,6 +426,7 @@ model Client {
   // (getMontageProjectsForClient в src/lib/actions/montage.ts объединяет оба
   // случая одним запросом, не дублируя связь).
   montageProjects       MontageProject[]
+  smmProjects           SmmProject[]
 
   @@map("cms_client")
 }
@@ -609,9 +615,9 @@ model Document {
   // подтягивает счётчик вверх (см. actions/documents.ts), и попадает в audit log.
   isHistorical Boolean @default(false) @map("is_historical")
 
-  issueDate DateTime        @map("issue_date")
-  status    DocumentStatus
-  purpose   InvoicePurpose? @map("purpose")
+  issueDate          DateTime        @map("issue_date")
+  status             DocumentStatus
+  purpose            InvoicePurpose? @map("purpose")
   // Свободная сумма — источник истины ТОЛЬКО для документов без строк
   // (исторические счета и всё, кроме INVOICE). Если у документа есть lineItems,
   // amount становится ПРОИЗВОДНЫМ значением: пересчитывается сервером при
@@ -619,15 +625,15 @@ model Document {
   // не самостоятельно редактируемое поле, а кэш суммы, чтобы все существующие
   // читатели (appendixAmountMismatches, /admin/documents, WorkDocumentsSection)
   // продолжали работать без изменений.
-  amount    Float?          @map("amount")
-  dueDate   DateTime?       @map("due_date")
-  comment   String?
+  amount             Float?          @map("amount")
+  dueDate            DateTime?       @map("due_date")
+  comment            String?
   // Официальная формулировка услуги из документа (ручной ввод, копия текста
   // из настоящего договора/приложения/счёта/акта) — APPENDIX/INVOICE/ACT.
   // Тексты разных документов НЕ обязаны совпадать и не синхронизируются между
   // собой: UI предлагает одноразовое копирование при создании (см.
   // WorkDocumentsSection.tsx), после чего значения независимы.
-  serviceDescription String? @map("service_description")
+  serviceDescription String?         @map("service_description")
 
   clientId         String? @map("client_id") // обязателен для CONTRACT
   orderId          String? @map("order_id") // INVOICE/ACT к съёмке
@@ -648,18 +654,18 @@ model Document {
   updatedAt   DateTime  @updatedAt @map("updated_at")
   archivedAt  DateTime? @map("archived_at")
 
-  client         Client?         @relation(fields: [clientId], references: [id])
-  order          Order?          @relation(fields: [orderId], references: [id])
-  montageProject MontageProject? @relation(fields: [montageProjectId], references: [id])
-  contract       Document?       @relation("ContractLink", fields: [contractId], references: [id])
-  linkedDocs     Document[]      @relation("ContractLink")
-  sourceInvoice  Document?       @relation("ActFromInvoice", fields: [sourceInvoiceId], references: [id])
-  actsFromInvoice Document[]     @relation("ActFromInvoice")
-  createdBy      User?           @relation("DocumentCreatedBy", fields: [createdById], references: [id])
-  updatedBy      User?           @relation("DocumentUpdatedBy", fields: [updatedById], references: [id])
+  client          Client?           @relation(fields: [clientId], references: [id])
+  order           Order?            @relation(fields: [orderId], references: [id])
+  montageProject  MontageProject?   @relation(fields: [montageProjectId], references: [id])
+  contract        Document?         @relation("ContractLink", fields: [contractId], references: [id])
+  linkedDocs      Document[]        @relation("ContractLink")
+  sourceInvoice   Document?         @relation("ActFromInvoice", fields: [sourceInvoiceId], references: [id])
+  actsFromInvoice Document[]        @relation("ActFromInvoice")
+  createdBy       User?             @relation("DocumentCreatedBy", fields: [createdById], references: [id])
+  updatedBy       User?             @relation("DocumentUpdatedBy", fields: [updatedById], references: [id])
   // Только для type=INVOICE в этой версии (см. InvoiceLineItem) — ACT/APPENDIX/
   // CONTRACT продолжают использовать amount/serviceDescription как раньше.
-  lineItems      InvoiceLineItem[]
+  lineItems       InvoiceLineItem[]
 
   // Глобальная уникальность number для CONTRACT/INVOICE/ACT (в рамках своего
   // типа — счёт №5 и акт №5 не конфликтуют) реализована ОТДЕЛЬНО как
@@ -691,17 +697,17 @@ model Document {
 // явным выходом в свободный текст (OTHER — см. InvoiceLineItem.customUnitLabel,
 // 2026-07-23) для редких случаев, не покрытых списком.
 enum InvoiceLineItemUnit {
-  PIECE   // шт.
-  HOUR    // час
-  DAY     // дн.
+  PIECE // шт.
+  HOUR // час
+  DAY // дн.
   SERVICE // усл. ед. — по умолчанию, количество обычно 1
-  SHIFT   // смена
+  SHIFT // смена
   PROJECT // проект
   EPISODE // выпуск
-  CLIP    // ролик
-  SET     // комплект
-  MONTH   // месяц
-  OTHER   // прочее — см. InvoiceLineItem.customUnitLabel
+  CLIP // ролик
+  SET // комплект
+  MONTH // месяц
+  OTHER // прочее — см. InvoiceLineItem.customUnitLabel
 }
 
 // НДС — фиксированный небольшой набор ставок РФ, не произвольный процент.
@@ -725,27 +731,27 @@ enum VatRate {
 // считается чистой функцией computeLineItemTotal (document-model.ts), тот же
 // принцип "не хранить производное", что computeMontageProfit.
 model InvoiceLineItem {
-  id          String              @id @default(cuid())
-  documentId  String              @map("document_id")
+  id                       String              @id @default(cuid())
+  documentId               String              @map("document_id")
   // Порядок строк в счёте — ручная сортировка (кнопки вверх/вниз в UI), не
   // полагаемся на createdAt (строки можно менять местами без пересоздания).
-  sortOrder   Int                 @default(0) @map("sort_order")
-  description String
-  quantity    Float               @default(1)
-  unit        InvoiceLineItemUnit @default(SERVICE)
+  sortOrder                Int                 @default(0) @map("sort_order")
+  description              String
+  quantity                 Float               @default(1)
+  unit                     InvoiceLineItemUnit @default(SERVICE)
   // Свободный текст единицы измерения — значим ТОЛЬКО когда unit = OTHER
   // (см. getLineItemUnitLabel, document-model.ts); при любом другом unit
   // должен быть null (addInvoiceLineItem/updateInvoiceLineItem обнуляют его
   // сами при смене unit, чтобы не оставался "осиротевший" текст).
-  customUnitLabel String?         @map("custom_unit_label")
-  unitPrice   Float               @map("unit_price")
-  vatRate     VatRate             @default(NOT_APPLICABLE) @map("vat_rate")
+  customUnitLabel          String?             @map("custom_unit_label")
+  unitPrice                Float               @map("unit_price")
+  vatRate                  VatRate             @default(NOT_APPLICABLE) @map("vat_rate")
   // Пометка одноразовой миграции существующих однострочных счетов (см.
   // scripts/migrate-invoice-line-items) — не теряем факт "это перенесено из
   // старого единого amount, а не введено вручную построчно".
-  migratedFromLegacyAmount Boolean @default(false) @map("migrated_from_legacy_amount")
-  createdAt   DateTime            @default(now()) @map("created_at")
-  updatedAt   DateTime            @updatedAt @map("updated_at")
+  migratedFromLegacyAmount Boolean             @default(false) @map("migrated_from_legacy_amount")
+  createdAt                DateTime            @default(now()) @map("created_at")
+  updatedAt                DateTime            @updatedAt @map("updated_at")
 
   document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
 
@@ -762,11 +768,11 @@ model InvoiceLineItem {
 // ============================================================
 
 model ScheduleEvent {
-  id                       String                   @id @default(cuid())
-  calendarEventId          String?                  @unique @map("calendar_event_id")
+  id                             String                   @id @default(cuid())
+  calendarEventId                String?                  @unique @map("calendar_event_id")
   // Снэпшот для страницы Клиентов (блок неподтверждённых) — НЕ источник правды.
   // На странице Расписания эти поля всегда берутся из живого Google Calendar.
-  title                    String?
+  title                          String?
   // 2026-07-27: description — техническое сырое описание события Google
   // Calendar на момент последнего сохранения карточки, больше НЕ отображается
   // отдельно нигде в UI (раньше — серый блок в EventCardModal.tsx). Единственное
@@ -774,9 +780,9 @@ model ScheduleEvent {
   // сохранении карточки (annotation ещё не существовал) description
   // копируется в notes на клиенте, дальше notes живёт независимо и не
   // перезаписывается при изменении события в календаре.
-  description              String?
-  startAt                  DateTime?                @map("start_at")
-  endAt                    DateTime?                @map("end_at")
+  description                    String?
+  startAt                        DateTime?                @map("start_at")
+  endAt                          DateTime?                @map("end_at")
   // Тип события: студийная запись / выездная съёмка / встреча / отсутствие
   // сотрудника / служебная пометка / прочее. Проверки материалов и оплаты
   // применяются к обоим коммерческим типам (см. requiresFullBookingForm,
@@ -784,45 +790,45 @@ model ScheduleEvent {
   // Пока аннотации нет — тип определяется на лету по названию события
   // (classifyEventType), сюда он попадает только после первого сохранения
   // карточки (авто или вручную выбранный).
-  eventType                EventType                @default(STUDIO_BOOKING) @map("event_type")
-  clientId                 String?                  @map("client_id")
-  clientNameRaw            String?                  @map("client_name_raw")
-  contactRaw               String?                  @map("contact_raw")
-  companyRaw               String?                  @map("company_raw")
-  room                     String?
-  format                   String?
-  camerasCount             Int?                     @map("cameras_count")
+  eventType                      EventType                @default(STUDIO_BOOKING) @map("event_type")
+  clientId                       String?                  @map("client_id")
+  clientNameRaw                  String?                  @map("client_name_raw")
+  contactRaw                     String?                  @map("contact_raw")
+  companyRaw                     String?                  @map("company_raw")
+  room                           String?
+  format                         String?
+  camerasCount                   Int?                     @map("cameras_count")
   // Блок "ВЫЕЗД" — только для eventType=OFFSITE_SHOOT (см. EventCardModal.tsx).
   // Живут только на ScheduleEvent, не дублируются на Order — тот же принцип
   // единого источника, что у room/notes (см. AGENTS.md, п.3).
-  shootAddress             String?                  @map("shoot_address")
-  venueName                String?                  @map("venue_name")
-  venueContact             String?                  @map("venue_contact")
-  logisticsComment         String?                  @map("logistics_comment")
-  estimatedPrice           Float?                   @map("estimated_price")
-  paymentMethod            PaymentMethod?           @map("payment_method")
+  shootAddress                   String?                  @map("shoot_address")
+  venueName                      String?                  @map("venue_name")
+  venueContact                   String?                  @map("venue_contact")
+  logisticsComment               String?                  @map("logistics_comment")
+  estimatedPrice                 Float?                   @map("estimated_price")
+  paymentMethod                  PaymentMethod?           @map("payment_method")
   // Единое поле "Комментарий / нюансы" в EventCardModal.tsx — включает как
   // ручные пометки администратора, так и (при первом сохранении) описание
   // события Google Calendar, см. комментарий у description выше.
-  notes                    String?
+  notes                          String?
   // Структурированная пометка акции (см. OrderPromotionType выше и
   // src/lib/promotion-model.ts) — источник правды по акции для записей с
   // уже существующей студийной записью, тот же принцип двойного источника,
   // что и у notes/Order.comment (см. toDTO в actions/orders.ts).
-  promotionType            OrderPromotionType?      @map("promotion_type")
+  promotionType                  OrderPromotionType?      @map("promotion_type")
   // Предварительное бронирование студии для гримёра ПЕРЕД основной съёмкой —
   // отдельный интервал, не часть длительности/стоимости самой съёмки.
   // Источник правды — длительность в минутах; время начала гримёра всегда
   // пересчитывается от startAt (см. computeMakeupInterval, schedule-model.ts),
   // а не хранится отдельно, чтобы перенос съёмки не рассинхронизировал его.
   // null/0 — гримёр не предусмотрен.
-  makeupDurationMinutes    Int?                     @map("makeup_duration_minutes")
-  yandexDiskUrl            String?                  @map("yandex_disk_url")
-  yandexDiskUrlAddedAt     DateTime?                @map("yandex_disk_url_added_at")
-  yandexDiskUrlExpiresAt   DateTime?                @map("yandex_disk_url_expires_at")
-  nasBackupUrl             String?                  @map("nas_backup_url")
-  materialsComment         String?                  @map("materials_comment")
-  materialsStatus          MaterialsStatus          @default(NO_LINKS) @map("materials_status")
+  makeupDurationMinutes          Int?                     @map("makeup_duration_minutes")
+  yandexDiskUrl                  String?                  @map("yandex_disk_url")
+  yandexDiskUrlAddedAt           DateTime?                @map("yandex_disk_url_added_at")
+  yandexDiskUrlExpiresAt         DateTime?                @map("yandex_disk_url_expires_at")
+  nasBackupUrl                   String?                  @map("nas_backup_url")
+  materialsComment               String?                  @map("materials_comment")
+  materialsStatus                MaterialsStatus          @default(NO_LINKS) @map("materials_status")
   // Независимые флаги "эта ссылка не требуется для данного заказа" —
   // осознанное решение администратора (см. RequiredLinkToggle, требует
   // подтверждения при первом включении). @default(true) сохраняет прежнее
@@ -830,26 +836,26 @@ model ScheduleEvent {
   // само по себе. Используются вместо !!yandexDiskUrl/!!nasBackupUrl везде,
   // где сегодня отсутствие ссылки считается ошибкой (см. schedule-model.ts:
   // computeMaterialsStatus/getMaterialsDisplay/getBookingAttentionInfo).
-  yandexLinkRequired       Boolean                  @default(true) @map("yandex_link_required")
-  nasLinkRequired          Boolean                  @default(true) @map("nas_link_required")
+  yandexLinkRequired             Boolean                  @default(true) @map("yandex_link_required")
+  nasLinkRequired                Boolean                  @default(true) @map("nas_link_required")
   // Контекст подтверждения исключения — живёт рядом с самим флагом, не
   // отдельной таблицей (тот же приём, что Document.createdById/updatedById).
   // Заполняется только в момент true→false через ConfirmableStatusToggle;
   // при обратном переходе false→true (снова обязательна) — обнуляется, это
   // относится к конкретному эпизоду исключения, не к полю вообще.
-  yandexNotRequiredConfirmedAt   DateTime? @map("yandex_not_required_confirmed_at")
-  yandexNotRequiredConfirmedById String?   @map("yandex_not_required_confirmed_by_id")
-  yandexNotRequiredReason        String?   @map("yandex_not_required_reason")
-  nasNotRequiredConfirmedAt      DateTime? @map("nas_not_required_confirmed_at")
-  nasNotRequiredConfirmedById    String?   @map("nas_not_required_confirmed_by_id")
-  nasNotRequiredReason           String?   @map("nas_not_required_reason")
+  yandexNotRequiredConfirmedAt   DateTime?                @map("yandex_not_required_confirmed_at")
+  yandexNotRequiredConfirmedById String?                  @map("yandex_not_required_confirmed_by_id")
+  yandexNotRequiredReason        String?                  @map("yandex_not_required_reason")
+  nasNotRequiredConfirmedAt      DateTime?                @map("nas_not_required_confirmed_at")
+  nasNotRequiredConfirmedById    String?                  @map("nas_not_required_confirmed_by_id")
+  nasNotRequiredReason           String?                  @map("nas_not_required_reason")
   // Нужен ли монтаж после съёмки — null, пока администратор не решил (карточка
   // ещё не сохранялась с выбором); true/false после решения. Управляет
   // автопереводом связанного заказа в «Монтаж»/«Завершено», см. upsertScheduleEvent.
-  editingRequired          Boolean?                 @map("editing_required")
-  clientConfirmationStatus ClientConfirmationStatus @default(NOT_REQUIRED) @map("client_confirmation_status")
-  createdAt                DateTime                 @default(now()) @map("created_at")
-  updatedAt                DateTime                 @updatedAt @map("updated_at")
+  editingRequired                Boolean?                 @map("editing_required")
+  clientConfirmationStatus       ClientConfirmationStatus @default(NOT_REQUIRED) @map("client_confirmation_status")
+  createdAt                      DateTime                 @default(now()) @map("created_at")
+  updatedAt                      DateTime                 @updatedAt @map("updated_at")
 
   // Заказ (Order), из которого эта запись создана — только для записей,
   // созданных вручную через раздел "Заказы" без события Google Calendar
@@ -857,11 +863,14 @@ model ScheduleEvent {
   // календаря, тоже могут иметь orderId — см. Order.googleEventId.
   orderId String? @unique @map("order_id")
 
-  client            Client?            @relation(fields: [clientId], references: [id])
-  order             Order?             @relation(fields: [orderId], references: [id])
-  subscriptionUsage SubscriptionUsage?
-  yandexNotRequiredConfirmedBy User? @relation("ScheduleEventYandexNotRequiredConfirmedBy", fields: [yandexNotRequiredConfirmedById], references: [id])
-  nasNotRequiredConfirmedBy    User? @relation("ScheduleEventNasNotRequiredConfirmedBy", fields: [nasNotRequiredConfirmedById], references: [id])
+  client                       Client?            @relation(fields: [clientId], references: [id])
+  order                        Order?             @relation(fields: [orderId], references: [id])
+  subscriptionUsage            SubscriptionUsage?
+  yandexNotRequiredConfirmedBy User?              @relation("ScheduleEventYandexNotRequiredConfirmedBy", fields: [yandexNotRequiredConfirmedById], references: [id])
+  nasNotRequiredConfirmedBy    User?              @relation("ScheduleEventNasNotRequiredConfirmedBy", fields: [nasNotRequiredConfirmedById], references: [id])
+  smmContentItems              SmmContentItem[]
+  smmMaterialLinks             SmmMaterialLink[]
+  smmScheduleLink              SmmScheduleLink?
 
   @@index([clientId])
   @@index([clientConfirmationStatus])
@@ -880,78 +889,78 @@ model ScheduleEvent {
 // ============================================================
 
 model Order {
-  id                     String              @id @default(cuid())
-  status                 OrderStatus         @default(LEAD)
-  source                 OrderSource         @default(MANUAL)
-  title                  String?
-  clientId               String?             @map("client_id")
+  id                      String              @id @default(cuid())
+  status                  OrderStatus         @default(LEAD)
+  source                  OrderSource         @default(MANUAL)
+  title                   String?
+  clientId                String?             @map("client_id")
   // Снэпшот контактных данных на момент создания заказа — не источник правды,
   // если клиент привязан (clientId): тогда актуальные данные берутся из Client.
   // Хранится и для непривязанных заявок, и как история для привязанных.
-  clientName             String?             @map("client_name")
-  clientPhone            String?             @map("client_phone")
-  clientTelegram         String?             @map("client_telegram")
-  clientEmail            String?             @map("client_email")
-  clientType             ClientType?         @map("client_type")
-  companyName            String?             @map("company_name")
-  serviceType            String?             @map("service_type")
-  room                   String?
-  plannedStartTime       DateTime?           @map("planned_start_time")
-  plannedEndTime         DateTime?           @map("planned_end_time")
-  durationMinutes        Int?                @map("duration_minutes")
-  preliminaryAmount      Float?              @map("preliminary_amount")
-  paymentStatus          OrderPaymentStatus  @default(NOT_SPECIFIED) @map("payment_status")
-  paymentMethod          PaymentMethod?      @map("payment_method")
-  comment                String?
+  clientName              String?             @map("client_name")
+  clientPhone             String?             @map("client_phone")
+  clientTelegram          String?             @map("client_telegram")
+  clientEmail             String?             @map("client_email")
+  clientType              ClientType?         @map("client_type")
+  companyName             String?             @map("company_name")
+  serviceType             String?             @map("service_type")
+  room                    String?
+  plannedStartTime        DateTime?           @map("planned_start_time")
+  plannedEndTime          DateTime?           @map("planned_end_time")
+  durationMinutes         Int?                @map("duration_minutes")
+  preliminaryAmount       Float?              @map("preliminary_amount")
+  paymentStatus           OrderPaymentStatus  @default(NOT_SPECIFIED) @map("payment_status")
+  paymentMethod           PaymentMethod?      @map("payment_method")
+  comment                 String?
   // Структурированная пометка акции (см. OrderPromotionType и
   // src/lib/promotion-model.ts) — заявок без своей записи в расписании
   // (LEAD без даты) касается напрямую; для заказов с записью источник
   // правды — ScheduleEvent.promotionType, тот же принцип, что и у comment/notes.
-  promotionType          OrderPromotionType? @map("promotion_type")
+  promotionType           OrderPromotionType? @map("promotion_type")
   // Событие Google Calendar, из которого создан заказ (только source=GOOGLE_CALENDAR).
   // Используется для защиты от дублей при повторном импорте/сохранении события.
-  googleEventId          String?             @unique @map("google_event_id")
-  createdAt              DateTime            @default(now()) @map("created_at")
-  updatedAt              DateTime            @updatedAt @map("updated_at")
-  completedAt            DateTime?           @map("completed_at")
+  googleEventId           String?             @unique @map("google_event_id")
+  createdAt               DateTime            @default(now()) @map("created_at")
+  updatedAt               DateTime            @updatedAt @map("updated_at")
+  completedAt             DateTime?           @map("completed_at")
   // Момент перевода в CANCELLED ("Отказ") — тот же принцип, что у completedAt
   // выше: выставляется один раз в updateOrderStatus и больше не трогается,
   // даже если заказ потом вернули из "Отказа" в другой статус.
-  rejectedAt             DateTime?           @map("rejected_at")
+  rejectedAt              DateTime?           @map("rejected_at")
   // Момент последней смены status (не путать с updatedAt — тот меняется при
   // любом редактировании заказа). Используется для сортировки карточек внутри
   // колонок канбана "по недавности изменения статуса". Обновляется явно в
   // updateOrderStatus/updateOrder — см. src/lib/actions/orders.ts.
-  statusUpdatedAt        DateTime            @default(now()) @map("status_updated_at")
+  statusUpdatedAt         DateTime            @default(now()) @map("status_updated_at")
   // ---- Архив (см. src/lib/order-model.ts: isOrderReadyForArchive,
   // ORDER_ARCHIVE_AFTER_DAYS) — статус COMPLETED/CANCELLED остаётся финальным
   // навсегда, isArchived лишь скрывает старую (>7 дней) карточку из основной
   // CRM-воронки в отдельный экран. Не путать со старым OrderStatus.ARCHIVED,
   // которому никогда ничего не присваивается.
-  isArchived             Boolean             @default(false) @map("is_archived")
-  archivedAt             DateTime?           @map("archived_at")
-  archiveReason          ArchiveReason?      @map("archive_reason")
+  isArchived              Boolean             @default(false) @map("is_archived")
+  archivedAt              DateTime?           @map("archived_at")
+  archiveReason           ArchiveReason?      @map("archive_reason")
   // Момент ручного "Вернуть из архива" — пока он позже statusUpdatedAt,
   // автосвип (archiveEligibleOrders) не трогает заказ повторно, даже если
   // completedAt/rejectedAt всё ещё старше 7 дней. Как только статус реально
   // меняется ещё раз, statusUpdatedAt обгоняет эту метку и заказ снова
   // становится кандидатом на архивацию по обычному правилу.
-  manuallyUnarchivedAt   DateTime?           @map("manually_unarchived_at")
+  manuallyUnarchivedAt    DateTime?           @map("manually_unarchived_at")
   // Telegram-диалог, из переписки которого создан заказ (кнопка "Создать
   // заказ из переписки") — тот же принцип, что и googleEventId выше: поле,
   // отслеживающее источник, живёт на Order, а не на самом источнике.
-  telegramConversationId String?             @unique @map("telegram_conversation_id")
+  telegramConversationId  String?             @unique @map("telegram_conversation_id")
   // Требуется ли для заказа договор/счёт/акт и в каком составе — см.
   // DocumentFlowType. Только предлагается при создании (suggestDocumentFlowType,
   // document-model.ts) по типу клиента и способу оплаты, дальше это ручной
   // выбор администратора, не тихий автоматический вывод (см. AGENTS.md).
-  documentFlowType       DocumentFlowType    @default(UNKNOWN) @map("document_flow_type")
+  documentFlowType        DocumentFlowType    @default(UNKNOWN) @map("document_flow_type")
   // Сквозной номер комплекта документов ЭТОЙ работы ("Счёт №127-1/127-2,
   // Акт №127") — назначается один раз при создании первого счёта/акта заказа
   // (см. createDocument, actions/documents.ts). Живёт на Order, а не на каждом
   // Document, чтобы несколько документов одной работы не хранили одно и то же
   // число копией (см. AGENTS.md, "Реестр документов").
-  documentPackageNumber  Int?                @unique @map("document_package_number")
+  documentPackageNumber   Int?                @unique @map("document_package_number")
   // ---- "Прибыль по заказу" — 2026-07-27: ПОЛНОСТЬЮ ручное поле, платформа
   // никогда не считает и не подставляет его сама (не выручка, не выручка минус
   // выплата монтажёру, не что-либо ещё) — администратор сам считает налоги,
@@ -966,16 +975,16 @@ model Order {
   // всегда проставляет MANUAL_OVERRIDE, не проверяя и не меняя эту логику.
   // netProfitOverrideAt/ById — теперь просто "когда/кем в последний раз
   // изменена прибыль", audit-метаданные, не часть акта подтверждения.
-  netProfitMode           OrderNetProfitMode @default(AUTO) @map("net_profit_mode")
-  netProfitManualAmount   Float?             @map("net_profit_manual_amount")
-  netProfitOverrideAt     DateTime?          @map("net_profit_override_at")
-  netProfitOverrideById   String?            @map("net_profit_override_by_id")
+  netProfitMode           OrderNetProfitMode  @default(AUTO) @map("net_profit_mode")
+  netProfitManualAmount   Float?              @map("net_profit_manual_amount")
+  netProfitOverrideAt     DateTime?           @map("net_profit_override_at")
+  netProfitOverrideById   String?             @map("net_profit_override_by_id")
   // 2026-07-27: заморожено — новый код больше не читает и не пишет это поле
   // (см. financeComment ниже). Оставлено в схеме только как исторический
   // источник для одноразовой миграции (scripts/backfill-finance-comment):
   // старые "причины" переопределения прибыли уже перенесены в financeComment,
   // само поле не удаляем, чтобы не терять сырые исторические данные.
-  netProfitOverrideReason String?            @map("net_profit_override_reason")
+  netProfitOverrideReason String?             @map("net_profit_override_reason")
   // Свободный финансовый комментарий заказа — "куда делись деньги": расходы,
   // выплаты исполнителям/собственникам, причины нулевой/отрицательной
   // прибыли. Никогда не сбрасывается автоматически при изменении
@@ -983,7 +992,7 @@ model Order {
   // Намеренно ОТДЕЛЬНОЕ поле от ScheduleEvent.notes/Order.comment
   // ("Комментарий / нюансы" — информация о съёмке для клиента) — это поле
   // сугубо внутреннее, не должно попадать в документы/счета/сообщения клиенту.
-  financeComment          String?            @map("finance_comment")
+  financeComment          String?             @map("finance_comment")
 
   client               Client?               @relation(fields: [clientId], references: [id])
   netProfitOverrideBy  User?                 @relation("OrderNetProfitOverrideBy", fields: [netProfitOverrideById], references: [id])
@@ -1286,28 +1295,28 @@ enum SubscriptionAdjustmentType {
 // транзакция не закоммитилась, остаток часов не мог измениться без истории,
 // и наоборот.
 model SubscriptionAdjustment {
-  id                 String                     @id @default(cuid())
-  subscriptionId     String                     @map("subscription_id")
-  type               SubscriptionAdjustmentType
-  oldTotalHours      Float?                     @map("old_total_hours")
-  newTotalHours      Float?                     @map("new_total_hours")
-  oldUsedHours       Float?                     @map("old_used_hours")
-  newUsedHours       Float?                     @map("new_used_hours")
-  oldRemainingHours  Float?                     @map("old_remaining_hours")
-  newRemainingHours  Float?                     @map("new_remaining_hours")
+  id                    String                     @id @default(cuid())
+  subscriptionId        String                     @map("subscription_id")
+  type                  SubscriptionAdjustmentType
+  oldTotalHours         Float?                     @map("old_total_hours")
+  newTotalHours         Float?                     @map("new_total_hours")
+  oldUsedHours          Float?                     @map("old_used_hours")
+  newUsedHours          Float?                     @map("new_used_hours")
+  oldRemainingHours     Float?                     @map("old_remaining_hours")
+  newRemainingHours     Float?                     @map("new_remaining_hours")
   // Для TRANSFER_IN/TRANSFER_OUT — сколько часов перенесено и с/на какой
   // абонемент. Обычная строка, не Prisma-связь (не хотим второй именованной
   // связи ClientSubscription<->ClientSubscription ради редко читаемого поля).
-  hours              Float?
-  relatedSubscriptionId String?                 @map("related_subscription_id")
-  scheduleEventId    String?                    @map("schedule_event_id")
-  reason             String?
-  comment            String?
-  actorUserId        String?                    @map("actor_user_id")
+  hours                 Float?
+  relatedSubscriptionId String?                    @map("related_subscription_id")
+  scheduleEventId       String?                    @map("schedule_event_id")
+  reason                String?
+  comment               String?
+  actorUserId           String?                    @map("actor_user_id")
   // Id соответствующей строки в общем AuditLog, если она успешно записалась
   // (та же транзакция — по факту либо обе строки есть, либо ни одной).
-  auditEventId       String?                    @map("audit_event_id")
-  createdAt          DateTime                   @default(now()) @map("created_at")
+  auditEventId          String?                    @map("audit_event_id")
+  createdAt             DateTime                   @default(now()) @map("created_at")
 
   subscription ClientSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
   actor        User?              @relation(fields: [actorUserId], references: [id])
@@ -1424,8 +1433,11 @@ model EditorProfile {
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
 
-  user     User?            @relation(fields: [userId], references: [id])
-  projects MontageProject[]
+  user            User?            @relation(fields: [userId], references: [id])
+  projects        MontageProject[]
+  smmContentItems SmmContentItem[]
+  smmWorkItems    SmmWorkItem[]
+  smmPayments     SmmPayment[]
 
   @@map("cms_editor_profile")
 }
@@ -1598,10 +1610,12 @@ model MontageProject {
   updatedAt  DateTime  @updatedAt @map("updated_at")
   archivedAt DateTime? @map("archived_at")
 
-  order     Order?         @relation(fields: [orderId], references: [id])
-  client    Client?        @relation(fields: [clientId], references: [id])
-  editor    EditorProfile? @relation(fields: [editorId], references: [id])
-  documents Document[]
+  order          Order?          @relation(fields: [orderId], references: [id])
+  client         Client?         @relation(fields: [clientId], references: [id])
+  editor         EditorProfile?  @relation(fields: [editorId], references: [id])
+  documents      Document[]
+  smmContentItem SmmContentItem?
+  smmWorkItems   SmmWorkItem[]
 
   @@index([orderId])
   @@index([clientId])
@@ -1617,4 +1631,459 @@ enum MontageDocumentMode {
   SEPARATE
   NOT_REQUIRED
   UNKNOWN
+}
+
+// ============================================================
+// SMM — направление студии: ведение соцсетей клиентов (пакет услуг, контент,
+// съёмки, выплаты монтажёрам/менеджерам, платежи клиентов). Расширяет уже
+// существующие Client/ScheduleEvent/MontageProject/EditorProfile/User новыми
+// связями, не дублирует их (см. docs/business/SMM.md — архитектура,
+// границы первого этапа, что отложено).
+// ============================================================
+
+enum SmmProjectStatus {
+  ACTIVE
+  PAUSED
+  ARCHIVED
+}
+
+// Расчётный период пакета — не всегда календарный месяц (SMM.md, «Расчётный
+// период»): CUSTOM считается от дня месяца SmmProject.startDate
+// (computeSmmBillingPeriod, smm-model.ts), CALENDAR_MONTH — 1 число – конец
+// месяца. Сам период НЕ хранится построчно — вычисляется чистой функцией на
+// лету от reference-даты, тот же принцип, что computeMontageDeadline
+// (montage-model.ts) — не задваиваем источник правды с production-полем.
+enum SmmBillingPeriodType {
+  CALENDAR_MONTH
+  CUSTOM
+}
+
+// Тип услуги — общий словарь и для пункта пакета (SmmPackageItem), и для
+// единицы контента (SmmContentItem) — то же самое понятие с двух сторон
+// (что обещано в пакете vs что реально произведено), не две независимые
+// копии одного перечня (AGENTS.md, п.4). OTHER + свободный текст на
+// соответствующей модели — словарь не должен блокировать нестандартную
+// услугу (SMM.md, п.9).
+enum SmmServiceType {
+  SHORT_VIDEO
+  LONG_VIDEO
+  POST
+  STORY
+  STUDIO_SHOOT
+  LOCATION_SHOOT
+  SHOOTING_HOURS
+  CONTENT_PLAN
+  PUBLICATION
+  DESIGN
+  OTHER
+}
+
+enum SmmPackageUnit {
+  PIECE
+  HOUR
+  SHOOT
+  PUBLICATION
+  DAY
+  OTHER
+}
+
+enum SmmPackagePeriod {
+  MONTH
+  WEEK
+  BILLING_PERIOD
+  ONE_TIME
+}
+
+enum SmmContentStatus {
+  IDEA
+  PLANNED
+  WAITING_FOR_SHOOT
+  SHOT
+  IN_EDIT
+  REVIEW
+  APPROVED
+  SCHEDULED
+  PUBLISHED
+  CANCELLED
+}
+
+enum SmmClientApprovalStatus {
+  NOT_REQUIRED
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum SmmMaterialCategory {
+  SOURCE
+  SOURCE_SORTED
+  FINISHED_SHORT
+  FINISHED_LONG
+  GRAPHICS
+  DOCUMENT
+  OTHER
+}
+
+// Роль УЧАСТНИКА КОНКРЕТНОГО SMM-проекта — не глобальная Role платформы (см.
+// enum Role выше и SMM.md): один и тот же User может быть OWNER на одном
+// проекте, STRATEGIST на другом; права доступа платформы (Role) этим не
+// затрагиваются, это видимость/координация внутри проекта, не permissions.
+enum SmmProjectRole {
+  OWNER
+  STRATEGIST
+  SMM_MANAGER
+  EDITOR
+  OTHER
+}
+
+enum SmmWorkType {
+  EDITING
+  SUBTITLES
+  REVISION
+  DESIGN
+  SHOOTING
+  OTHER
+}
+
+// Статус самой РАБОТЫ (сделана ли она и подтверждена ли) — независим от
+// SmmWorkPaymentStatus (оплачена ли она), те же два независимых измерения,
+// что MontageProject.status vs MontageProject.editorPaymentStatus (см.
+// MONTAGE.md). Подтверждённая, но ещё не оплаченная работа — нормальное,
+// ожидаемое промежуточное состояние (SMM.md, «Выполненная работа»).
+enum SmmWorkStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+}
+
+enum SmmWorkPaymentStatus {
+  UNPAID
+  PLANNED
+  PAID
+}
+
+// Тип выплаты — сдельная (собрана из SmmWorkItem) vs фиксированная
+// (SALARY/BONUS, может не иметь ни одного WorkItem, см. SMM.md, п.21).
+// Recurring-движок для регулярных обязательств ("50 000 ₽ 15 числа каждого
+// месяца") сознательно НЕ реализован на этом этапе (см. docs/business/SMM.md,
+// раздел «Отложено на будущие этапы») — SmmPayment.type только
+// классифицирует уже созданную выплату, не планирует и не создаёт будущие
+// автоматически.
+enum SmmPayoutType {
+  PIECEWORK
+  SALARY
+  BONUS
+  OTHER
+}
+
+enum SmmClientPaymentStatus {
+  PLANNED
+  DUE
+  PAID
+  CANCELLED
+}
+
+// ============================================================
+// SMM-ПРОЕКТ КЛИЕНТА — центральная сущность модуля (SMM.md, «Главный
+// UX-принцип»): SMM → Клиенты → конкретный клиент → вся информация и работа
+// по проекту. НЕ новый Client — связь СУЩЕСТВУЮЩЕГО Client с SMM-ведением.
+// Не @unique на clientId: платформа не должна физически запрещать второй
+// SMM-проект клиенту (например перезапуск сотрудничества после паузы с
+// сохранением истории первого) — защита от случайного дубля активного
+// проекта реализована в коде (createSmmProject), тот же принцип, что у
+// MontageProject.orderId (см. MONTAGE.md, «Владение и связи»).
+// ============================================================
+
+model SmmProject {
+  id                String               @id @default(cuid())
+  clientId          String               @map("client_id")
+  status            SmmProjectStatus     @default(ACTIVE)
+  // Стоимость ведения — редактируемая сумма, НЕ хардкод (SMM.md, «Бизнес-
+  // контекст»: суммы реальных клиентов студии примерные и обязаны
+  // редактироваться в UI, не быть constants в коде). null — ещё не согласована.
+  monthlyFee        Float?               @map("monthly_fee")
+  currency          String               @default("RUB")
+  startDate         DateTime             @map("start_date")
+  endDate           DateTime?            @map("end_date")
+  billingPeriodType SmmBillingPeriodType @default(CALENDAR_MONTH) @map("billing_period_type")
+  // Свободный текст графика оплаты ("2 раза в месяц: аванс 10, остаток 25") —
+  // НЕ структурированный recurring-движок (см. SmmPayoutType выше, тот же
+  // принцип отложенной автоматизации). Реальные плановые/фактические платежи
+  // живут в SmmClientPayment ниже — это поле только описательное.
+  paymentTerms      String?              @map("payment_terms")
+  notes             String?
+  createdAt         DateTime             @default(now()) @map("created_at")
+  updatedAt         DateTime             @updatedAt @map("updated_at")
+
+  client        Client             @relation(fields: [clientId], references: [id])
+  packageItems  SmmPackageItem[]
+  contentItems  SmmContentItem[]
+  materialLinks SmmMaterialLink[]
+  members       SmmProjectMember[]
+  workItems     SmmWorkItem[]
+  payments      SmmClientPayment[]
+  scheduleLinks SmmScheduleLink[]
+
+  @@index([clientId])
+  @@index([status])
+  @@map("cms_smm_project")
+}
+
+// Один пункт пакета услуг — универсальный конструктор (SMM.md, п.9): НЕ
+// reelsCount/longVideosCount/shootCount колонками на SmmProject, а
+// нормализованные строки, тот же принцип, что InvoiceLineItem у Document
+// (см. выше в этой схеме). quantity+description вместе покрывают и точное
+// количество ("25 шт/месяц"), и диапазон/нестандартные условия ("3–6
+// шт/неделю", "скидка 20% на студию" — тогда quantity=null, вся суть в
+// description, см. SMM.md пример Diamed).
+model SmmPackageItem {
+  id           String           @id @default(cuid())
+  smmProjectId String           @map("smm_project_id")
+  serviceType  SmmServiceType   @map("service_type")
+  // Значимо только когда serviceType = OTHER (тот же принцип, что
+  // MontageProject.customContentType/InvoiceLineItem.customUnitLabel) — не
+  // подменяет сам enum произвольным текстом.
+  customName   String?          @map("custom_name")
+  quantity     Float?
+  unit         SmmPackageUnit   @default(PIECE)
+  period       SmmPackagePeriod @default(MONTH)
+  description  String?
+  // Включено в базовую стоимость ведения vs дополнительная платная услуга
+  // сверх пакета (например скидка — не количество, а условие, included
+  // здесь не о деньгах напрямую, а о том, входит ли пункт в согласованный
+  // объём пакета).
+  included     Boolean          @default(true)
+  sortOrder    Int              @default(0) @map("sort_order")
+  createdAt    DateTime         @default(now()) @map("created_at")
+  updatedAt    DateTime         @updatedAt @map("updated_at")
+
+  smmProject SmmProject @relation(fields: [smmProjectId], references: [id], onDelete: Cascade)
+
+  @@index([smmProjectId])
+  @@map("cms_smm_package_item")
+}
+
+// Единица контента — один ролик/пост/материал (SMM.md, п.11). Основа
+// будущего контент-плана (SMM.md, п.23) и точка связи с уже существующим
+// монтажом (SMM.md, п.13): editingProjectId указывает на РЕАЛЬНЫЙ
+// MontageProject (не копию статуса/файлов) — @unique гарантирует, что один
+// и тот же проект монтажа не окажется приклеен сразу к двум единицам
+// контента по ошибке.
+model SmmContentItem {
+  id                   String                  @id @default(cuid())
+  smmProjectId         String                  @map("smm_project_id")
+  serviceType          SmmServiceType          @map("service_type")
+  // Значимо только при serviceType = OTHER — тот же принцип, что у SmmPackageItem.customName.
+  customServiceType    String?                 @map("custom_service_type")
+  title                String?
+  description          String?
+  plannedPublishDate   DateTime?               @map("planned_publish_date")
+  deadline             DateTime?
+  status               SmmContentStatus        @default(IDEA)
+  responsibleUserId    String?                 @map("responsible_user_id")
+  editorId             String?                 @map("editor_id")
+  // Связанный проект монтажа (см. описание модели выше) — контент "передан
+  // монтажёру" означает, что здесь появляется реальный MontageProject.id.
+  editingProjectId     String?                 @unique @map("editing_project_id")
+  // Съёмка, на которой этот контент был снят — для вкладки «Съёмки» (SMM.md,
+  // п.15: "какие единицы контента были сняты" по конкретной записи).
+  scheduleEventId      String?                 @map("schedule_event_id")
+  sourceUrl            String?                 @map("source_url")
+  resultUrl            String?                 @map("result_url")
+  publishedUrl         String?                 @map("published_url")
+  // Рабочий индекс готового ролика (SMM.md, п.14) — ручной ввод на первом
+  // этапе, формат сознательно НЕ валидируется/не парсится (ещё не утверждён
+  // окончательно), поле просто хранит то, что ввёл администратор/монтажёр.
+  indexCode            String?                 @map("index_code")
+  clientApprovalStatus SmmClientApprovalStatus @default(NOT_REQUIRED) @map("client_approval_status")
+  notes                String?
+  createdAt            DateTime                @default(now()) @map("created_at")
+  updatedAt            DateTime                @updatedAt @map("updated_at")
+
+  smmProject      SmmProject        @relation(fields: [smmProjectId], references: [id], onDelete: Cascade)
+  responsibleUser User?             @relation(fields: [responsibleUserId], references: [id])
+  editor          EditorProfile?    @relation(fields: [editorId], references: [id])
+  editingProject  MontageProject?   @relation(fields: [editingProjectId], references: [id])
+  scheduleEvent   ScheduleEvent?    @relation(fields: [scheduleEventId], references: [id])
+  workItems       SmmWorkItem[]
+  materialLinks   SmmMaterialLink[]
+
+  @@index([smmProjectId])
+  @@index([status])
+  @@index([editorId])
+  @@index([scheduleEventId])
+  @@map("cms_smm_content_item")
+}
+
+// База ссылок на материалы клиента (SMM.md, п.16) — НЕ файловое хранилище,
+// только ссылки и метаданные (обычно Яндекс.Диск, но архитектура не
+// привязана к конкретному провайдеру — url это просто строка).
+model SmmMaterialLink {
+  id                     String              @id @default(cuid())
+  smmProjectId           String              @map("smm_project_id")
+  category               SmmMaterialCategory
+  title                  String
+  url                    String
+  description            String?
+  relatedContentId       String?             @map("related_content_id")
+  relatedScheduleEventId String?             @map("related_schedule_event_id")
+  createdById            String?             @map("created_by_id")
+  createdAt              DateTime            @default(now()) @map("created_at")
+
+  smmProject           SmmProject      @relation(fields: [smmProjectId], references: [id], onDelete: Cascade)
+  relatedContent       SmmContentItem? @relation(fields: [relatedContentId], references: [id])
+  relatedScheduleEvent ScheduleEvent?  @relation(fields: [relatedScheduleEventId], references: [id])
+  createdBy            User?           @relation(fields: [createdById], references: [id])
+
+  @@index([smmProjectId])
+  @@index([category])
+  @@map("cms_smm_material_link")
+}
+
+// Участник конкретного SMM-проекта (SMM.md, п.17) — отношение User↔проект,
+// не два жёстко зашитых имени. activeFrom/activeTo — история участия
+// (человек мог покинуть проект и вернуться), поэтому здесь сознательно НЕТ
+// @@unique([smmProjectId, userId, role]) — повторная строка после ухода и
+// возвращения того же человека в той же роли валидна и не должна падать на
+// ограничении.
+model SmmProjectMember {
+  id           String         @id @default(cuid())
+  smmProjectId String         @map("smm_project_id")
+  userId       String         @map("user_id")
+  role         SmmProjectRole
+  activeFrom   DateTime       @default(now()) @map("active_from")
+  activeTo     DateTime?      @map("active_to")
+  notes        String?
+  createdAt    DateTime       @default(now()) @map("created_at")
+  updatedAt    DateTime       @updatedAt @map("updated_at")
+
+  smmProject SmmProject @relation(fields: [smmProjectId], references: [id], onDelete: Cascade)
+  user       User       @relation(fields: [userId], references: [id])
+
+  @@index([smmProjectId])
+  @@index([userId])
+  @@map("cms_smm_project_member")
+}
+
+// Связь SMM-проекта с уже существующей записью расписания/заказом (SMM.md,
+// п.15) — НЕ новый календарь съёмок, ScheduleEvent остаётся единственным
+// источником правды по дате/типу/длительности/заказу. @unique на
+// scheduleEventId: одна съёмка принадлежит не более чем одному SMM-проекту
+// (та же студия могла бы теоретически снимать двух разных SMM-клиентов, но
+// не в рамках ОДНОЙ и той же записи расписания).
+model SmmScheduleLink {
+  id                String   @id @default(cuid())
+  smmProjectId      String   @map("smm_project_id")
+  scheduleEventId   String   @unique @map("schedule_event_id")
+  // Входит в согласованный пакет vs оплачивается отдельно сверх пакета
+  // (SMM.md, п.15).
+  includedInPackage Boolean  @default(true) @map("included_in_package")
+  notes             String?
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  smmProject    SmmProject    @relation(fields: [smmProjectId], references: [id], onDelete: Cascade)
+  scheduleEvent ScheduleEvent @relation(fields: [scheduleEventId], references: [id], onDelete: Cascade)
+
+  @@index([smmProjectId])
+  @@map("cms_smm_schedule_link")
+}
+
+// Выполненная работа исполнителя (SMM.md, п.18/19) — ОТДЕЛЬНАЯ сущность от
+// SmmContentItem: один контент может потребовать нескольких работ (монтаж +
+// субтитры + правки, каждая со своей суммой), и наоборот, работа может не
+// относиться к конкретной единице контента напрямую (contentItemId/
+// editingProjectId оба nullable). performerId — EditorProfile (уже
+// существующая сущность "исполнитель, может не иметь аккаунта платформы",
+// см. MONTAGE.md), не новый профиль и не обязательный User — тот же принцип
+// переиспользования, что у MontageProject.editorId.
+model SmmWorkItem {
+  id               String               @id @default(cuid())
+  smmProjectId     String               @map("smm_project_id")
+  performerId      String               @map("performer_id")
+  contentItemId    String?              @map("content_item_id")
+  editingProjectId String?              @map("editing_project_id")
+  workType         SmmWorkType          @map("work_type")
+  customWorkType   String?              @map("custom_work_type")
+  description      String?
+  workDate         DateTime             @map("work_date")
+  quantity         Float                @default(1)
+  rate             Float?
+  amount           Float
+  // Подтверждена ли сама работа (см. enum выше) — независимо от оплаты.
+  status           SmmWorkStatus        @default(DRAFT)
+  paymentStatus    SmmWorkPaymentStatus @default(UNPAID) @map("payment_status")
+  paymentId        String?              @map("payment_id")
+  createdById      String?              @map("created_by_id")
+  createdAt        DateTime             @default(now()) @map("created_at")
+  updatedAt        DateTime             @updatedAt @map("updated_at")
+
+  smmProject     SmmProject      @relation(fields: [smmProjectId], references: [id], onDelete: Cascade)
+  performer      EditorProfile   @relation(fields: [performerId], references: [id])
+  contentItem    SmmContentItem? @relation(fields: [contentItemId], references: [id])
+  editingProject MontageProject? @relation(fields: [editingProjectId], references: [id])
+  payment        SmmPayment?     @relation(fields: [paymentId], references: [id])
+  createdBy      User?           @relation(fields: [createdById], references: [id])
+
+  @@index([smmProjectId])
+  @@index([performerId])
+  @@index([contentItemId])
+  @@index([paymentId])
+  @@index([status])
+  @@index([paymentStatus])
+  @@map("cms_smm_work_item")
+}
+
+// Факт выплаты исполнителю (SMM.md, п.20) — группирует ноль или несколько
+// SmmWorkItem (ноль — для SALARY/BONUS-выплат, не привязанных к конкретным
+// работам, см. SmmPayoutType выше). Открыв выплату, видно, из чего она
+// сложилась (см. workItems ниже) — обязательное требование SMM.md, п.20:
+// "нужно иметь возможность открыть выплату и увидеть, из чего она
+// сформировалась".
+model SmmPayment {
+  id          String         @id @default(cuid())
+  performerId String         @map("performer_id")
+  type        SmmPayoutType  @default(PIECEWORK)
+  amount      Float
+  paidAt      DateTime       @default(now()) @map("paid_at")
+  periodStart DateTime?      @map("period_start")
+  periodEnd   DateTime?      @map("period_end")
+  method      PaymentMethod?
+  comment     String?
+  createdById String?        @map("created_by_id")
+  createdAt   DateTime       @default(now()) @map("created_at")
+
+  performer EditorProfile @relation(fields: [performerId], references: [id])
+  createdBy User?         @relation(fields: [createdById], references: [id])
+  workItems SmmWorkItem[]
+
+  @@index([performerId])
+  @@map("cms_smm_payment")
+}
+
+// Плановый/фактический платёж SMM-клиента (SMM.md, п.22) — гибкий график
+// (не единственная дата "оплата 1 числа"): каждая строка — один ожидаемый
+// платёж, plannedDate/plannedAmount вводятся вручную администратором,
+// actualDate/actualAmount заполняются отдельно в момент фактического
+// поступления денег — те же два независимых момента, что и у
+// MontageProject.clientPaidAt vs сама сумма (см. MONTAGE.md).
+model SmmClientPayment {
+  id            String                 @id @default(cuid())
+  smmProjectId  String                 @map("smm_project_id")
+  plannedDate   DateTime               @map("planned_date")
+  plannedAmount Float                  @map("planned_amount")
+  actualDate    DateTime?              @map("actual_date")
+  actualAmount  Float?                 @map("actual_amount")
+  method        PaymentMethod?
+  status        SmmClientPaymentStatus @default(PLANNED)
+  comment       String?
+  createdAt     DateTime               @default(now()) @map("created_at")
+  updatedAt     DateTime               @updatedAt @map("updated_at")
+
+  smmProject SmmProject @relation(fields: [smmProjectId], references: [id], onDelete: Cascade)
+
+  @@index([smmProjectId])
+  @@index([status])
+  @@index([plannedDate])
+  @@map("cms_smm_client_payment")
 }

@@ -60,6 +60,7 @@
 - `docs/business/CLIENTS.md` — клиенты/CRM.
 - `docs/business/MONTAGE.md` — монтаж.
 - `docs/business/DOCUMENTS.md` — реестр документов.
+- `docs/business/SMM.md` — SMM (ведение соцсетей клиентов студии).
 - `docs/integrations/GOOGLE_CALENDAR.md` — интеграция с Google Calendar.
 - `docs/integrations/TELEGRAM.md` — интеграция с Telegram.
 - `docs/development/UI_UX.md` — UI-паттерны, булевы бизнес-исключения.

@@ -1,8 +1,8 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { Plus, Search, ShoppingBag, Archive } from 'lucide-react'
 import {
   DndContext, DragOverlay, PointerSensor, closestCenter, useSensor, useSensors, useDraggable, useDroppable,
@@ -34,6 +34,7 @@ function isOrderStatus(value: string): value is OrderStatus {
 
 export default function OrdersBoard({ initialOrders }: Props) {
   const router = useRouter()
+  const searchParams = useSearchParams()
   const [search, setSearch] = useState('')
   // EventCardModal.tsx — единственный канонический UI карточки заказа (см.
   // ORDERS.md, «Карточка заказа»). OrderFormModal.tsx остаётся временно (см.
@@ -101,6 +102,19 @@ export default function OrdersBoard({ initialOrders }: Props) {
     // Заявка без брони (или сбой загрузки) — временный fallback, см. ORDERS.md, [TARGET].
     setEditingOrder(order)
   }
+
+  // Открытие карточки заказа по прямой ссылке (?openOrderId=...) — используется
+  // из SMM → Съёмки ("Открыть заказ"), чтобы не создавать вторую реализацию
+  // карточки заказа (AGENTS.md, «Редактируемость связанных сущностей», п.3):
+  // тот же EventCardModal/openOrder, что и обычный клик по карточке доски.
+  useEffect(() => {
+    const openOrderId = searchParams.get('openOrderId')
+    if (!openOrderId) return
+    const order = orders.find(o => o.id === openOrderId)
+    if (order) openOrder(order)
+    router.replace('/admin/crm')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams])
 
   async function handleStatusChange(order: OrderDTO, status: OrderStatus) {
     if (order.status === status) return

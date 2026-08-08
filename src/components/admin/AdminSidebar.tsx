@@ -7,7 +7,7 @@ import { cn } from '@/lib/utils'
 import {
   LayoutDashboard, Users, Calendar, Film,
   DollarSign, FileText, HardDrive, BarChart3, UserCheck,
-  Settings, LogOut, MessageCircle, Kanban, Table2,
+  Settings, LogOut, MessageCircle, Kanban, Table2, Megaphone,
 } from 'lucide-react'
 
 interface Props {
@@ -23,6 +23,7 @@ const navByRole: Record<string, { href: string; label: string; icon: React.Eleme
     { href: '/admin/telegram',   label: 'Telegram',   icon: MessageCircle },
     { href: '/admin/schedule',   label: 'Расписание', icon: Calendar },
     { href: '/admin/editing',    label: 'Монтаж',     icon: Film },
+    { href: '/admin/smm',        label: 'SMM',        icon: Megaphone },
     { href: '/admin/finance',    label: 'Финансы',    icon: DollarSign },
     { href: '/admin/documents',  label: 'Документы',  icon: FileText },
     { href: '/admin/materials',  label: 'Материалы',  icon: HardDrive },
