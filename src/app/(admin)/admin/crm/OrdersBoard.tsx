@@ -26,13 +26,19 @@ const NO_CONTRACT_STATES = ['NO_CONTRACT', 'PREPARING', 'UNSPECIFIED', null] as 
 
 interface Props {
   initialOrders: OrderDTO[]
+  // Заказ для открытия по прямой ссылке (?openOrderId=..., SMM → Съёмки,
+  // «Открыть заказ») — уже отрезолвлен СЕРВЕРНО в page.tsx (buildVmFromOrder
+  // вызван там же, где и getActiveOrders), а не отдельным клиентским
+  // useEffect: та же derived-data-from-props архитектура, что и
+  // admin/finance/visits (initialRoom/initialFormat).
+  initialSelectedVm?: ScheduleEventVM | null
 }
 
 function isOrderStatus(value: string): value is OrderStatus {
   return (ORDER_BOARD_COLUMNS as string[]).includes(value)
 }
 
-export default function OrdersBoard({ initialOrders }: Props) {
+export default function OrdersBoard({ initialOrders, initialSelectedVm = null }: Props) {
   const router = useRouter()
   const searchParams = useSearchParams()
   const [search, setSearch] = useState('')
@@ -40,7 +46,7 @@ export default function OrdersBoard({ initialOrders }: Props) {
   // ORDERS.md, «Карточка заказа»). OrderFormModal.tsx остаётся временно (см.
   // [TARGET] там же) только для создания заказа с нуля и для заявок без
   // ScheduleEvent — buildVmFromOrder возвращает data:null именно в этом случае.
-  const [selectedVm, setSelectedVm] = useState<ScheduleEventVM | null>(null)
+  const [selectedVm, setSelectedVm] = useState<ScheduleEventVM | null>(initialSelectedVm)
   const [editingOrder, setEditingOrder] = useState<OrderDTO | null>(null)
   const [creating, setCreating] = useState(false)
   // Оптимистичная подмена статуса поверх серверных данных — не копируем
@@ -103,18 +109,12 @@ export default function OrdersBoard({ initialOrders }: Props) {
     setEditingOrder(order)
   }
 
-  // Открытие карточки заказа по прямой ссылке (?openOrderId=...) — используется
-  // из SMM → Съёмки ("Открыть заказ"), чтобы не создавать вторую реализацию
-  // карточки заказа (AGENTS.md, «Редактируемость связанных сущностей», п.3):
-  // тот же EventCardModal/openOrder, что и обычный клик по карточке доски.
+  // ?openOrderId=... (SMM → Съёмки, «Открыть заказ») уже открыт через
+  // initialSelectedVm (см. проп выше) — этот эффект только убирает параметр
+  // из адресной строки после монтирования, никакого setState здесь нет.
   useEffect(() => {
-    const openOrderId = searchParams.get('openOrderId')
-    if (!openOrderId) return
-    const order = orders.find(o => o.id === openOrderId)
-    if (order) openOrder(order)
-    router.replace('/admin/crm')
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchParams])
+    if (searchParams.get('openOrderId')) router.replace('/admin/crm')
+  }, [searchParams, router])
 
   async function handleStatusChange(order: OrderDTO, status: OrderStatus) {
     if (order.status === status) return
