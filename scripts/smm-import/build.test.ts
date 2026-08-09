@@ -21,6 +21,43 @@ const unresolvedClientMatch: ClientMatch = {
   ...resolvedClientMatch, proposedSmmProjectId: null, missingProject: true,
 }
 
+describe('buildContentEntities — manifest entityKey stability (pre-apply hardening regression)', () => {
+  it('gives a Publication/Metric/Material the SAME entityKey regardless of the group\'s index in the run (an unrelated new group inserted earlier must not shift them)', () => {
+    const target = contentRow({
+      legacyCode: 'Д186', title: 'Давид / Вадим', date: '2026-08-05',
+      platforms: [{ platform: 'INSTAGRAM', title: 'Давид / Вадим', url: 'https://example.com/x', metrics: { VIEWS: 100 } }],
+    })
+    const unrelated = contentRow({ legacyCode: 'Д1', title: 'Другой ролик' })
+
+    const clientMatches = new Map([['Диамед', resolvedClientMatch]])
+    // Порядок А: unrelated идёт первым — Д186 попадает в группу с индексом 1.
+    const runA = buildContentEntities(dedupContentRows([unrelated, target]), clientMatches)
+    // Порядок Б: unrelated вообще отсутствует — Д186 в группе с индексом 0.
+    const runB = buildContentEntities(dedupContentRows([target]), clientMatches)
+
+    const pubKeyA = runA.manifest.find(m => m.entityType === 'Publication')!.entityKey
+    const pubKeyB = runB.manifest.find(m => m.entityType === 'Publication')!.entityKey
+    expect(pubKeyA).toBe(pubKeyB)
+
+    const metricKeyA = runA.manifest.find(m => m.entityType === 'Metric')!.entityKey
+    const metricKeyB = runB.manifest.find(m => m.entityType === 'Metric')!.entityKey
+    expect(metricKeyA).toBe(metricKeyB)
+
+    const contentKeyA = runA.manifest.find(m => m.entityType === 'ContentItem' && m.tempId.includes('Д186'))!.entityKey
+    const contentKeyB = runB.manifest.find(m => m.entityType === 'ContentItem')!.entityKey
+    expect(contentKeyA).toBe(contentKeyB)
+  })
+
+  it('gives a ContentItem the SAME entityKey when only the title/date changes (source edited after a prior apply) — that is what SOURCE_CHANGED_AFTER_APPLY relies on', () => {
+    const v1 = buildContentEntities(dedupContentRows([contentRow({ legacyCode: 'Д186', title: 'Старое название', date: '2026-08-05' })]), new Map([['Диамед', resolvedClientMatch]]))
+    const v2 = buildContentEntities(dedupContentRows([contentRow({ legacyCode: 'Д186', title: 'Исправленное название', date: '2026-08-06' })]), new Map([['Диамед', resolvedClientMatch]]))
+    const keyV1 = v1.manifest.find(m => m.entityType === 'ContentItem')!
+    const keyV2 = v2.manifest.find(m => m.entityType === 'ContentItem')!
+    expect(keyV1.entityKey).toBe(keyV2.entityKey)
+    expect(keyV1.fingerprint).not.toBe(keyV2.fingerprint)
+  })
+})
+
 describe('buildContentEntities', () => {
   it('always marks migrated content as FILE_CODE_UNRESOLVED (ТЗ: не выдумывать историческую последовательность)', () => {
     const groups = dedupContentRows([contentRow({ legacyCode: 'Д186' })])

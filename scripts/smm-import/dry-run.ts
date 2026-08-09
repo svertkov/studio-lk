@@ -18,20 +18,25 @@ import { extractContentRows, extractWorkPaymentRows, extractTeamPayoutRows } fro
 import { matchClient, matchEditor, type ExistingClient, type ExistingEditor, type ExistingSmmProject } from './match'
 import { dedupContentRows } from './dedup'
 import { buildContentEntities, buildWorkItemCandidates, buildRecurringPayoutCandidates } from './build'
-import { renderTextReport } from './report'
+import { renderTextReport, renderProjectDeepDive } from './report'
+import { meetsConfidenceThreshold } from './migration-status'
 import type {
-  ClientMatch, DriftIssue, DryRunResult, EditorMatch, MigrationException, SheetClassification,
+  ClientMatch, Confidence, DriftIssue, DryRunResult, EditorMatch, MigrationException, SheetClassification,
   SourceContentRow, SourceTeamPayoutRow, SourceWorkPaymentRow,
 } from './types'
 
-function parseArgs(argv: string[]): { dir: string; jsonOut: string | null } {
+function parseArgs(argv: string[]): { dir: string; jsonOut: string | null; project: string | null; maxConfidence: Confidence | null } {
   let dir = path.join(os.homedir(), 'Desktop', 'Таблицы')
   let jsonOut: string | null = null
+  let project: string | null = null
+  let maxConfidence: Confidence | null = null
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--dir' && argv[i + 1]) dir = argv[++i]
     if (argv[i] === '--json' && argv[i + 1]) jsonOut = argv[++i]
+    if (argv[i] === '--project' && argv[i + 1]) project = argv[++i]
+    if (argv[i] === '--max-confidence' && argv[i + 1]) maxConfidence = argv[++i] as Confidence
   }
-  return { dir, jsonOut }
+  return { dir, jsonOut, project, maxConfidence }
 }
 
 async function fetchMatchContext() {
@@ -48,7 +53,7 @@ async function fetchMatchContext() {
 }
 
 async function main() {
-  const { dir, jsonOut } = parseArgs(process.argv.slice(2))
+  const { dir, jsonOut, project, maxConfidence } = parseArgs(process.argv.slice(2))
   if (!fs.existsSync(dir)) {
     console.error(`Папка не найдена: ${dir}`)
     process.exit(1)
@@ -155,7 +160,7 @@ async function main() {
   const workItemResult = buildWorkItemCandidates(workPaymentRows, contentResult.contentItems, clientMatches)
   const recurringResult = buildRecurringPayoutCandidates(teamPayoutRows, editorMatches, clientMatches)
 
-  const result: DryRunResult = {
+  let result: DryRunResult = {
     sheetClassifications,
     driftIssues,
     clientMatches: [...clientMatches.values()],
@@ -173,7 +178,48 @@ async function main() {
     warnings: [...warnings, scriptLibrarySheets > 0 ? `${scriptLibrarySheets} лист(ов) отнесены к SCRIPT_LIBRARY и не обрабатывались как контент` : ''].filter(Boolean),
   }
 
+  // --project — сузить отчёт до одного клиента (ТЗ hardening п.28/29): ищем
+  // clientHint, чья ClientMatch указывает ровно на этот projectCode.
+  let scopedGroups = dedupGroups
+  if (project) {
+    const scopedHint = result.clientMatches.find(m => m.proposedProjectCode === project)?.clientHint
+    if (!scopedHint) {
+      console.error(`--project ${project}: ни один источник не сопоставлен с этим projectCode — проверьте, что SmmProject создан и dry-run видит актуальные данные.`)
+      process.exit(1)
+    }
+    const scopedContentItems = contentResult.contentItems.filter(ci => ci.clientHint === scopedHint)
+    const scopedTempIds = new Set(scopedContentItems.map(ci => ci.tempId))
+    scopedGroups = dedupGroups.filter(g => g.rows[0]?.clientHint === scopedHint)
+    // Exceptions не всегда несут context.clientHint (FILE_CODE_UNRESOLVED/
+    // METRIC_CONFLICT — нет) — универсальный признак принадлежности клиенту
+    // это файл-источник, уже известный по clientHintToFiles.
+    const scopedFiles = clientHintToFiles.get(scopedHint) ?? new Set<string>()
+    const scopedExceptions = result.exceptions.filter(e => {
+      const ctxHint = (e.context?.clientHint ?? e.context?.client) as string | undefined
+      if (ctxHint) return ctxHint === scopedHint
+      return e.trace ? scopedFiles.has(e.trace.file) : false
+    })
+    result = {
+      ...result,
+      exceptions: scopedExceptions,
+      contentDedupGroups: scopedGroups,
+      proposedContentItems: scopedContentItems,
+      proposedPublications: contentResult.publications.filter(p => scopedTempIds.has(p.contentTempId)),
+      proposedMetrics: contentResult.metrics.filter(m => scopedTempIds.has(m.contentTempId)),
+      proposedMaterials: contentResult.materials.filter(m => scopedTempIds.has(m.contentTempId)),
+    }
+  }
+
   console.log(renderTextReport(result))
+  if (project) {
+    console.log(renderProjectDeepDive(project, result, scopedGroups))
+  }
+  // --max-confidence — предпросмотр того, что реально попало бы в controlled
+  // apply с этим порогом (ТЗ hardening п.23), не убирает остальное из вида.
+  if (maxConfidence) {
+    const eligible = result.proposedContentItems.filter(ci => meetsConfidenceThreshold(ci.dedupConfidence, maxConfidence))
+    console.log(`\n--max-confidence ${maxConfidence}: из ${result.proposedContentItems.length} единиц контента к controlled apply готовы ${eligible.length}.`)
+  }
 
   if (jsonOut) {
     fs.writeFileSync(jsonOut, JSON.stringify(result, null, 1), 'utf-8')

@@ -57,3 +57,12 @@ scripts/migrate-invoice-line-items/backups/
 *.sql.gz
 *.sql.gz.sha256
 scripts/db-backup/backup.log
+
+# SMM Excel migration — dry-run отчёты (scripts/smm-import/dry-run.ts --json)
+# содержат реальные имена/URL/суммы клиентов — держать только локально, не в
+# git, даже если кто-то направит --json внутрь репозитория по ошибке.
+# Исходные .xlsx-таблицы студии живут вне репозитория (~/Desktop/Таблицы) и
+# никогда туда не копируются — правило на случай, если кто-то всё же положит
+# их сюда для локального теста.
+reports/smm-migration/
+*.xlsx

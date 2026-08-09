@@ -262,6 +262,14 @@ export interface ManifestEntry {
   sourceRow: number
   entityType: 'ContentItem' | 'Publication' | 'Metric' | 'Material' | 'WorkItem' | 'Payment' | 'RecurringPayout'
   tempId: string
+  // Стабильный ключ "то же самое реальное содержимое" (client+legacy-код,
+  // либо client+title, если кода нет) — НЕ включает всё смысловое
+  // содержимое, поэтому переживает правку title/даты в источнике. Именно
+  // entityKey ищется в SmmMigrationRecord при apply (ТЗ pre-apply hardening,
+  // п.7/11) — fingerprint ниже используется отдельно, чтобы ОТЛИЧИТЬ
+  // "тот же объект, ничего не изменилось" (ALREADY_APPLIED) от "тот же
+  // объект, но источник поменялся" (SOURCE_CHANGED_AFTER_APPLY).
+  entityKey: string
   fingerprint: string
 }
 

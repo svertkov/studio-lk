@@ -1,6 +1,19 @@
-// Manifest / идемпотентность (ТЗ п.31/32) — стабильный fingerprint строится
-// из НОРМАЛИЗОВАННЫХ значений исходной строки, не из номера строки (тот
-// может съехать при правке файла); номер строки остаётся только для trace.
+// Manifest / идемпотентность (pre-apply hardening, ТЗ п.6-11) — ДВА разных
+// понятия, сознательно не смешаны в одно:
+//
+// - entityKey — стабильный "это тот же реальный объект" (client+legacy-код,
+//   либо client+title если кода нет). НЕ меняется при правке title/даты в
+//   источнике — apply.ts ищет существующую SmmMigrationRecord ИМЕННО по
+//   entityKey.
+// - fingerprint — полный отпечаток нормализованного смыслового содержимого
+//   (client+код+title+дата+url+platform+сумма/метрика, в зависимости от
+//   entityType). Используется, чтобы ОТЛИЧИТЬ "то же самое, ничего не
+//   изменилось" (fingerprint совпал → ALREADY_APPLIED) от "тот же объект, но
+//   источник поменялся" (fingerprint разошёлся при том же entityKey →
+//   SOURCE_CHANGED_AFTER_APPLY, business-данные НЕ обновляются молча).
+//
+// sourceRow нигде здесь не участвует в ключах — только в trace-полях
+// ManifestEntry (см. types.ts) для отчёта/диагностики.
 
 import type { ManifestEntry, RowTrace } from './types'
 import { fingerprint } from './normalize'
@@ -9,7 +22,8 @@ export function makeManifestEntry(
   trace: RowTrace,
   entityType: ManifestEntry['entityType'],
   tempId: string,
-  fingerprintParts: (string | number | null | undefined)[],
+  entityKeyParts: (string | number | null | undefined)[],
+  fingerprintParts: (string | number | null | undefined)[] = entityKeyParts,
 ): ManifestEntry {
   return {
     sourceFile: trace.file,
@@ -17,6 +31,7 @@ export function makeManifestEntry(
     sourceRow: trace.row,
     entityType,
     tempId,
-    fingerprint: fingerprint([entityType, ...fingerprintParts]),
+    entityKey: fingerprint([entityType, 'KEY', ...entityKeyParts]),
+    fingerprint: fingerprint([entityType, 'FP', ...fingerprintParts]),
   }
 }

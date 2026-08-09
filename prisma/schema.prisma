@@ -2445,3 +2445,64 @@ model SmmClientPayment {
   @@index([plannedDate])
   @@map("cms_smm_client_payment")
 }
+
+// ============================================================
+// SMM Excel migration — техническая модель trace/idempotency/reconciliation
+// (SMM: pre-apply hardening, docs/business/SMM.md, «Готовность к миграции»).
+// НАМЕРЕННО не привязана к бизнес-логике SMM: нет Prisma-relation ни к
+// SmmProject, ни к SmmContentItem/Publication/... (только "плоские" id-поля)
+// — это maintenance-таблица трассировки импорта, а не часть SMM-домена;
+// удаление/архивирование SMM-сущностей не должно каскадно задевать историю
+// импорта, и наоборот. НЕ второй source of truth бизнес-данных — только
+// "какая исходная Excel-строка породила какую реальную запись и когда".
+model SmmMigrationRecord {
+  id            String   @id @default(cuid())
+  // Название всей миграционной кампании (напр. "smm-excel-2026-08") —
+  // отличается от batchId: одна migrationName может включать несколько
+  // batchId (по одному на клиента/прогон, см. ниже).
+  migrationName String   @map("migration_name")
+  // Идентификатор конкретного запуска apply (напр.
+  // "smm-excel-2026-08-dia-v1") — группирует все записи одного applied-
+  // прогона для reconciliation/rollback-отчёта по batch (не сам rollback).
+  batchId       String   @map("batch_id")
+  sourceFile    String   @map("source_file")
+  sourceSheet   String   @map("source_sheet")
+  // Только trace/диагностика — НЕ identity (та строка в Excel могла уехать
+  // при правке файла). Единственный источник идемпотентности — fingerprint.
+  sourceRow     Int      @map("source_row")
+  // Стабильный "это тот же реальный объект" ключ — client+legacy-код, либо
+  // client+title если кода нет (см. scripts/smm-import/build.ts,
+  // contentEntityKeyParts). НЕ включает title/дату/URL/сумму — переживает их
+  // правку в источнике. Apply.ts ищет существующую запись ИМЕННО по этому
+  // полю (не по fingerprint) — используется для ALREADY_APPLIED/
+  // SOURCE_CHANGED_AFTER_APPLY (pre-apply hardening).
+  entityKey     String   @map("entity_key")
+  // Полный детерминированный отпечаток НОРМАЛИЗОВАННОГО смыслового
+  // содержимого исходной записи (client/legacy-код/дата/title/URL/platform/
+  // сумма/тип+значение метрики — в зависимости от entityType). Если при
+  // повторном прогоне entityKey совпал, а fingerprint — нет: источник
+  // изменился после apply (SOURCE_CHANGED_AFTER_APPLY), бизнес-данные не
+  // обновляются молча.
+  fingerprint   String
+  // 'ContentItem' | 'Publication' | 'Metric' | 'Material' | 'WorkItem' | 'Payment' | 'RecurringPayout'
+  entityType    String   @map("entity_type")
+  // id РЕАЛЬНО созданной бизнес-сущности (SmmContentItem.id и т.п.) — не FK
+  // намеренно (см. комментарий модели выше).
+  entityId      String   @map("entity_id")
+  projectId     String?  @map("project_id")
+  appliedAt     DateTime @default(now()) @map("applied_at")
+  metadata      Json?
+
+  // Идемпотентность на уровне БД: один и тот же entityKey для одного и того
+  // же типа сущности не может быть применён дважды — apply.ts обязан
+  // сначала проверить существование записи (ALREADY_APPLIED/
+  // SOURCE_CHANGED_AFTER_APPLY), constraint здесь — последняя линия защиты
+  // от гонки/повторного ручного запуска.
+  @@unique([entityKey, entityType])
+  @@index([fingerprint])
+  @@index([batchId])
+  @@index([migrationName])
+  @@index([projectId])
+  @@index([sourceFile, sourceSheet])
+  @@map("cms_smm_migration_record")
+}
