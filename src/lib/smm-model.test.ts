@@ -3,6 +3,10 @@ import {
   computeSmmBillingPeriod, isWithinPeriod, computePackageProgress,
   isSmmContentOverdue, getPrimaryResponsibleMember, computeSmmMonthlyRevenue,
   wouldCreateContentParentCycle, getLatestMetricByType, CONTENT_SERVICE_TYPES,
+  getContentMontageShortState, getNearestPublicationInfo, computeContentMaterialsIndicator,
+  getSmmContentAttentionReasons, isSmmContentOperationallyOverdue, sortSmmProductionRowsDefault,
+  computeSmmProductionKpis, matchesSmmProductionDateFilter, filterSmmProductionRows, SMM_PRODUCTION_DEFAULT_FILTERS,
+  type SmmPublicationPlatform,
 } from './smm-model'
 import type { SmmProjectDTO, SmmPackageItemDTO, SmmContentItemDTO, SmmProjectMemberDTO, SmmPublicationDTO, SmmPublicationMetricDTO } from './actions/smm'
 
@@ -319,5 +323,375 @@ describe('CONTENT_SERVICE_TYPES', () => {
     for (const t of ['SHORT_VIDEO', 'LONG_VIDEO', 'POST', 'CAROUSEL', 'STORY', 'TEASER', 'OTHER']) {
       expect(CONTENT_SERVICE_TYPES).toContain(t)
     }
+  })
+})
+
+// ============================================================
+// PRODUCTION (2B) — pure helpers, ТЗ 2B п.55.
+// ============================================================
+
+describe('getContentMontageShortState', () => {
+  it('returns "Не создан" when there is no editing project yet', () => {
+    expect(getContentMontageShortState(null)).toBe('Не создан')
+  })
+
+  it('groups NEW/IN_PROGRESS as "В работе"', () => {
+    expect(getContentMontageShortState('NEW')).toBe('В работе')
+    expect(getContentMontageShortState('IN_PROGRESS')).toBe('В работе')
+  })
+
+  it('groups IN_REVIEW/REVISIONS as "На проверке"', () => {
+    expect(getContentMontageShortState('IN_REVIEW')).toBe('На проверке')
+    expect(getContentMontageShortState('REVISIONS')).toBe('На проверке')
+  })
+
+  it('reports DELIVERED as "Готово"', () => {
+    expect(getContentMontageShortState('DELIVERED')).toBe('Готово')
+  })
+
+  it('reports CANCELLED as "Отменён"', () => {
+    expect(getContentMontageShortState('CANCELLED')).toBe('Отменён')
+  })
+})
+
+describe('getNearestPublicationInfo', () => {
+  it('returns null when there are no publications', () => {
+    expect(getNearestPublicationInfo([])).toBeNull()
+  })
+
+  it('ignores CANCELLED publications entirely', () => {
+    const result = getNearestPublicationInfo([{ plannedPublishAt: '2026-08-20', status: 'CANCELLED' }])
+    expect(result).toBeNull()
+  })
+
+  it('returns null when active publications have no planned date', () => {
+    const result = getNearestPublicationInfo([{ plannedPublishAt: null, status: 'PLANNED' }])
+    expect(result).toBeNull()
+  })
+
+  it('picks the earliest planned date among active publications', () => {
+    const result = getNearestPublicationInfo([
+      { plannedPublishAt: '2026-08-25', status: 'PLANNED' },
+      { plannedPublishAt: '2026-08-20', status: 'READY' },
+    ])
+    expect(result?.date).toBe('2026-08-20')
+  })
+
+  it('platformCount counts ALL active publications, not just those sharing the nearest date', () => {
+    const result = getNearestPublicationInfo([
+      { plannedPublishAt: '2026-08-20', status: 'PLANNED' },
+      { plannedPublishAt: '2026-08-25', status: 'PLANNED' },
+      { plannedPublishAt: null, status: 'CANCELLED' },
+    ])
+    expect(result?.platformCount).toBe(2)
+  })
+})
+
+describe('computeContentMaterialsIndicator', () => {
+  it('reports no source/master for an empty list', () => {
+    expect(computeContentMaterialsIndicator([])).toEqual({ hasSource: false, hasMaster: false })
+  })
+
+  it('detects source materials by materialType', () => {
+    const r = computeContentMaterialsIndicator([{ materialType: 'SOURCE_VIDEO', category: 'SOURCE' }])
+    expect(r.hasSource).toBe(true)
+    expect(r.hasMaster).toBe(false)
+  })
+
+  it('detects source materials by category when materialType is null', () => {
+    const r = computeContentMaterialsIndicator([{ materialType: null, category: 'SOURCE_SORTED' }])
+    expect(r.hasSource).toBe(true)
+  })
+
+  it('detects master material by materialType MASTER', () => {
+    const r = computeContentMaterialsIndicator([{ materialType: 'MASTER', category: 'FINISHED_SHORT' }])
+    expect(r.hasMaster).toBe(true)
+  })
+
+  it('detects master material by finished categories even without materialType', () => {
+    const r = computeContentMaterialsIndicator([{ materialType: null, category: 'FINISHED_LONG' }])
+    expect(r.hasMaster).toBe(true)
+  })
+})
+
+function attentionInput(overrides: Partial<Parameters<typeof getSmmContentAttentionReasons>[0]> = {}) {
+  return {
+    status: 'IN_EDIT' as const,
+    deadline: null,
+    editingProjectStatus: null,
+    editingProjectDeadlineDate: null,
+    editingProjectEditorId: null,
+    hasSourceMaterials: true,
+    publications: [],
+    ...overrides,
+  }
+}
+
+describe('getSmmContentAttentionReasons', () => {
+  const now = new Date(2026, 7, 20)
+
+  it('returns no reasons once PUBLISHED, even with an overdue deadline', () => {
+    expect(getSmmContentAttentionReasons(attentionInput({ status: 'PUBLISHED', deadline: '2026-08-01' }), now)).toEqual([])
+  })
+
+  it('returns no reasons once CANCELLED', () => {
+    expect(getSmmContentAttentionReasons(attentionInput({ status: 'CANCELLED', deadline: '2026-08-01' }), now)).toEqual([])
+  })
+
+  it('flags OVERDUE_PRODUCTION when ContentItem.deadline has passed', () => {
+    const reasons = getSmmContentAttentionReasons(attentionInput({ status: 'SHOT', deadline: '2026-08-10' }), now)
+    expect(reasons).toContain('OVERDUE_PRODUCTION')
+  })
+
+  it('uses MontageProject.deadlineDate instead of ContentItem.deadline while IN_EDIT', () => {
+    // ContentItem.deadline давно прошёл, но реальный срок держит монтаж — он ещё не наступил.
+    const reasons = getSmmContentAttentionReasons(attentionInput({
+      status: 'IN_EDIT', deadline: '2026-08-01', editingProjectDeadlineDate: '2026-08-25',
+    }), now)
+    expect(reasons).not.toContain('OVERDUE_PRODUCTION')
+  })
+
+  it('flags OVERDUE_PUBLICATION for a past-due, non-published/non-cancelled publication', () => {
+    const reasons = getSmmContentAttentionReasons(attentionInput({
+      publications: [{ status: 'PLANNED', plannedPublishAt: '2026-08-10', url: null }],
+    }), now)
+    expect(reasons).toContain('OVERDUE_PUBLICATION')
+  })
+
+  it('does not flag a publication planned for tomorrow as overdue', () => {
+    const reasons = getSmmContentAttentionReasons(attentionInput({
+      publications: [{ status: 'PLANNED', plannedPublishAt: '2026-08-21', url: null }],
+    }), now)
+    expect(reasons).not.toContain('OVERDUE_PUBLICATION')
+  })
+
+  it('flags NO_EDITOR_IN_EDIT when IN_EDIT without an assigned MontageProject editor', () => {
+    const reasons = getSmmContentAttentionReasons(attentionInput({ status: 'IN_EDIT', editingProjectEditorId: null }), now)
+    expect(reasons).toContain('NO_EDITOR_IN_EDIT')
+  })
+
+  it('does not flag NO_EDITOR_IN_EDIT for statuses outside of IN_EDIT', () => {
+    const reasons = getSmmContentAttentionReasons(attentionInput({ status: 'IDEA', editingProjectEditorId: null }), now)
+    expect(reasons).not.toContain('NO_EDITOR_IN_EDIT')
+  })
+
+  it('flags NO_SOURCE_MATERIALS once a shoot is expected/done but nothing was uploaded', () => {
+    const reasons = getSmmContentAttentionReasons(attentionInput({ status: 'SHOT', hasSourceMaterials: false }), now)
+    expect(reasons).toContain('NO_SOURCE_MATERIALS')
+  })
+
+  it('does not flag NO_SOURCE_MATERIALS while still at IDEA/PLANNED (nothing to upload yet)', () => {
+    const reasons = getSmmContentAttentionReasons(attentionInput({ status: 'IDEA', hasSourceMaterials: false }), now)
+    expect(reasons).not.toContain('NO_SOURCE_MATERIALS')
+  })
+
+  it('flags PUBLICATION_READY_NO_URL when a READY publication is past its planned date without a URL', () => {
+    const reasons = getSmmContentAttentionReasons(attentionInput({
+      publications: [{ status: 'READY', plannedPublishAt: '2026-08-10', url: null }],
+    }), now)
+    expect(reasons).toContain('PUBLICATION_READY_NO_URL')
+  })
+
+  it('does not flag PUBLICATION_READY_NO_URL once a URL is present', () => {
+    const reasons = getSmmContentAttentionReasons(attentionInput({
+      publications: [{ status: 'READY', plannedPublishAt: '2026-08-10', url: 'https://instagram.com/p/x' }],
+    }), now)
+    expect(reasons).not.toContain('PUBLICATION_READY_NO_URL')
+  })
+
+  it('can return multiple simultaneous reasons', () => {
+    const reasons = getSmmContentAttentionReasons(attentionInput({
+      status: 'IN_EDIT', deadline: '2026-08-01', editingProjectEditorId: null, hasSourceMaterials: false,
+    }), now)
+    expect(reasons).toEqual(expect.arrayContaining(['OVERDUE_PRODUCTION', 'NO_EDITOR_IN_EDIT', 'NO_SOURCE_MATERIALS']))
+  })
+})
+
+describe('isSmmContentOperationallyOverdue', () => {
+  const now = new Date(2026, 7, 20)
+
+  it('is derived from the SAME reasons as getSmmContentAttentionReasons, not a second formula', () => {
+    const input = attentionInput({ status: 'SHOT', deadline: '2026-08-10' })
+    expect(isSmmContentOperationallyOverdue(input, now)).toBe(
+      getSmmContentAttentionReasons(input, now).includes('OVERDUE_PRODUCTION'),
+    )
+  })
+
+  it('is false when nothing is overdue', () => {
+    expect(isSmmContentOperationallyOverdue(attentionInput({ status: 'IDEA' }), now)).toBe(false)
+  })
+
+  it('is true for an overdue publication even without an overdue production deadline', () => {
+    const input = attentionInput({
+      status: 'SCHEDULED', publications: [{ status: 'PLANNED', plannedPublishAt: '2026-08-10', url: null }],
+    })
+    expect(isSmmContentOperationallyOverdue(input, now)).toBe(true)
+  })
+})
+
+function sortableRow(overrides: Partial<ReturnType<typeof baseSortableRow>> = {}) {
+  return { ...baseSortableRow(), ...overrides }
+}
+function baseSortableRow() {
+  return { id: 'x', isOverdue: false, sortDeadline: null as string | null, nearestPublicationDate: null as string | null, createdAt: '2026-08-01T00:00:00.000Z' }
+}
+
+describe('sortSmmProductionRowsDefault', () => {
+  it('puts overdue rows before everything else, regardless of deadline proximity', () => {
+    const rows = [
+      sortableRow({ id: 'soon', isOverdue: false, sortDeadline: '2026-08-21T00:00:00.000Z' }),
+      sortableRow({ id: 'overdue', isOverdue: true, sortDeadline: '2026-09-01T00:00:00.000Z' }),
+    ]
+    expect(sortSmmProductionRowsDefault(rows).map(r => r.id)).toEqual(['overdue', 'soon'])
+  })
+
+  it('orders by nearest sortDeadline when overdue status is equal', () => {
+    const rows = [
+      sortableRow({ id: 'later', sortDeadline: '2026-09-01T00:00:00.000Z' }),
+      sortableRow({ id: 'sooner', sortDeadline: '2026-08-21T00:00:00.000Z' }),
+    ]
+    expect(sortSmmProductionRowsDefault(rows).map(r => r.id)).toEqual(['sooner', 'later'])
+  })
+
+  it('falls back to nearest publication date when there is no deadline', () => {
+    const rows = [
+      sortableRow({ id: 'later-pub', nearestPublicationDate: '2026-09-01T00:00:00.000Z' }),
+      sortableRow({ id: 'sooner-pub', nearestPublicationDate: '2026-08-21T00:00:00.000Z' }),
+    ]
+    expect(sortSmmProductionRowsDefault(rows).map(r => r.id)).toEqual(['sooner-pub', 'later-pub'])
+  })
+
+  it('finally falls back to createdAt (oldest first) for rows with no date at all', () => {
+    const rows = [
+      sortableRow({ id: 'newer', createdAt: '2026-08-15T00:00:00.000Z' }),
+      sortableRow({ id: 'older', createdAt: '2026-08-01T00:00:00.000Z' }),
+    ]
+    expect(sortSmmProductionRowsDefault(rows).map(r => r.id)).toEqual(['older', 'newer'])
+  })
+})
+
+describe('computeSmmProductionKpis', () => {
+  function kpiRow(status: string, isOverdue = false) {
+    return { status: status as never, isOverdue }
+  }
+
+  it('groups IDEA/PLANNED/WAITING_FOR_SHOOT/SHOT under inProgress', () => {
+    const rows = [kpiRow('IDEA'), kpiRow('PLANNED'), kpiRow('WAITING_FOR_SHOOT'), kpiRow('SHOT')]
+    expect(computeSmmProductionKpis(rows).inProgress).toBe(4)
+  })
+
+  it('counts IN_EDIT/REVIEW separately', () => {
+    const rows = [kpiRow('IN_EDIT'), kpiRow('IN_EDIT'), kpiRow('REVIEW')]
+    const kpis = computeSmmProductionKpis(rows)
+    expect(kpis.inEdit).toBe(2)
+    expect(kpis.inReview).toBe(1)
+  })
+
+  it('groups APPROVED/SCHEDULED under readyToPublish', () => {
+    const rows = [kpiRow('APPROVED'), kpiRow('SCHEDULED')]
+    expect(computeSmmProductionKpis(rows).readyToPublish).toBe(2)
+  })
+
+  it('counts overdue independently of status', () => {
+    const rows = [kpiRow('IN_EDIT', true), kpiRow('REVIEW', true), kpiRow('PUBLISHED', false)]
+    expect(computeSmmProductionKpis(rows).overdue).toBe(2)
+  })
+})
+
+describe('matchesSmmProductionDateFilter', () => {
+  const now = new Date(2026, 7, 20) // четверг, 20.08.2026
+
+  it('ALL matches everything', () => {
+    expect(matchesSmmProductionDateFilter({ sortDeadline: null, nearestPublicationDate: null, isOverdue: false }, 'ALL', now)).toBe(true)
+  })
+
+  it('OVERDUE reads the derived isOverdue flag, not a recomputed date check', () => {
+    expect(matchesSmmProductionDateFilter({ sortDeadline: '2026-09-01', nearestPublicationDate: null, isOverdue: true }, 'OVERDUE', now)).toBe(true)
+    expect(matchesSmmProductionDateFilter({ sortDeadline: '2026-08-01', nearestPublicationDate: null, isOverdue: false }, 'OVERDUE', now)).toBe(false)
+  })
+
+  it('NONE matches rows with neither deadline nor publication date', () => {
+    expect(matchesSmmProductionDateFilter({ sortDeadline: null, nearestPublicationDate: null, isOverdue: false }, 'NONE', now)).toBe(true)
+    expect(matchesSmmProductionDateFilter({ sortDeadline: '2026-08-20', nearestPublicationDate: null, isOverdue: false }, 'NONE', now)).toBe(false)
+  })
+
+  it('TODAY matches the same calendar day as now', () => {
+    expect(matchesSmmProductionDateFilter({ sortDeadline: '2026-08-20T15:00:00.000Z', nearestPublicationDate: null, isOverdue: false }, 'TODAY', now)).toBe(true)
+    expect(matchesSmmProductionDateFilter({ sortDeadline: '2026-08-21', nearestPublicationDate: null, isOverdue: false }, 'TODAY', now)).toBe(false)
+  })
+
+  it('WEEK matches the current Monday-Sunday week', () => {
+    expect(matchesSmmProductionDateFilter({ sortDeadline: '2026-08-23', nearestPublicationDate: null, isOverdue: false }, 'WEEK', now)).toBe(true)
+    expect(matchesSmmProductionDateFilter({ sortDeadline: '2026-08-25', nearestPublicationDate: null, isOverdue: false }, 'WEEK', now)).toBe(false)
+  })
+
+  it('MONTH matches the current calendar month', () => {
+    expect(matchesSmmProductionDateFilter({ sortDeadline: '2026-08-31', nearestPublicationDate: null, isOverdue: false }, 'MONTH', now)).toBe(true)
+    expect(matchesSmmProductionDateFilter({ sortDeadline: '2026-09-01', nearestPublicationDate: null, isOverdue: false }, 'MONTH', now)).toBe(false)
+  })
+
+  it('falls back to nearestPublicationDate when there is no sortDeadline', () => {
+    expect(matchesSmmProductionDateFilter({ sortDeadline: null, nearestPublicationDate: '2026-08-20', isOverdue: false }, 'TODAY', now)).toBe(true)
+  })
+})
+
+function productionRow(overrides: Partial<Parameters<typeof filterSmmProductionRows>[0][number]> = {}) {
+  return {
+    smmProjectId: 'project-1', clientName: 'Diamed', contentCode: 'Д186', title: 'Ролик про УЗИ',
+    status: 'IN_EDIT' as const, serviceType: 'SHORT_VIDEO' as const, editorId: null as string | null, publicationPlatforms: [] as SmmPublicationPlatform[],
+    sortDeadline: null, nearestPublicationDate: null, isOverdue: false,
+    ...overrides,
+  }
+}
+
+describe('filterSmmProductionRows', () => {
+  it('with default filters keeps every row unchanged', () => {
+    const rows = [productionRow({ smmProjectId: 'a' }), productionRow({ smmProjectId: 'b' })]
+    expect(filterSmmProductionRows(rows, SMM_PRODUCTION_DEFAULT_FILTERS)).toHaveLength(2)
+  })
+
+  it('search matches contentCode, title, or client name (case-insensitive)', () => {
+    const rows = [productionRow({ contentCode: 'Д186', title: 'Ролик про УЗИ', clientName: 'Diamed' })]
+    expect(filterSmmProductionRows(rows, { ...SMM_PRODUCTION_DEFAULT_FILTERS, search: 'узи' })).toHaveLength(1)
+    expect(filterSmmProductionRows(rows, { ...SMM_PRODUCTION_DEFAULT_FILTERS, search: 'diamed' })).toHaveLength(1)
+    expect(filterSmmProductionRows(rows, { ...SMM_PRODUCTION_DEFAULT_FILTERS, search: 'нет такого' })).toHaveLength(0)
+  })
+
+  it('filters by smmProjectId (client)', () => {
+    const rows = [productionRow({ smmProjectId: 'a' }), productionRow({ smmProjectId: 'b' })]
+    expect(filterSmmProductionRows(rows, { ...SMM_PRODUCTION_DEFAULT_FILTERS, smmProjectId: 'a' })).toHaveLength(1)
+  })
+
+  it('filters by status', () => {
+    const rows = [productionRow({ status: 'IN_EDIT' }), productionRow({ status: 'REVIEW' })]
+    expect(filterSmmProductionRows(rows, { ...SMM_PRODUCTION_DEFAULT_FILTERS, status: 'REVIEW' })).toHaveLength(1)
+  })
+
+  it('filters by editorId', () => {
+    const rows = [productionRow({ editorId: 'ed-1' }), productionRow({ editorId: 'ed-2' })]
+    expect(filterSmmProductionRows(rows, { ...SMM_PRODUCTION_DEFAULT_FILTERS, editorId: 'ed-1' })).toHaveLength(1)
+  })
+
+  it('filters by platform — matches rows that have a publication on that platform', () => {
+    const rows = [
+      productionRow({ publicationPlatforms: ['INSTAGRAM'] }),
+      productionRow({ publicationPlatforms: ['TELEGRAM'] }),
+    ]
+    expect(filterSmmProductionRows(rows, { ...SMM_PRODUCTION_DEFAULT_FILTERS, platform: 'INSTAGRAM' })).toHaveLength(1)
+  })
+
+  it('readyToPublishOnly keeps only APPROVED/SCHEDULED (matches the KPI grouping)', () => {
+    const rows = [productionRow({ status: 'APPROVED' }), productionRow({ status: 'SCHEDULED' }), productionRow({ status: 'IN_EDIT' })]
+    expect(filterSmmProductionRows(rows, { ...SMM_PRODUCTION_DEFAULT_FILTERS, readyToPublishOnly: true })).toHaveLength(2)
+  })
+
+  it('combines multiple filters with AND semantics', () => {
+    const rows = [
+      productionRow({ smmProjectId: 'a', status: 'IN_EDIT' }),
+      productionRow({ smmProjectId: 'a', status: 'REVIEW' }),
+      productionRow({ smmProjectId: 'b', status: 'IN_EDIT' }),
+    ]
+    const result = filterSmmProductionRows(rows, { ...SMM_PRODUCTION_DEFAULT_FILTERS, smmProjectId: 'a', status: 'IN_EDIT' })
+    expect(result).toHaveLength(1)
   })
 })

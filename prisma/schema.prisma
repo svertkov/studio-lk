@@ -2040,6 +2040,13 @@ model SmmContentItem {
   publications    SmmPublication[]
   scheduleLinks   SmmContentScheduleLink[]
 
+  // 2B, ТЗ п.37: contentCode уникален В ПРЕДЕЛАХ проекта, не глобально
+  // (у разных клиентов легитимно могут быть одинаковые коды). Postgres
+  // не считает несколько NULL конфликтующими в составном unique-индексе —
+  // единицы контента без кода по-прежнему создаются свободно. Добавлено
+  // только после проверки прод-данных: на момент 2B в проде 0 строк
+  // SmmContentItem, конфликтов быть не может (см. docs/business/SMM.md).
+  @@unique([smmProjectId, contentCode])
   @@index([smmProjectId])
   @@index([status])
   @@index([editorId])

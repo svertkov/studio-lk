@@ -17,10 +17,12 @@ interface Props {
   content: SmmContentItemDTO[]
   onGoToClients: () => void
   onGoToPayouts: () => void
-  onGoToContent: () => void
 }
 
-export default function SmmOverviewTab({ stats, upcomingPayments, unpaidWork, content, onGoToClients, onGoToPayouts, onGoToContent }: Props) {
+// "Контент в производстве"/"Просрочено" вели на бывшую вкладку «Контент»
+// (setTab) — теперь это реальная ссылка на /admin/smm/production (2B, п.3),
+// глобальный операционный экран, а не локальное состояние вкладки хаба.
+export default function SmmOverviewTab({ stats, upcomingPayments, unpaidWork, content, onGoToClients, onGoToPayouts }: Props) {
   if (!stats) {
     return <p className="text-zinc-500 text-sm">Не удалось загрузить статистику SMM.</p>
   }
@@ -38,8 +40,8 @@ export default function SmmOverviewTab({ stats, upcomingPayments, unpaidWork, co
       <div className={METRIC_GRID_CLASSNAME}>
         <MetricCard icon={Wallet} label="Ожидается от клиентов" value={formatSmmMoney(stats.expectedFromClients)} subtitle="Платежи в этом месяце" />
         <MetricCard icon={TrendingDown} label="К выплате команде" value={formatSmmMoney(stats.payableToTeam)} subtitle="Подтверждено, не оплачено" onClick={onGoToPayouts} />
-        <MetricCard icon={Film} label="Контент в производстве" value={String(stats.contentInProduction)} subtitle="Единиц контента" onClick={onGoToContent} />
-        <MetricCard icon={AlertTriangle} label="Просрочено" value={String(stats.overdueContent)} subtitle="Дедлайн прошёл, не завершено" onClick={onGoToContent} />
+        <MetricCard icon={Film} label="Контент в производстве" value={String(stats.contentInProduction)} subtitle="Единиц контента" href="/admin/smm/production" />
+        <MetricCard icon={AlertTriangle} label="Просрочено" value={String(stats.overdueContent)} subtitle="Дедлайн прошёл, не завершено" href="/admin/smm/production" />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -93,16 +95,16 @@ export default function SmmOverviewTab({ stats, upcomingPayments, unpaidWork, co
       </div>
 
       <div className="bg-amber-950/20 border border-amber-600/40 rounded-xl overflow-hidden">
-        <button type="button" onClick={onGoToContent} className="w-full flex items-center gap-3 px-5 py-3.5 hover:bg-amber-950/30 transition-colors text-left">
+        <Link href="/admin/smm/production" className="w-full flex items-center gap-3 px-5 py-3.5 hover:bg-amber-950/30 transition-colors text-left">
           <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0" />
           <p className="text-amber-200 text-sm flex-1">
             {stats.overdueContent === 0 ? 'Проблемных задач нет' : `${stats.overdueContent} ${stats.overdueContent === 1 ? 'единица контента просрочена' : 'единиц контента просрочено'}`}
           </p>
-        </button>
+        </Link>
         {overdueContent.length > 0 && (
           <div className="divide-y divide-amber-900/30 border-t border-amber-900/30">
             {overdueContent.map(c => (
-              <Link key={c.id} href={`/admin/smm/${c.smmProjectId}`} className="flex items-center justify-between gap-3 px-5 py-2.5 hover:bg-amber-950/20 transition-colors">
+              <Link key={c.id} href={`/admin/smm/production?openContentId=${c.id}`} className="flex items-center justify-between gap-3 px-5 py-2.5 hover:bg-amber-950/20 transition-colors">
                 <p className="text-zinc-200 text-sm truncate">{c.title ?? SMM_CONTENT_STATUS_LABELS[c.status]}</p>
                 <span className="text-[11px] text-amber-300 bg-amber-900/30 rounded-full px-2 py-0.5 whitespace-nowrap flex-shrink-0">
                   Дедлайн {c.deadline ? formatDate(c.deadline) : '—'}

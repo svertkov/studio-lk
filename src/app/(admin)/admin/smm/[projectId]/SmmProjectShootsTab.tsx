@@ -73,7 +73,10 @@ export default function SmmProjectShootsTab({ smmProjectId, scheduleLinks, setSc
 
       <div className="bg-zinc-900 border border-zinc-800 rounded-xl divide-y divide-zinc-800/60 overflow-hidden">
         {scheduleLinks.map(link => {
-          const relatedContent = contentItems.filter(c => c.scheduleEventId === link.scheduleEventId)
+          // c.scheduleEventId — deprecated одиночное поле (до 2A), больше не
+          // заполняется; реальный источник связи content↔съёмка — массив
+          // scheduleEvents (SmmContentScheduleLink, см. schema.prisma).
+          const relatedContent = contentItems.filter(c => c.scheduleEvents.some(e => e.scheduleEventId === link.scheduleEventId))
           return (
             <div key={link.id} className="px-5 py-3">
               <div className="flex items-center justify-between gap-3">

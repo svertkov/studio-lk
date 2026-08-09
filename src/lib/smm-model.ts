@@ -9,7 +9,7 @@ import type {
   SmmProjectStatus, SmmBillingPeriodType, SmmServiceType, SmmPackageUnit, SmmPackagePeriod,
   SmmContentStatus, SmmClientApprovalStatus, SmmMaterialCategory, SmmMaterialType, SmmProjectRole, SmmWorkType,
   SmmWorkStatus, SmmWorkPaymentStatus, SmmPayoutType, SmmClientPaymentStatus,
-  SmmPublicationPlatform, SmmPublicationStatus, SmmMetricType, SmmMetricSource,
+  SmmPublicationPlatform, SmmPublicationStatus, SmmMetricType, SmmMetricSource, MontageStatus,
 } from '@prisma/client'
 import type { SmmProjectDTO, SmmPackageItemDTO, SmmContentItemDTO, SmmProjectMemberDTO } from '@/lib/actions/smm'
 
@@ -388,4 +388,296 @@ export function getLatestMetricByType<T extends MetricSnapshot>(metrics: T[]): P
     }
   }
   return latest
+}
+
+// ============================================================
+// PRODUCTION (2B, docs/business/SMM.md, «Production») — глобальный
+// операционный экран SMM → Производство. Вся derived-логика строки
+// (просрочка/«требует внимания»/ближайшая публикация/короткое состояние
+// монтажа/индикатор материалов/сортировка) живёт здесь одним источником —
+// ТЗ 2B, п.30: "не размазывать логику по React-компонентам".
+// ============================================================
+
+// Короткое состояние реального MontageProject для компактной колонки
+// «Монтаж» (ТЗ 2B, п.5) — НЕ второй статус-система, чистая свёртка уже
+// существующего MontageStatus в 4 операционные группы.
+export function getContentMontageShortState(editingProjectStatus: MontageStatus | null): string {
+  if (!editingProjectStatus) return 'Не создан'
+  if (editingProjectStatus === 'NEW' || editingProjectStatus === 'IN_PROGRESS') return 'В работе'
+  if (editingProjectStatus === 'IN_REVIEW' || editingProjectStatus === 'REVISIONS') return 'На проверке'
+  if (editingProjectStatus === 'DELIVERED') return 'Готово'
+  return 'Отменён'
+}
+
+// Ближайшая ПЛАНОВАЯ публикация среди непубликаций-CANCELLED (ТЗ 2B, п.5:
+// "если публикаций несколько — показать ближайшую дату и количество
+// площадок"). platformCount — все активные публикации, не только те, что
+// совпадают датой с ближайшей.
+export interface SmmNearestPublicationInfo {
+  date: string
+  platformCount: number
+}
+
+export function getNearestPublicationInfo(
+  publications: { plannedPublishAt: string | null; status: SmmPublicationStatus }[],
+): SmmNearestPublicationInfo | null {
+  const active = publications.filter(p => p.status !== 'CANCELLED')
+  if (active.length === 0) return null
+  const withDate = active
+    .filter((p): p is { plannedPublishAt: string; status: SmmPublicationStatus } => p.plannedPublishAt !== null)
+    .sort((a, b) => new Date(a.plannedPublishAt).getTime() - new Date(b.plannedPublishAt).getTime())
+  if (withDate.length === 0) return null
+  return { date: withDate[0].plannedPublishAt, platformCount: active.length }
+}
+
+// Компактный индикатор материалов для колонки «Материалы» (ТЗ 2B, п.5: "не
+// выводить длинные URL, только есть/нет исходников, есть/нет master").
+// Master учитывает ТОЛЬКО SmmMaterialLink здесь — сигнал от
+// MontageProject.deliveryUrl (тоже валидный источник "master есть", см.
+// SMM.md, «Source/Master/Publication URL») подмешивается вызывающим кодом
+// (actions/smm.ts, при сборке строки), а не этой функцией — она не знает
+// про MontageProject и не должна.
+const SOURCE_MATERIAL_TYPES: SmmMaterialType[] = ['SOURCE_VIDEO', 'SOURCE_AUDIO', 'SELECTED_SOURCE']
+const SOURCE_MATERIAL_CATEGORIES: SmmMaterialCategory[] = ['SOURCE', 'SOURCE_SORTED']
+const MASTER_MATERIAL_CATEGORIES: SmmMaterialCategory[] = ['FINISHED_SHORT', 'FINISHED_LONG']
+
+export interface SmmContentMaterialsIndicator {
+  hasSource: boolean
+  hasMaster: boolean
+}
+
+export function computeContentMaterialsIndicator(
+  materialLinks: { materialType: SmmMaterialType | null; category: SmmMaterialCategory }[],
+): SmmContentMaterialsIndicator {
+  const hasSource = materialLinks.some(m =>
+    (m.materialType && SOURCE_MATERIAL_TYPES.includes(m.materialType)) || SOURCE_MATERIAL_CATEGORIES.includes(m.category)
+  )
+  const hasMaster = materialLinks.some(m => m.materialType === 'MASTER' || MASTER_MATERIAL_CATEGORIES.includes(m.category))
+  return { hasSource, hasMaster }
+}
+
+// «Требует внимания» (ТЗ 2B, п.31) — derived state, НЕ поле в БД. Общий
+// вход для операционной просрочки (isSmmContentOperationallyOverdue ниже
+// выводится из ТЕХ ЖЕ причин, не пересчитывает дедлайн заново отдельной
+// формулой — единственный источник, ТЗ п.30: "не размазывать логику").
+export type SmmContentAttentionReason =
+  | 'OVERDUE_PRODUCTION' | 'OVERDUE_PUBLICATION' | 'NO_SOURCE_MATERIALS' | 'NO_EDITOR_IN_EDIT' | 'PUBLICATION_READY_NO_URL'
+
+export const SMM_CONTENT_ATTENTION_LABELS: Record<SmmContentAttentionReason, string> = {
+  OVERDUE_PRODUCTION: 'Просрочен дедлайн производства/монтажа',
+  OVERDUE_PUBLICATION: 'Просрочена публикация',
+  NO_SOURCE_MATERIALS: 'Нет исходников',
+  NO_EDITOR_IN_EDIT: 'В монтаже без монтажёра',
+  PUBLICATION_READY_NO_URL: 'Публикация готова, но без ссылки после срока',
+}
+
+export interface SmmContentAttentionInput {
+  status: SmmContentStatus
+  // "Релевантный" дедлайн производства — ContentItem.deadline, ЗА ИСКЛЮЧЕНИЕМ
+  // статуса IN_EDIT, где реальный срок держит MontageProject.deadlineDate
+  // (SMM.md, «MontageProject остаётся source of truth для монтажа») —
+  // именно поэтому оба передаются отдельно, а не заранее "схлопнуты" одним
+  // числом на вызывающей стороне.
+  deadline: string | null
+  editingProjectStatus: MontageStatus | null
+  editingProjectDeadlineDate: string | null
+  editingProjectEditorId: string | null
+  hasSourceMaterials: boolean
+  publications: { status: SmmPublicationStatus; plannedPublishAt: string | null; url: string | null }[]
+}
+
+// Статусы, для которых источники ещё не обязаны существовать (идея/план/
+// ожидание съёмки) — тот же принцип, что MONTAGE_ATTENTION_EXEMPT_STATUSES
+// в montage-model.ts: не ругаться на пустую карточку, которую только что создали.
+const CONTENT_SOURCE_REQUIRED_STATUSES: SmmContentStatus[] = ['WAITING_FOR_SHOOT', 'SHOT', 'IN_EDIT']
+
+export function getSmmContentAttentionReasons(item: SmmContentAttentionInput, now: Date = new Date()): SmmContentAttentionReason[] {
+  if (item.status === 'CANCELLED' || item.status === 'PUBLISHED') return []
+  const reasons: SmmContentAttentionReason[] = []
+
+  const relevantDeadline = item.status === 'IN_EDIT' && item.editingProjectDeadlineDate ? item.editingProjectDeadlineDate : item.deadline
+  if (relevantDeadline && new Date(relevantDeadline) < now) reasons.push('OVERDUE_PRODUCTION')
+
+  if (item.publications.some(p => p.plannedPublishAt && new Date(p.plannedPublishAt) < now && p.status !== 'PUBLISHED' && p.status !== 'CANCELLED')) {
+    reasons.push('OVERDUE_PUBLICATION')
+  }
+
+  if (item.status === 'IN_EDIT' && !item.editingProjectEditorId) reasons.push('NO_EDITOR_IN_EDIT')
+
+  if (CONTENT_SOURCE_REQUIRED_STATUSES.includes(item.status) && !item.hasSourceMaterials) {
+    reasons.push('NO_SOURCE_MATERIALS')
+  }
+
+  if (item.publications.some(p => p.status === 'READY' && p.plannedPublishAt && new Date(p.plannedPublishAt) < now && !p.url)) {
+    reasons.push('PUBLICATION_READY_NO_URL')
+  }
+
+  return reasons
+}
+
+// Операционная просрочка (ТЗ 2B, п.30) — ШИРЕ, чем isSmmContentOverdue выше
+// (та смотрит только на ContentItem.deadline, используется дашбордом этапа
+// 1/2A без изменений). Здесь же учитывается ещё и дедлайн MontageProject, и
+// просроченные публикации — производная ОТ getSmmContentAttentionReasons
+// (единственный источник причин, не вторая параллельная формула).
+export function isSmmContentOperationallyOverdue(item: SmmContentAttentionInput, now: Date = new Date()): boolean {
+  const reasons = getSmmContentAttentionReasons(item, now)
+  return reasons.includes('OVERDUE_PRODUCTION') || reasons.includes('OVERDUE_PUBLICATION')
+}
+
+// Дефолтная сортировка строки Production (ТЗ 2B, п.10): просроченные →
+// ближайший дедлайн → ближайшая публикация → остальное по дате создания.
+// Строка сама несёт уже посчитанные isOverdue/sortDeadline/
+// nearestPublicationDate — функция ничего не пересчитывает, только
+// упорядочивает (та же экономия, что в остальном модуле).
+export interface SmmProductionSortableRow {
+  isOverdue: boolean
+  sortDeadline: string | null
+  nearestPublicationDate: string | null
+  createdAt: string
+}
+
+export function sortSmmProductionRowsDefault<T extends SmmProductionSortableRow>(rows: T[]): T[] {
+  return [...rows].sort((a, b) => {
+    if (a.isOverdue !== b.isOverdue) return a.isOverdue ? -1 : 1
+    const ad = a.sortDeadline ? new Date(a.sortDeadline).getTime() : Infinity
+    const bd = b.sortDeadline ? new Date(b.sortDeadline).getTime() : Infinity
+    if (ad !== bd) return ad - bd
+    const ap = a.nearestPublicationDate ? new Date(a.nearestPublicationDate).getTime() : Infinity
+    const bp = b.nearestPublicationDate ? new Date(b.nearestPublicationDate).getTime() : Infinity
+    if (ap !== bp) return ap - bp
+    return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+  })
+}
+
+// KPI-строка над Production (ТЗ 2B, п.32) — компактные счётчики, не
+// dashboard-карточки. Считается из уже загруженных строк на клиенте, не
+// отдельным SQL-агрегатом (тот же объём данных, который и так на экране).
+export interface SmmProductionKpis {
+  inProgress: number
+  inEdit: number
+  inReview: number
+  readyToPublish: number
+  overdue: number
+}
+
+const KPI_IN_PROGRESS_STATUSES: SmmContentStatus[] = ['IDEA', 'PLANNED', 'WAITING_FOR_SHOOT', 'SHOT']
+
+// "Готово к публикации" — та же группа статусов, что и в KPI-счётчике ниже,
+// и в quick-пресете "Готово к публикации" таблицы (ProductionView) — один
+// источник, не третья копия того же списка.
+export const SMM_READY_TO_PUBLISH_STATUSES: SmmContentStatus[] = ['APPROVED', 'SCHEDULED']
+
+export function computeSmmProductionKpis<T extends { status: SmmContentStatus; isOverdue: boolean }>(rows: T[]): SmmProductionKpis {
+  return {
+    inProgress: rows.filter(r => KPI_IN_PROGRESS_STATUSES.includes(r.status)).length,
+    inEdit: rows.filter(r => r.status === 'IN_EDIT').length,
+    inReview: rows.filter(r => r.status === 'REVIEW').length,
+    readyToPublish: rows.filter(r => SMM_READY_TO_PUBLISH_STATUSES.includes(r.status)).length,
+    overdue: rows.filter(r => r.isOverdue).length,
+  }
+}
+
+// ============================================================
+// Фильтрация и поиск таблицы Production (ТЗ 2B, п.7-9) — чистая функция,
+// не размазанная по ProductionView/ProductionTable (тот же принцип, что и
+// у derived-полей выше). URL-синхронизация состояния фильтров живёт в
+// ProductionView (клиентские router.replace в обработчиках, без useEffect —
+// SMM.md, «set-state-in-effect»), сама фильтрация — здесь.
+// ============================================================
+
+export type SmmProductionDateFilter = 'ALL' | 'TODAY' | 'WEEK' | 'MONTH' | 'OVERDUE' | 'NONE'
+
+export const SMM_PRODUCTION_DATE_FILTER_LABELS: Record<SmmProductionDateFilter, string> = {
+  ALL: 'Все даты',
+  TODAY: 'Сегодня',
+  WEEK: 'Эта неделя',
+  MONTH: 'Этот месяц',
+  OVERDUE: 'Просрочено',
+  NONE: 'Без даты',
+}
+
+interface DateFilterableRow {
+  sortDeadline: string | null
+  nearestPublicationDate: string | null
+  isOverdue: boolean
+}
+
+function startOfWeek(d: Date): Date {
+  const day = (d.getDay() + 6) % 7 // понедельник = 0
+  const start = new Date(d.getFullYear(), d.getMonth(), d.getDate() - day)
+  start.setHours(0, 0, 0, 0)
+  return start
+}
+function endOfWeek(d: Date): Date {
+  const start = startOfWeek(d)
+  const end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 6)
+  end.setHours(23, 59, 59, 999)
+  return end
+}
+
+// "Релевантная" дата строки — ближайший дедлайн производства/монтажа, а при
+// его отсутствии ближайшая плановая публикация (тот же приоритет, что уже
+// зашит в sortDeadline на стороне actions/smm.ts) — Сегодня/Неделя/Месяц
+// фильтруют по НЕЙ, не по двум датам по отдельности.
+export function matchesSmmProductionDateFilter(row: DateFilterableRow, filter: SmmProductionDateFilter, now: Date = new Date()): boolean {
+  if (filter === 'ALL') return true
+  if (filter === 'OVERDUE') return row.isOverdue
+  const relevant = row.sortDeadline ?? row.nearestPublicationDate
+  if (filter === 'NONE') return relevant === null
+  if (!relevant) return false
+  const d = new Date(relevant)
+  if (filter === 'TODAY') return d.toDateString() === now.toDateString()
+  if (filter === 'WEEK') return d >= startOfWeek(now) && d <= endOfWeek(now)
+  if (filter === 'MONTH') return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth()
+  return true
+}
+
+export interface SmmProductionFilters {
+  search: string
+  smmProjectId: string | 'ALL'
+  status: SmmContentStatus | 'ALL'
+  serviceType: SmmServiceType | 'ALL'
+  editorId: string | 'ALL'
+  dateFilter: SmmProductionDateFilter
+  platform: SmmPublicationPlatform | 'ALL'
+  // Отдельный тумблер, а не значение статус-фильтра (ТЗ 2B, п.8: пресет
+  // "Готово к публикации" — это ДВА статуса сразу, APPROVED и SCHEDULED,
+  // одиночный select статуса такое выразить не может без второй enum-копии).
+  readyToPublishOnly: boolean
+}
+
+export const SMM_PRODUCTION_DEFAULT_FILTERS: SmmProductionFilters = {
+  search: '', smmProjectId: 'ALL', status: 'ALL', serviceType: 'ALL', editorId: 'ALL', dateFilter: 'ALL', platform: 'ALL', readyToPublishOnly: false,
+}
+
+interface SmmProductionFilterableRow extends DateFilterableRow {
+  smmProjectId: string
+  clientName: string | null
+  contentCode: string | null
+  title: string | null
+  status: SmmContentStatus
+  serviceType: SmmServiceType
+  editorId: string | null
+  publicationPlatforms: SmmPublicationPlatform[]
+}
+
+export function filterSmmProductionRows<T extends SmmProductionFilterableRow>(
+  rows: T[], filters: SmmProductionFilters, now: Date = new Date(),
+): T[] {
+  const q = filters.search.trim().toLowerCase()
+  return rows.filter(r => {
+    if (q) {
+      const haystack = [r.contentCode, r.title, r.clientName].filter(Boolean).join(' ').toLowerCase()
+      if (!haystack.includes(q)) return false
+    }
+    if (filters.smmProjectId !== 'ALL' && r.smmProjectId !== filters.smmProjectId) return false
+    if (filters.status !== 'ALL' && r.status !== filters.status) return false
+    if (filters.serviceType !== 'ALL' && r.serviceType !== filters.serviceType) return false
+    if (filters.editorId !== 'ALL' && r.editorId !== filters.editorId) return false
+    if (filters.platform !== 'ALL' && !r.publicationPlatforms.includes(filters.platform)) return false
+    if (filters.readyToPublishOnly && !SMM_READY_TO_PUBLISH_STATUSES.includes(r.status)) return false
+    if (!matchesSmmProductionDateFilter(r, filters.dateFilter, now)) return false
+    return true
+  })
 }

@@ -7,16 +7,20 @@
 import { revalidatePath } from 'next/cache'
 import { prisma } from '@/lib/prisma'
 import { auth } from '@/auth'
-import type {
-  SmmProjectStatus, SmmBillingPeriodType, SmmServiceType, SmmPackageUnit, SmmPackagePeriod,
-  SmmContentStatus, SmmClientApprovalStatus, SmmMaterialCategory, SmmMaterialType, SmmProjectRole, SmmWorkType,
-  SmmWorkStatus, SmmWorkPaymentStatus, SmmPayoutType, SmmClientPaymentStatus, MontageStatus, PaymentMethod, EventType,
-  SmmPublicationPlatform, SmmPublicationStatus, SmmMetricType, SmmMetricSource,
+import {
+  Prisma,
+  type SmmProjectStatus, type SmmBillingPeriodType, type SmmServiceType, type SmmPackageUnit, type SmmPackagePeriod,
+  type SmmContentStatus, type SmmClientApprovalStatus, type SmmMaterialCategory, type SmmMaterialType, type SmmProjectRole, type SmmWorkType,
+  type SmmWorkStatus, type SmmWorkPaymentStatus, type SmmPayoutType, type SmmClientPaymentStatus, type MontageStatus, type PaymentMethod, type EventType,
+  type SmmPublicationPlatform, type SmmPublicationStatus, type SmmMetricType, type SmmMetricSource,
 } from '@prisma/client'
 import { createMontageProject } from '@/lib/actions/montage'
 import { MONTAGE_STATUS_LABELS } from '@/lib/montage-model'
 import { writeAuditLog, resolveValidUserId } from '@/lib/audit'
-import { wouldCreateContentParentCycle } from '@/lib/smm-model'
+import {
+  wouldCreateContentParentCycle, getContentMontageShortState, getNearestPublicationInfo, computeContentMaterialsIndicator,
+  getSmmContentAttentionReasons, type SmmContentAttentionReason,
+} from '@/lib/smm-model'
 
 async function requireStaffSession(): Promise<{ ok: true; userId: string | null } | { ok: false; error: string }> {
   try {
@@ -580,6 +584,9 @@ export async function createSmmContentItem(smmProjectId: string, input: SmmConte
     revalidateSmmPaths(project.clientId, smmProjectId)
     return { ok: true, data: toContentItemDTO(created) }
   } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+      return { ok: false, error: 'Такой Content Code уже используется в этом проекте' }
+    }
     console.error('[createSmmContentItem]', e)
     return { ok: false, error: 'Не удалось создать единицу контента' }
   }
@@ -631,6 +638,9 @@ export async function updateSmmContentItem(id: string, input: SmmContentItemInpu
     revalidateSmmPaths(updated.smmProject.clientId, updated.smmProjectId)
     return { ok: true, data: toContentItemDTO(updated) }
   } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+      return { ok: false, error: 'Такой Content Code уже используется в этом проекте' }
+    }
     console.error('[updateSmmContentItem]', e)
     return { ok: false, error: 'Не удалось обновить единицу контента' }
   }
@@ -653,7 +663,32 @@ export async function deleteSmmContentItem(id: string): Promise<{ ok: true } | {
 // MontageProject (переиспользует createMontageProject из actions/montage.ts
 // напрямую, не копирует его логику) и связывает его с этой единицей
 // контента. Не создаёт вторую независимую систему монтажа внутри SMM.
-export async function linkSmmContentToMontage(contentItemId: string): Promise<{ ok: true; data: SmmContentItemDTO } | { ok: false; error: string }> {
+// Статусы, из которых передача в монтаж переводит контент в IN_EDIT
+// автоматически (ТЗ 2B, «Передать в монтаж») — расширено с этапа 1
+// (раньше только IDEA/PLANNED) реальным найденным пробелом: контент,
+// переданный в монтаж уже ПОСЛЕ съёмки (WAITING_FOR_SHOOT/SHOT — обычный
+// рабочий путь), раньше оставался в старом статусе, хотя монтаж уже начался.
+const STATUSES_AUTO_TRANSITION_TO_IN_EDIT: SmmContentStatus[] = ['IDEA', 'PLANNED', 'WAITING_FOR_SHOOT', 'SHOT']
+
+export interface LinkSmmContentToMontageInput {
+  // undefined — использовать уже назначенного ContentItem.editorId (если
+  // есть); null — явно передать в монтаж без монтажёра; string — назначить.
+  editorId?: string | null
+  deadlineDate?: string | null
+  // Оплачиваемая работа создаётся ТОЛЬКО когда пользователь явно указал
+  // сумму — ТЗ 2B, п.26: "не создавать неоплачиваемую работу с 0₽ просто
+  // ради автоматизации". Без workAmount SmmWorkItem не создаётся вовсе.
+  workAmount?: number | null
+  workType?: SmmWorkType
+}
+
+// "Контент передан монтажёру" (SMM.md, п.13) — создаёт САМОСТОЯТЕЛЬНЫЙ
+// MontageProject (переиспользует createMontageProject из actions/montage.ts
+// напрямую, не копирует его логику) и связывает его с этой единицей
+// контента. Не создаёт вторую независимую систему монтажа внутри SMM.
+export async function linkSmmContentToMontage(
+  contentItemId: string, input: LinkSmmContentToMontageInput = {},
+): Promise<{ ok: true; data: SmmContentItemDTO } | { ok: false; error: string }> {
   const authResult = await requireStaffSession()
   if (!authResult.ok) return { ok: false, error: authResult.error }
   try {
@@ -664,17 +699,46 @@ export async function linkSmmContentToMontage(contentItemId: string): Promise<{ 
     if (!content) return { ok: false, error: 'Единица контента не найдена' }
     if (content.editingProjectId) return { ok: false, error: 'Контент уже связан с проектом монтажа' }
 
+    const montageEditorId = input.editorId !== undefined ? input.editorId : content.editorId
+
     const montageResult = await createMontageProject({
       clientId: content.smmProject.clientId,
       title: content.title || undefined,
+      description: content.description || undefined,
+      requirements: content.productionBrief || undefined,
+      editorId: montageEditorId || undefined,
+      deadlineType: input.deadlineDate ? 'FIXED_DATE' : undefined,
+      deadlineDate: input.deadlineDate || undefined,
     })
     if (!montageResult.ok) return { ok: false, error: montageResult.error }
 
     const updated = await prisma.smmContentItem.update({
       where: { id: contentItemId },
-      data: { editingProjectId: montageResult.data.id, status: content.status === 'IDEA' || content.status === 'PLANNED' ? 'IN_EDIT' : content.status },
+      data: {
+        editingProjectId: montageResult.data.id,
+        status: STATUSES_AUTO_TRANSITION_TO_IN_EDIT.includes(content.status) ? 'IN_EDIT' : content.status,
+      },
       include: CONTENT_ITEM_INCLUDE,
     })
+
+    if (input.workAmount != null && montageEditorId) {
+      const createdById = await resolveValidUserId(prisma, authResult.userId)
+      await prisma.smmWorkItem.create({
+        data: {
+          smmProjectId: content.smmProjectId,
+          performerId: montageEditorId,
+          contentItemId,
+          editingProjectId: montageResult.data.id,
+          workType: input.workType ?? 'EDITING',
+          workDate: new Date(),
+          amount: input.workAmount,
+          status: 'DRAFT',
+          createdById,
+        },
+      })
+      revalidatePath('/admin/smm/payouts')
+    }
+
     revalidateSmmPaths(content.smmProject.clientId, content.smmProjectId)
     revalidatePath('/admin/editing')
     return { ok: true, data: toContentItemDTO(updated) }
@@ -807,7 +871,14 @@ export async function addSmmPublication(contentItemId: string, input: SmmPublica
   }
 }
 
-export async function updateSmmPublication(id: string, input: SmmPublicationInput): Promise<{ ok: true; data: SmmPublicationDTO } | { ok: false; error: string }> {
+// Partial<...> — эта функция ВСЕГДА была частичным обновлением (каждое
+// поле применяется только когда input.field !== undefined, см. ниже), но
+// была типизирована как требующая обязательный platform — реальная
+// неточность типа, обнаруженная 2B при первом genuинно частичном вызове
+// (быстрая публикация меняет только status/url/publishedAt). addSmmPublication
+// (создание) продолжает требовать полный SmmPublicationInput — это разные
+// сигнатуры не случайно.
+export async function updateSmmPublication(id: string, input: Partial<SmmPublicationInput>): Promise<{ ok: true; data: SmmPublicationDTO } | { ok: false; error: string }> {
   const authResult = await requireStaffSession()
   if (!authResult.ok) return { ok: false, error: authResult.error }
   try {
@@ -1734,5 +1805,301 @@ export async function getSmmDashboardStats(): Promise<{ ok: true; data: SmmDashb
   } catch (e) {
     console.error('[getSmmDashboardStats]', e)
     return { ok: false, error: 'Не удалось загрузить статистику SMM' }
+  }
+}
+
+// ============================================================
+// PRODUCTION (2B, docs/business/SMM.md, «Production») — глобальный
+// операционный экран SMM → Производство, читает SmmContentItem ВСЕХ
+// активных SmmProject разом. Два РАЗНЫХ query/DTO по объёму данных (ТЗ 2B,
+// п.4/51): getSmmProductionItems — лёгкая строка таблицы (без
+// productionBrief/полных метрик/содержимого материалов/WorkItem),
+// getSmmContentItemDetail — полная карточка (для канонического
+// SmmContentItemCard), запрашивается только при открытии ОДНОЙ единицы
+// контента, не для всего списка разом.
+// ============================================================
+
+export interface SmmProductionRowDTO {
+  id: string
+  smmProjectId: string
+  smmProjectClientId: string
+  clientName: string | null
+  contentCode: string | null
+  title: string | null
+  serviceType: SmmServiceType
+  customServiceType: string | null
+  status: SmmContentStatus
+  responsibleUserName: string | null
+  // Эффективный монтажёр (editingProject.editorId ?? ContentItem.editorId,
+  // тот же приоритет, что у editorName) — нужен отдельно от имени для
+  // фильтра "Монтажёр" в таблице (ТЗ 2B, п.7).
+  editorId: string | null
+  editorName: string | null
+  editingProjectId: string | null
+  editingProjectStatus: MontageStatus | null
+  montageShortState: string
+  deadline: string | null
+  editingProjectDeadlineDate: string | null
+  sortDeadline: string | null
+  nearestPublicationDate: string | null
+  publicationPlatformCount: number
+  // Уникальные площадки среди НЕ-CANCELLED публикаций — фильтр "Площадка"
+  // означает наличие соответствующей Publication (ТЗ 2B, п.7).
+  publicationPlatforms: SmmPublicationPlatform[]
+  hasSourceMaterials: boolean
+  hasMasterMaterial: boolean
+  isOverdue: boolean
+  attentionReasons: SmmContentAttentionReason[]
+  createdAt: string
+}
+
+const PRODUCTION_ROW_INCLUDE = {
+  smmProject: { select: { clientId: true, client: { select: { name: true } } } },
+  responsibleUser: { select: { name: true, email: true } },
+  editor: { select: { displayName: true } },
+  editingProject: {
+    select: { status: true, editorId: true, editor: { select: { displayName: true } }, deadlineDate: true, deliveryUrl: true },
+  },
+  publications: { select: { platform: true, status: true, plannedPublishAt: true, url: true } },
+  materialLinks: { select: { materialType: true, category: true } },
+} as const
+
+type ProductionRow = Awaited<ReturnType<typeof prisma.smmContentItem.findFirstOrThrow<{ include: typeof PRODUCTION_ROW_INCLUDE }>>>
+
+function toProductionRowDTO(row: ProductionRow, now: Date): SmmProductionRowDTO {
+  const materials = computeContentMaterialsIndicator(row.materialLinks)
+  const hasMasterMaterial = materials.hasMaster || !!row.editingProject?.deliveryUrl
+  const publicationPlatforms = [...new Set(row.publications.filter(p => p.status !== 'CANCELLED').map(p => p.platform))]
+  const publicationsIso = row.publications.map(p => ({ status: p.status, plannedPublishAt: p.plannedPublishAt?.toISOString() ?? null, url: p.url }))
+  const nearest = getNearestPublicationInfo(publicationsIso)
+  const deadlineIso = row.deadline?.toISOString() ?? null
+  const editingDeadlineIso = row.editingProject?.deadlineDate?.toISOString() ?? null
+  const sortDeadline = row.status === 'IN_EDIT' && editingDeadlineIso ? editingDeadlineIso : deadlineIso
+
+  const attentionReasons = getSmmContentAttentionReasons({
+    status: row.status,
+    deadline: deadlineIso,
+    editingProjectStatus: row.editingProject?.status ?? null,
+    editingProjectDeadlineDate: editingDeadlineIso,
+    editingProjectEditorId: row.editingProject?.editorId ?? null,
+    hasSourceMaterials: materials.hasSource,
+    publications: publicationsIso,
+  }, now)
+
+  return {
+    id: row.id,
+    smmProjectId: row.smmProjectId,
+    smmProjectClientId: row.smmProject.clientId,
+    clientName: row.smmProject.client?.name ?? null,
+    contentCode: row.contentCode,
+    title: row.title,
+    serviceType: row.serviceType,
+    customServiceType: row.customServiceType,
+    status: row.status,
+    responsibleUserName: row.responsibleUser?.name ?? row.responsibleUser?.email ?? null,
+    // "Монтажёр" — реальный MontageProject.editor, если монтаж уже создан
+    // (source of truth), иначе pre-assignment ContentItem.editorId (SMM.md,
+    // «Editing: MontageProject» + ТЗ 2B, п.5).
+    editorId: row.editingProject?.editorId ?? row.editorId,
+    editorName: row.editingProject?.editor?.displayName ?? row.editor?.displayName ?? null,
+    editingProjectId: row.editingProjectId,
+    editingProjectStatus: row.editingProject?.status ?? null,
+    montageShortState: getContentMontageShortState(row.editingProject?.status ?? null),
+    deadline: deadlineIso,
+    editingProjectDeadlineDate: editingDeadlineIso,
+    sortDeadline,
+    nearestPublicationDate: nearest?.date ?? null,
+    publicationPlatformCount: nearest?.platformCount ?? 0,
+    publicationPlatforms,
+    hasSourceMaterials: materials.hasSource,
+    hasMasterMaterial,
+    isOverdue: attentionReasons.includes('OVERDUE_PRODUCTION') || attentionReasons.includes('OVERDUE_PUBLICATION'),
+    attentionReasons,
+    createdAt: row.createdAt.toISOString(),
+  }
+}
+
+// Читает ТОЛЬКО контент активных SmmProject (ТЗ 2B, п.4) — приостановленные/
+// архивные проекты не засоряют повседневную рабочую панель.
+export async function getSmmProductionItems(): Promise<{ ok: true; data: SmmProductionRowDTO[] } | { ok: false; data: SmmProductionRowDTO[]; error: string }> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, data: [], error: authResult.error }
+  try {
+    const now = new Date()
+    const rows = await prisma.smmContentItem.findMany({
+      where: { smmProject: { status: 'ACTIVE' } },
+      include: PRODUCTION_ROW_INCLUDE,
+      orderBy: { createdAt: 'desc' },
+    })
+    return { ok: true, data: rows.map(r => toProductionRowDTO(r, now)) }
+  } catch (e) {
+    console.error('[getSmmProductionItems]', e)
+    return { ok: false, data: [], error: 'Не удалось загрузить производство' }
+  }
+}
+
+// ============================================================
+// КАНОНИЧЕСКАЯ КАРТОЧКА ЕДИНИЦЫ КОНТЕНТА (2B) — полная детализация для
+// SmmContentItemCard.tsx, единственного компонента карточки, открываемого
+// и из Production, и из вкладки «Контент» карточки SMM-проекта (SMM.md,
+// «Единый canonical ContentItem card»). НЕ переиспользует
+// CONTENT_ITEM_INCLUDE (тот лёгкий, для списков) — отдельный, более полный
+// include, но и он не тянет всю SMM domain-модель одним гигантским
+// запросом: только то, что реально показывает карточка.
+// ============================================================
+
+export interface SmmContentItemDetailDTO {
+  id: string
+  smmProjectId: string
+  smmProjectClientId: string
+  smmProjectClientName: string | null
+  smmProjectStatus: SmmProjectStatus
+  serviceType: SmmServiceType
+  customServiceType: string | null
+  contentCode: string | null
+  title: string | null
+  description: string | null
+  productionBrief: string | null
+  plannedPublishDate: string | null
+  deadline: string | null
+  status: SmmContentStatus
+  responsibleUserId: string | null
+  responsibleUserName: string | null
+  editorId: string | null
+  editorName: string | null
+  editingProjectId: string | null
+  editingProjectStatus: MontageStatus | null
+  editingProjectStatusLabel: string | null
+  editingProjectDeliveryUrl: string | null
+  editingProjectEditorId: string | null
+  editingProjectEditorName: string | null
+  editingProjectDeadlineDate: string | null
+  editingProjectClientAmount: number | null
+  editingProjectEditorAmount: number | null
+  editingProjectDescription: string | null
+  editingProjectRequirements: string | null
+  parentContentId: string | null
+  parentContentTitle: string | null
+  parentContentCode: string | null
+  childContent: { id: string; title: string | null; contentCode: string | null }[]
+  scheduleEvents: {
+    linkId: string; scheduleEventId: string; title: string | null; startAt: string | null; endAt: string | null
+    eventType: EventType; room: string | null; orderId: string | null
+  }[]
+  publications: SmmPublicationDTO[]
+  materialLinks: SmmMaterialLinkDTO[]
+  workItems: SmmWorkItemDTO[]
+  clientApprovalStatus: SmmClientApprovalStatus
+  notes: string | null
+  createdAt: string
+  updatedAt: string
+  attentionReasons: SmmContentAttentionReason[]
+  isOverdue: boolean
+}
+
+const CONTENT_ITEM_DETAIL_INCLUDE = {
+  smmProject: { select: { status: true, client: { select: { id: true, name: true } } } },
+  responsibleUser: { select: { name: true, email: true } },
+  editor: { select: { displayName: true } },
+  editingProject: {
+    select: {
+      status: true, editorId: true, editor: { select: { displayName: true } }, deadlineDate: true, deliveryUrl: true,
+      clientAmount: true, editorAmount: true, description: true, requirements: true,
+    },
+  },
+  parentContent: { select: { title: true, contentCode: true } },
+  childContent: { select: { id: true, title: true, contentCode: true }, orderBy: { createdAt: 'asc' } },
+  scheduleLinks: {
+    include: { scheduleEvent: { select: { id: true, title: true, startAt: true, endAt: true, eventType: true, room: true, orderId: true } } },
+    orderBy: { createdAt: 'desc' },
+  },
+  publications: { include: { metrics: { orderBy: { capturedAt: 'desc' } } }, orderBy: { createdAt: 'asc' } },
+  materialLinks: { include: MATERIAL_LINK_INCLUDE },
+  workItems: { include: WORK_ITEM_INCLUDE, orderBy: { workDate: 'desc' } },
+} as const
+
+type ContentItemDetailRow = Awaited<ReturnType<typeof prisma.smmContentItem.findFirstOrThrow<{ include: typeof CONTENT_ITEM_DETAIL_INCLUDE }>>>
+
+function toContentItemDetailDTO(row: ContentItemDetailRow, now: Date): SmmContentItemDetailDTO {
+  const materialLinks = row.materialLinks.map(toMaterialLinkDTO)
+  const materialsIndicator = computeContentMaterialsIndicator(row.materialLinks)
+  const publications = row.publications.map(toPublicationDTO)
+
+  const attentionReasons = getSmmContentAttentionReasons({
+    status: row.status,
+    deadline: row.deadline?.toISOString() ?? null,
+    editingProjectStatus: row.editingProject?.status ?? null,
+    editingProjectDeadlineDate: row.editingProject?.deadlineDate?.toISOString() ?? null,
+    editingProjectEditorId: row.editingProject?.editorId ?? null,
+    hasSourceMaterials: materialsIndicator.hasSource,
+    publications: publications.map(p => ({ status: p.status, plannedPublishAt: p.plannedPublishAt, url: p.url })),
+  }, now)
+
+  return {
+    id: row.id,
+    smmProjectId: row.smmProjectId,
+    smmProjectClientId: row.smmProject.client?.id ?? '',
+    smmProjectClientName: row.smmProject.client?.name ?? null,
+    smmProjectStatus: row.smmProject.status,
+    serviceType: row.serviceType,
+    customServiceType: row.customServiceType,
+    contentCode: row.contentCode,
+    title: row.title,
+    description: row.description,
+    productionBrief: row.productionBrief,
+    plannedPublishDate: row.plannedPublishDate?.toISOString() ?? null,
+    deadline: row.deadline?.toISOString() ?? null,
+    status: row.status,
+    responsibleUserId: row.responsibleUserId,
+    responsibleUserName: row.responsibleUser?.name ?? row.responsibleUser?.email ?? null,
+    editorId: row.editorId,
+    editorName: row.editor?.displayName ?? null,
+    editingProjectId: row.editingProjectId,
+    editingProjectStatus: row.editingProject?.status ?? null,
+    editingProjectStatusLabel: row.editingProject ? MONTAGE_STATUS_LABELS[row.editingProject.status] : null,
+    editingProjectDeliveryUrl: row.editingProject?.deliveryUrl ?? null,
+    editingProjectEditorId: row.editingProject?.editorId ?? null,
+    editingProjectEditorName: row.editingProject?.editor?.displayName ?? null,
+    editingProjectDeadlineDate: row.editingProject?.deadlineDate?.toISOString() ?? null,
+    editingProjectClientAmount: row.editingProject?.clientAmount ?? null,
+    editingProjectEditorAmount: row.editingProject?.editorAmount ?? null,
+    editingProjectDescription: row.editingProject?.description ?? null,
+    editingProjectRequirements: row.editingProject?.requirements ?? null,
+    parentContentId: row.parentContentId,
+    parentContentTitle: row.parentContent?.title ?? null,
+    parentContentCode: row.parentContent?.contentCode ?? null,
+    childContent: row.childContent.map(c => ({ id: c.id, title: c.title, contentCode: c.contentCode })),
+    scheduleEvents: row.scheduleLinks.map(l => ({
+      linkId: l.id,
+      scheduleEventId: l.scheduleEventId,
+      title: l.scheduleEvent.title,
+      startAt: l.scheduleEvent.startAt?.toISOString() ?? null,
+      endAt: l.scheduleEvent.endAt?.toISOString() ?? null,
+      eventType: l.scheduleEvent.eventType,
+      room: l.scheduleEvent.room,
+      orderId: l.scheduleEvent.orderId,
+    })),
+    publications,
+    materialLinks,
+    workItems: row.workItems.map(toWorkItemDTO),
+    clientApprovalStatus: row.clientApprovalStatus,
+    notes: row.notes,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+    attentionReasons,
+    isOverdue: attentionReasons.includes('OVERDUE_PRODUCTION') || attentionReasons.includes('OVERDUE_PUBLICATION'),
+  }
+}
+
+export async function getSmmContentItemDetail(id: string): Promise<{ ok: true; data: SmmContentItemDetailDTO } | { ok: false; error: string }> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, error: authResult.error }
+  try {
+    const row = await prisma.smmContentItem.findUnique({ where: { id }, include: CONTENT_ITEM_DETAIL_INCLUDE })
+    if (!row) return { ok: false, error: 'Единица контента не найдена' }
+    return { ok: true, data: toContentItemDetailDTO(row, new Date()) }
+  } catch (e) {
+    console.error('[getSmmContentItemDetail]', e)
+    return { ok: false, error: 'Не удалось загрузить карточку контента' }
   }
 }

@@ -106,7 +106,6 @@ export default function SmmProjectView({
       {tab === 'content' && (
         <SmmProjectContentTab
           smmProjectId={project.id}
-          clientId={project.clientId}
           contentItems={contentItems}
           setContentItems={setContentItems}
           editors={editors}
