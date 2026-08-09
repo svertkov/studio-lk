@@ -138,7 +138,13 @@ export function buildContentEntities(
     }
 
     // --- Metrics: снимок на площадку/тип, дедуплицируя идентичные значения (ТЗ п.16) ---
+    // Конфликтующие снимки (та же дата, разные значения) НЕ разрешаются
+    // автоматически выбором "первого найденного" (pre-apply hardening,
+    // apply-run: "не выбирать первое/последнее значение только ради
+    // завершения миграции") — такой снимок целиком исключается из
+    // proposedMetrics, остаётся только как METRIC_CONFLICT exception.
     const seenMetric = new Map<string, ProposedMetric>()
+    const conflictedKeys = new Set<string>()
     for (const row of group.rows) {
       for (const p of row.platforms) {
         for (const [metricType, value] of Object.entries(p.metrics)) {
@@ -153,9 +159,10 @@ export function buildContentEntities(
           const existing = seenMetric.get(snapshotKey)
           if (existing) {
             if (existing.value === value) { existing.sources.push(row.trace); continue }
+            conflictedKeys.add(snapshotKey)
             exceptions.push({
               category: 'METRIC_CONFLICT',
-              message: `конфликт значений метрики ${metricType}/${p.platform} на одну и ту же дату (${capturedAt}) для "${rep.title}": ${existing.value} vs ${value} — сохранено первое найденное, требуется проверка`,
+              message: `конфликт значений метрики ${metricType}/${p.platform} на одну и ту же дату (${capturedAt}) для "${rep.title}": ${existing.value} vs ${value} — снимок НЕ импортирован ни одним из значений, требуется ручная проверка`,
               trace: row.trace, context: { clientHint: rep.clientHint, metricType, platform: p.platform, capturedAt, values: [existing.value, value] },
             })
             continue
@@ -165,15 +172,16 @@ export function buildContentEntities(
             value, capturedAt, capturedAtIsApproximate: row.date === null, sources: [row.trace],
           }
           seenMetric.set(snapshotKey, metric)
-          metrics.push(metric)
-          // Metric entityKey включает capturedAt (снимок на конкретную дату
-          // — это часть идентичности, не то, что "меняется"); value вынесен
-          // только в fingerprint — расхождение value при том же ключе уже
-          // отдельно обрабатывается как METRIC_CONFLICT выше, sourceChanged
-          // здесь избыточен.
-          manifest.push(makeManifestEntry(row.trace, 'Metric', `${tempId}:${snapshotKey}`, [...entityKeyParts, p.platform, metricType, capturedAt], [...identity, p.platform, metricType, value, capturedAt]))
         }
       }
+    }
+    for (const [snapshotKey, metric] of seenMetric) {
+      if (conflictedKeys.has(snapshotKey)) continue // конфликтный снимок целиком исключён, см. комментарий выше
+      metrics.push(metric)
+      // Metric entityKey включает capturedAt (снимок на конкретную дату —
+      // это часть идентичности, не то, что "меняется"); value вынесен только
+      // в fingerprint.
+      manifest.push(makeManifestEntry(metric.sources[0], 'Metric', `${tempId}:${snapshotKey}`, [...entityKeyParts, metric.platform, metric.metricType, metric.capturedAt], [...identity, metric.platform, metric.metricType, metric.value, metric.capturedAt]))
     }
 
     // --- Materials: источники/мастер (ТЗ п.17), дедуплицируя одинаковый URL ---

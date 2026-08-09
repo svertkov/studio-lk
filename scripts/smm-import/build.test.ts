@@ -91,7 +91,7 @@ describe('buildContentEntities', () => {
     expect(result.metrics).toHaveLength(2)
   })
 
-  it('flags METRIC_CONFLICT when two sources disagree on the same metric for the same date', () => {
+  it('flags METRIC_CONFLICT and excludes the disputed snapshot entirely — never auto-picks first/last (real apply-run instruction)', () => {
     const rows = [
       contentRow({
         legacyCode: 'Д1', date: '2026-08-05',
@@ -105,7 +105,7 @@ describe('buildContentEntities', () => {
     const groups = dedupContentRows(rows)
     const result = buildContentEntities(groups, new Map([['Диамед', resolvedClientMatch]]))
     expect(result.exceptions.some(e => e.category === 'METRIC_CONFLICT')).toBe(true)
-    expect(result.metrics).toHaveLength(1)
+    expect(result.metrics).toHaveLength(0)
   })
 })
 
