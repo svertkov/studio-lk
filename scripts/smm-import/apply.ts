@@ -85,6 +85,7 @@ async function main() {
   console.log(`batchId: ${batchId}`)
 
   const contentRowsAll = [] as ReturnType<typeof extractContentRows>['rows']
+  const clientHintToFiles = new Map<string, Set<string>>()
   for (const file of files) {
     const workbookHint = hintClientForWorkbook(file)
     if (!workbookHint) continue
@@ -100,12 +101,25 @@ async function main() {
       if (!types.includes('PRODUCTION') && !types.includes('CONTENT_PLAN') && !types.includes('ANALYTICS')) continue
       const { rows } = extractContentRows(grid, workbookHint)
       contentRowsAll.push(...rows)
+      if (!clientHintToFiles.has(workbookHint)) clientHintToFiles.set(workbookHint, new Set())
+      clientHintToFiles.get(workbookHint)!.add(file)
     }
   }
 
-  const clientMatch = matchClient(project, project, clients, projects)
-  const groups = dedupContentRows(contentRowsAll).filter(g => g.rows[0]?.clientHint && clientMatch.clientHint === g.rows[0].clientHint)
-  const built = buildContentEntities(groups, new Map([[clientMatch.clientHint, { ...clientMatch, proposedSmmProjectId: targetProject.id }]]))
+  // --project — тот же способ разрешения projectCode → реальный clientHint,
+  // что и в dry-run.ts (matchClient по КАЖДОЙ реальной подсказке из книг, не
+  // по самому projectCode — "DIA" никогда не совпадёт с "Диамед" напрямую).
+  const clientMatches = new Map<string, ReturnType<typeof matchClient>>()
+  for (const [hint, filesUsing] of clientHintToFiles) {
+    clientMatches.set(hint, matchClient([...filesUsing].join(', '), hint, clients, projects))
+  }
+  const scopedHint = [...clientMatches.values()].find(m => m.proposedProjectCode === project)?.clientHint
+  if (!scopedHint) {
+    console.error(`--project ${project}: ни один источник не сопоставлен с этим projectCode — проверьте, что SmmProject создан и apply видит актуальные данные.`)
+    process.exit(1)
+  }
+  const groups = dedupContentRows(contentRowsAll).filter(g => g.rows[0]?.clientHint === scopedHint)
+  const built = buildContentEntities(groups, clientMatches)
 
   const eligible = built.contentItems.filter(ci => ci.smmProjectId && meetsConfidenceThreshold(ci.dedupConfidence, maxConfidence))
   const belowThreshold = built.contentItems.length - eligible.length
