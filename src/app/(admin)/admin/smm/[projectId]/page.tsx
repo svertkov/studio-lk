@@ -1,6 +1,6 @@
 import { notFound } from 'next/navigation'
 import {
-  getSmmProjectById, getSmmPackageItems, getSmmContentItems, getSmmMaterialLinks,
+  getSmmProjectById, getSmmPackageItems, getSmmContentItems, getSmmProjectContentRows, getSmmMaterialLinks,
   getSmmProjectMembers, getSmmScheduleLinks, getSmmClientPayments, getUnlinkedScheduleEventsForClient,
   getSmmWorkItems,
 } from '@/lib/actions/smm'
@@ -14,9 +14,13 @@ export default async function SmmProjectPage({ params }: { params: Promise<{ pro
   if (!projectResult.ok) notFound()
   const project = projectResult.data
 
-  const [packageResult, contentResult, materialsResult, membersResult, scheduleLinksResult, paymentsResult, unlinkedEventsResult, editorsResult, staffResult, workItemsResult] = await Promise.all([
+  const [
+    packageResult, contentResult, contentRowsResult, materialsResult, membersResult, scheduleLinksResult,
+    paymentsResult, unlinkedEventsResult, editorsResult, staffResult, workItemsResult,
+  ] = await Promise.all([
     getSmmPackageItems(projectId),
     getSmmContentItems(projectId),
+    getSmmProjectContentRows(projectId),
     getSmmMaterialLinks(projectId),
     getSmmProjectMembers(projectId),
     getSmmScheduleLinks(projectId),
@@ -33,6 +37,7 @@ export default async function SmmProjectPage({ params }: { params: Promise<{ pro
         initialProject={project}
         initialPackageItems={packageResult.data}
         initialContentItems={contentResult.data}
+        initialContentRows={contentRowsResult.data}
         initialMaterialLinks={materialsResult.data}
         initialMembers={membersResult.data}
         initialScheduleLinks={scheduleLinksResult.data}

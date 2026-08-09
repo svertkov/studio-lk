@@ -20,6 +20,7 @@ interface Props {
 
 export default function CreateSmmProjectModal({ open, onOpenChange, clients, existingProjects, onCreated }: Props) {
   const [clientId, setClientId] = useState('')
+  const [projectCode, setProjectCode] = useState('')
   const [monthlyFee, setMonthlyFee] = useState('')
   const [startDate, setStartDate] = useState(() => new Date().toISOString().slice(0, 10))
   const [billingPeriodType, setBillingPeriodType] = useState<'CALENDAR_MONTH' | 'CUSTOM'>('CUSTOM')
@@ -32,7 +33,7 @@ export default function CreateSmmProjectModal({ open, onOpenChange, clients, exi
   const clientHasActiveProject = existingProjects.some(p => p.clientId === clientId && p.status === 'ACTIVE')
 
   function reset() {
-    setClientId(''); setMonthlyFee(''); setStartDate(new Date().toISOString().slice(0, 10))
+    setClientId(''); setProjectCode(''); setMonthlyFee(''); setStartDate(new Date().toISOString().slice(0, 10))
     setBillingPeriodType('CUSTOM'); setPaymentTerms(''); setNotes(''); setConfirmDuplicate(false); setError(null)
   }
 
@@ -42,6 +43,7 @@ export default function CreateSmmProjectModal({ open, onOpenChange, clients, exi
     setError(null)
     const result = await createSmmProject({
       clientId,
+      projectCode: projectCode.trim() || null,
       monthlyFee: monthlyFee ? parseFloat(monthlyFee) : null,
       startDate,
       billingPeriodType,
@@ -99,6 +101,11 @@ export default function CreateSmmProjectModal({ open, onOpenChange, clients, exi
               <label className={LABEL}>Дата начала</label>
               <input className={INPUT} type="date" value={startDate} onChange={e => setStartDate(e.target.value)} />
             </div>
+          </div>
+
+          <div>
+            <label className={LABEL}>Код проекта (для File Code, docs/business/SMM.md)</label>
+            <input className={`${INPUT} w-32 font-mono uppercase`} placeholder="напр. DIA" value={projectCode} onChange={e => setProjectCode(e.target.value)} />
           </div>
 
           <div>

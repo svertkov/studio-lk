@@ -1,6 +1,7 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
+import { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
 import { auth } from '@/auth'
 import { computeEditorAllTimeSummary, computeEditorMonthlyStats, type EditorAllTimeSummary, type EditorMonthlyStats } from '@/lib/montage-model'
@@ -31,6 +32,11 @@ export interface EditorProfileDTO {
   specialization: string | null
   notes: string | null
   active: boolean
+  // Короткий персональный код для File Code ("AH" — Алиса Ходченкова, см.
+  // docs/business/SMM.md, «File Code») — задаётся один раз вручную, не
+  // вычисляется из имени. Nullable: без кода профиль просто не участвует в
+  // генерации File Code, пока администратор его не укажет.
+  editorCode: string | null
   createdAt: string
   updatedAt: string
 }
@@ -46,7 +52,7 @@ export interface EditorProfileListItemDTO extends EditorProfileDTO {
 function toDTO(row: {
   id: string; userId: string | null; firstName: string | null; lastName: string | null; displayName: string
   phone: string | null; telegram: string | null; email: string | null; specialization: string | null
-  notes: string | null; active: boolean; createdAt: Date; updatedAt: Date
+  notes: string | null; active: boolean; editorCode: string | null; createdAt: Date; updatedAt: Date
 }): EditorProfileDTO {
   return {
     id: row.id,
@@ -60,6 +66,7 @@ function toDTO(row: {
     specialization: row.specialization,
     notes: row.notes,
     active: row.active,
+    editorCode: row.editorCode,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   }
@@ -160,6 +167,18 @@ export interface EditorProfileInput {
   specialization?: string
   notes?: string
   active?: boolean
+  editorCode?: string | null
+}
+
+// Нормализация кода монтажёра — короткий, uppercase, латиница/цифры (тот же
+// принцип, что projectCode у SmmProject, docs/business/SMM.md, «File Code»).
+// Не форсируем длину жёстко (реальные инициалы бывают из 1-2 букв), просто
+// приводим к формату, не мешаем администратору исправить при ошибке.
+function normalizeEditorCode(value: string | null | undefined): string | null | undefined {
+  if (value === undefined) return undefined
+  if (value === null) return null
+  const trimmed = value.trim().toUpperCase()
+  return trimmed || null
 }
 
 export async function createEditorProfile(
@@ -184,11 +203,15 @@ export async function createEditorProfile(
         specialization: input.specialization?.trim() || null,
         notes: input.notes?.trim() || null,
         active: input.active ?? true,
+        editorCode: normalizeEditorCode(input.editorCode) ?? null,
       },
     })
     revalidateEditorPaths()
     return { ok: true, data: toDTO(created) }
   } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+      return { ok: false, error: 'Такой код монтажёра уже используется' }
+    }
     console.error('[createEditorProfile]', e)
     return { ok: false, error: 'Не удалось создать монтажёра' }
   }
@@ -214,11 +237,15 @@ export async function updateEditorProfile(
         specialization: input.specialization !== undefined ? (input.specialization.trim() || null) : undefined,
         notes: input.notes !== undefined ? (input.notes.trim() || null) : undefined,
         active: input.active ?? undefined,
+        editorCode: normalizeEditorCode(input.editorCode),
       },
     })
     revalidateEditorPaths()
     return { ok: true, data: toDTO(updated) }
   } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+      return { ok: false, error: 'Такой код монтажёра уже используется' }
+    }
     console.error('[updateEditorProfile]', e)
     return { ok: false, error: 'Не удалось обновить монтажёра' }
   }

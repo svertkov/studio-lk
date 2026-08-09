@@ -22,7 +22,6 @@ interface Props {
 export default function SmmContentItemCreateModal({ projects, onOpenChange, onCreated }: Props) {
   const [smmProjectId, setSmmProjectId] = useState('')
   const [serviceType, setServiceType] = useState<SmmServiceType>('SHORT_VIDEO')
-  const [contentCode, setContentCode] = useState('')
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   const [productionBrief, setProductionBrief] = useState('')
@@ -37,7 +36,7 @@ export default function SmmContentItemCreateModal({ projects, onOpenChange, onCr
     setSaving(true)
     setError(null)
     const result = await createSmmContentItem(smmProjectId, {
-      serviceType, contentCode: contentCode || undefined, title: title || undefined,
+      serviceType, title: title || undefined,
       description: description || undefined, productionBrief: productionBrief || undefined,
       plannedPublishDate: plannedPublishDate || undefined,
     })
@@ -60,17 +59,11 @@ export default function SmmContentItemCreateModal({ projects, onOpenChange, onCr
               {activeProjects.map(p => <option key={p.id} value={p.id}>{p.clientName ?? 'Без имени'}</option>)}
             </select>
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-zinc-400 text-xs mb-1.5">Тип</label>
-              <select className={SELECT} value={serviceType} onChange={e => setServiceType(e.target.value as SmmServiceType)}>
-                {CONTENT_SERVICE_TYPES.map(t => <option key={t} value={t}>{SMM_SERVICE_TYPE_LABELS[t]}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="block text-zinc-400 text-xs mb-1.5">Content Code</label>
-              <input className={INPUT} placeholder="напр. Д186" value={contentCode} onChange={e => setContentCode(e.target.value)} />
-            </div>
+          <div>
+            <label className="block text-zinc-400 text-xs mb-1.5">Тип</label>
+            <select className={SELECT} value={serviceType} onChange={e => setServiceType(e.target.value as SmmServiceType)}>
+              {CONTENT_SERVICE_TYPES.map(t => <option key={t} value={t}>{SMM_SERVICE_TYPE_LABELS[t]}</option>)}
+            </select>
           </div>
           <div>
             <label className="block text-zinc-400 text-xs mb-1.5">Название</label>

@@ -1,12 +1,31 @@
 'use client'
 
-import { AlertTriangle } from 'lucide-react'
+import { useState } from 'react'
+import { AlertTriangle, Copy, Check } from 'lucide-react'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
 import type { SmmProductionRowDTO } from '@/lib/actions/smm'
 import { SMM_CONTENT_STATUS_LABELS, SMM_SERVICE_TYPE_LABELS } from '@/lib/smm-model'
 import type { SmmContentStatus } from '@prisma/client'
 
 const SELECT = 'h-8 bg-zinc-800 border border-zinc-700 text-zinc-200 rounded-lg px-2 text-xs outline-none focus:border-[#00c26b] transition-colors cursor-pointer'
+
+// Копирование File Code прямо из таблицы (docs/business/SMM.md, «File
+// Code») — по клику, без открытия карточки.
+function FileCodeCell({ fileCode }: { fileCode: string | null }) {
+  const [copied, setCopied] = useState(false)
+  if (!fileCode) return <span className="text-zinc-600 text-xs">—</span>
+  return (
+    <button
+      type="button"
+      onClick={async e => { e.stopPropagation(); await navigator.clipboard.writeText(fileCode); setCopied(true); setTimeout(() => setCopied(false), 1200) }}
+      title="Скопировать File Code"
+      className="flex items-center gap-1 text-zinc-400 hover:text-zinc-200 text-xs font-mono transition-colors"
+    >
+      {fileCode}
+      {copied ? <Check className="w-3 h-3 text-[#00c26b] flex-shrink-0" /> : <Copy className="w-3 h-3 flex-shrink-0" />}
+    </button>
+  )
+}
 
 function formatDate(v: string | null): string {
   return v ? new Date(v).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' }) : '—'
@@ -26,7 +45,7 @@ export default function ProductionTable({ items, onOpen, onQuickStatusChange }: 
       <Table>
         <TableHeader>
           <TableRow className="border-zinc-800 hover:bg-transparent">
-            <TableHead className="text-zinc-400">Код</TableHead>
+            <TableHead className="text-zinc-400">File Code</TableHead>
             <TableHead className="text-zinc-400">Клиент</TableHead>
             <TableHead className="text-zinc-400">Контент</TableHead>
             <TableHead className="text-zinc-400">Формат</TableHead>
@@ -47,7 +66,7 @@ export default function ProductionTable({ items, onOpen, onQuickStatusChange }: 
               onClick={() => onOpen(r.id)}
               className={`cursor-pointer transition-colors ${r.isOverdue ? 'border-red-700/50 bg-red-500/[0.04] hover:bg-red-500/10' : 'border-zinc-800'}`}
             >
-              <TableCell><span className="text-zinc-400 text-xs font-mono">{r.contentCode ?? '—'}</span></TableCell>
+              <TableCell><FileCodeCell fileCode={r.fileCode} /></TableCell>
               <TableCell><span className="text-zinc-200 text-sm truncate max-w-[140px] inline-block">{r.clientName ?? '—'}</span></TableCell>
               <TableCell>
                 <p className="text-zinc-200 text-sm truncate max-w-[220px]">{r.title || SMM_SERVICE_TYPE_LABELS[r.serviceType]}</p>

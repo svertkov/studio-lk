@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import Link from 'next/link'
 import {
-  X, Film, Camera, Share2, BarChart3, Trash2, Plus, ExternalLink, AlertTriangle, GitBranch,
+  X, Film, Camera, Share2, BarChart3, Trash2, Plus, ExternalLink, AlertTriangle, GitBranch, Copy, Check, History,
 } from 'lucide-react'
 import { Dialog, DialogContent } from '@/components/ui/dialog'
 import {
@@ -12,6 +12,7 @@ import {
   getClientScheduleEventsForContentLink, addSmmContentScheduleLink, removeSmmContentScheduleLink,
   addSmmMaterialLink, deleteSmmMaterialLink,
   createSmmWorkItem, updateSmmWorkItemStatus, getSmmContentItemDetail,
+  generateMontageFileCode, updateMontageFileCodeBase, addMontageVersion,
   type SmmContentItemDetailDTO, type SmmContentItemDTO, type SmmContentItemInput, type SmmPublicationInput, type SmmPublicationMetricInput,
   type SmmMaterialLinkInput, type SmmWorkItemInput,
 } from '@/lib/actions/smm'
@@ -58,10 +59,11 @@ interface Props {
 export default function SmmContentItemCard({ detail, editors, staff, onOpenChange, onChanged, onOpenContentItem }: Props) {
   const [error, setError] = useState<string | null>(null)
   const [savingHeader, setSavingHeader] = useState(false)
+  const [codeCopied, setCodeCopied] = useState(false)
 
   // ---- Идея/ТЗ ----
   const [editingIdea, setEditingIdea] = useState(false)
-  const [ideaForm, setIdeaForm] = useState({ title: detail.title ?? '', description: detail.description ?? '', productionBrief: detail.productionBrief ?? '', contentCode: detail.contentCode ?? '' })
+  const [ideaForm, setIdeaForm] = useState({ title: detail.title ?? '', description: detail.description ?? '', productionBrief: detail.productionBrief ?? '' })
 
   // ---- Съёмки ----
   const [schedPanelOpen, setSchedPanelOpen] = useState(false)
@@ -75,6 +77,10 @@ export default function SmmContentItemCard({ detail, editors, staff, onOpenChang
   // ---- Монтаж ----
   const [montageFormOpen, setMontageFormOpen] = useState(false)
   const [montageForm, setMontageForm] = useState({ editorId: detail.editorId ?? '', deadlineDate: '', workAmount: '', workType: 'EDITING' as SmmWorkType })
+  const [editingFileCodeBase, setEditingFileCodeBase] = useState(false)
+  const [fileCodeBaseForm, setFileCodeBaseForm] = useState(detail.editingProjectFileCodeBase ?? '')
+  const [versionFormOpen, setVersionFormOpen] = useState(false)
+  const [versionForm, setVersionForm] = useState({ deliveryUrl: '', comment: '' })
 
   // ---- Публикации ----
   const [pubFormOpen, setPubFormOpen] = useState(false)
@@ -90,7 +96,7 @@ export default function SmmContentItemCard({ detail, editors, staff, onOpenChang
 
   // ---- Производный контент ----
   const [derivedFormOpen, setDerivedFormOpen] = useState(false)
-  const [derivedForm, setDerivedForm] = useState({ serviceType: 'SHORT_VIDEO' as SmmServiceType, title: '', contentCode: '' })
+  const [derivedForm, setDerivedForm] = useState({ serviceType: 'SHORT_VIDEO' as SmmServiceType, title: '' })
 
   async function refetchDetail() {
     const result = await getSmmContentItemDetail(detail.id)
@@ -120,7 +126,7 @@ export default function SmmContentItemCard({ detail, editors, staff, onOpenChang
 
   async function handleSaveIdea() {
     const result = await updateSmmContentItem(detail.id, {
-      title: ideaForm.title, description: ideaForm.description, productionBrief: ideaForm.productionBrief, contentCode: ideaForm.contentCode,
+      title: ideaForm.title, description: ideaForm.description, productionBrief: ideaForm.productionBrief,
     })
     if (!result.ok) { setError(result.error); return }
     onChanged(mergeBaseIntoDetail(result.data))
@@ -253,13 +259,46 @@ export default function SmmContentItemCard({ detail, editors, staff, onOpenChang
   async function handleCreateDerived() {
     if (!derivedForm.title.trim()) { setError('Укажите название производного материала'); return }
     const result = await createSmmContentItem(detail.smmProjectId, {
-      serviceType: derivedForm.serviceType, title: derivedForm.title, contentCode: derivedForm.contentCode || undefined, parentContentId: detail.id,
+      serviceType: derivedForm.serviceType, title: derivedForm.title, parentContentId: detail.id,
     })
     if (!result.ok) { setError(result.error); return }
     setDerivedFormOpen(false)
-    setDerivedForm({ serviceType: 'SHORT_VIDEO', title: '', contentCode: '' })
+    setDerivedForm({ serviceType: 'SHORT_VIDEO', title: '' })
     await refetchDetail()
     onOpenContentItem(result.data.id)
+  }
+
+  // ---- File Code / Версии (docs/business/SMM.md, «File Code») ----
+  async function handleCopyFileCode() {
+    if (!detail.currentFileCode) return
+    await navigator.clipboard.writeText(detail.currentFileCode)
+    setCodeCopied(true)
+    setTimeout(() => setCodeCopied(false), 1500)
+  }
+  async function handleGenerateFileCode() {
+    if (!detail.editingProjectId) return
+    setError(null)
+    const result = await generateMontageFileCode(detail.editingProjectId)
+    if (!result.ok) { setError(result.error); return }
+    await refetchDetail()
+  }
+  async function handleSaveFileCodeBase() {
+    if (!detail.editingProjectId || !fileCodeBaseForm.trim()) return
+    const result = await updateMontageFileCodeBase(detail.editingProjectId, fileCodeBaseForm)
+    if (!result.ok) { setError(result.error); return }
+    setEditingFileCodeBase(false)
+    await refetchDetail()
+  }
+  async function handleAddVersion() {
+    if (!detail.editingProjectId) return
+    setError(null)
+    const result = await addMontageVersion(detail.editingProjectId, {
+      deliveryUrl: versionForm.deliveryUrl || undefined, comment: versionForm.comment || undefined,
+    })
+    if (!result.ok) { setError(result.error); return }
+    setVersionFormOpen(false)
+    setVersionForm({ deliveryUrl: '', comment: '' })
+    await refetchDetail()
   }
 
   const editingProjectMetrics = (
@@ -277,7 +316,18 @@ export default function SmmContentItemCard({ detail, editors, staff, onOpenChang
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2 flex-wrap">
-                {detail.contentCode && <span className="text-zinc-500 text-xs font-mono bg-zinc-900 border border-zinc-800 rounded px-1.5 py-0.5">{detail.contentCode}</span>}
+                {/* File Code (docs/business/SMM.md, «File Code») — единственный
+                    человекочитаемый идентификатор, показан целиком, с копированием
+                    по клику. Content Code полностью убран из UI (ТЗ, п.1/12). */}
+                {detail.currentFileCode && (
+                  <button
+                    type="button" onClick={handleCopyFileCode} title="Скопировать File Code"
+                    className="flex items-center gap-1 text-zinc-400 hover:text-zinc-200 text-xs font-mono bg-zinc-900 border border-zinc-800 rounded px-1.5 py-0.5 transition-colors"
+                  >
+                    {detail.currentFileCode}
+                    {codeCopied ? <Check className="w-3 h-3 text-[#00c26b]" /> : <Copy className="w-3 h-3" />}
+                  </button>
+                )}
                 <h2 className="text-white text-lg font-semibold truncate">{detail.title || SMM_SERVICE_TYPE_LABELS[detail.serviceType]}</h2>
               </div>
               <div className="flex items-center gap-2 flex-wrap mt-1.5 text-xs text-zinc-400">
@@ -289,7 +339,7 @@ export default function SmmContentItemCard({ detail, editors, staff, onOpenChang
                   <>
                     <span>·</span>
                     <button type="button" onClick={() => onOpenContentItem(detail.parentContentId!)} className="flex items-center gap-1 text-[#00c26b] hover:underline">
-                      <GitBranch className="w-3 h-3" /> {detail.parentContentCode || detail.parentContentTitle || 'родитель'}
+                      <GitBranch className="w-3 h-3" /> {detail.parentContentTitle || 'родитель'}
                     </button>
                   </>
                 )}
@@ -329,15 +379,9 @@ export default function SmmContentItemCard({ detail, editors, staff, onOpenChang
             </div>
             {editingIdea ? (
               <div className="space-y-2">
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="block text-zinc-500 text-[11px] mb-1">Content Code</label>
-                    <input className={INPUT} value={ideaForm.contentCode} onChange={e => setIdeaForm(f => ({ ...f, contentCode: e.target.value }))} />
-                  </div>
-                  <div>
-                    <label className="block text-zinc-500 text-[11px] mb-1">Название</label>
-                    <input className={INPUT} value={ideaForm.title} onChange={e => setIdeaForm(f => ({ ...f, title: e.target.value }))} />
-                  </div>
+                <div>
+                  <label className="block text-zinc-500 text-[11px] mb-1">Название</label>
+                  <input className={INPUT} value={ideaForm.title} onChange={e => setIdeaForm(f => ({ ...f, title: e.target.value }))} />
                 </div>
                 <div>
                   <label className="block text-zinc-500 text-[11px] mb-1">Описание / концепция</label>
@@ -454,11 +498,11 @@ export default function SmmContentItemCard({ detail, editors, staff, onOpenChang
             ) : <p className="text-zinc-600 text-sm">Материалов нет</p>}
           </div>
 
-          {/* Монтаж (ТЗ 2B, п.18/19) */}
+          {/* Монтаж (ТЗ 2B, п.18/19; File Code — следующий этап) */}
           <div className={SECTION}>
             <p className={SECTION_TITLE}><Film className="w-4 h-4 text-zinc-400" /> Монтаж</p>
             {detail.editingProjectId ? (
-              <div className="space-y-1">
+              <div className="space-y-2">
                 <p className="text-zinc-300 text-sm">{MONTAGE_STATUS_LABELS[detail.editingProjectStatus!]} · {detail.editingProjectEditorName ?? 'Монтажёр не назначен'}</p>
                 {detail.editingProjectDeadlineDate && <p className="text-zinc-500 text-xs">Дедлайн: {formatDate(detail.editingProjectDeadlineDate)}</p>}
                 {editingProjectMetrics}
@@ -468,6 +512,67 @@ export default function SmmContentItemCard({ detail, editors, staff, onOpenChang
                   </a>
                 )}
                 <div><Link href="/admin/editing" className="text-xs text-zinc-400 hover:text-zinc-200 underline">Перейти в раздел «Монтаж»</Link></div>
+
+                {/* File Code (docs/business/SMM.md, «File Code») */}
+                {detail.editingProjectFileCodeBase ? (
+                  editingFileCodeBase ? (
+                    <div className="flex items-center gap-2 pt-1">
+                      <input className={`${INPUT} font-mono text-xs`} value={fileCodeBaseForm} onChange={e => setFileCodeBaseForm(e.target.value)} />
+                      <button type="button" onClick={handleSaveFileCodeBase} className="bg-[#00c26b] hover:bg-[#00b360] text-white text-xs font-medium px-3 py-2 rounded-lg transition-colors whitespace-nowrap">Сохранить</button>
+                      <button type="button" onClick={() => setEditingFileCodeBase(false)} className="text-zinc-400 hover:text-zinc-200 text-xs px-2 py-2">Отмена</button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2 pt-1">
+                      <p className="text-zinc-500 text-xs">База File Code: <span className="font-mono text-zinc-300">{detail.editingProjectFileCodeBase}</span></p>
+                      <button type="button" onClick={() => { setFileCodeBaseForm(detail.editingProjectFileCodeBase ?? ''); setEditingFileCodeBase(true) }} className="text-[11px] text-zinc-500 hover:text-zinc-200">исправить</button>
+                    </div>
+                  )
+                ) : (
+                  <div className="bg-amber-950/20 border border-amber-800/40 rounded-lg p-2.5 space-y-1.5">
+                    <p className="text-amber-300 text-xs">
+                      File Code ещё не создан
+                      {!detail.editingProjectEditorCode && ' — у монтажёра не задан код'}
+                      {!detail.smmProjectCode && ' — у SMM-проекта не задан код'}.
+                    </p>
+                    <button
+                      type="button" onClick={handleGenerateFileCode}
+                      disabled={!detail.editingProjectEditorCode || !detail.smmProjectCode}
+                      className="bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 text-zinc-200 text-xs font-medium px-3 py-1.5 rounded-lg transition-colors"
+                    >
+                      Сгенерировать File Code
+                    </button>
+                  </div>
+                )}
+
+                {/* Версии (docs/business/SMM.md, «Версии») */}
+                {detail.editingProjectFileCodeBase && (
+                  <div className="pt-2 border-t border-zinc-800/60">
+                    <div className="flex items-center justify-between">
+                      <p className="flex items-center gap-1.5 text-zinc-400 text-xs font-medium"><History className="w-3.5 h-3.5" /> Версии</p>
+                      <button type="button" onClick={() => setVersionFormOpen(v => !v)} className="text-[11px] text-zinc-500 hover:text-zinc-200">+ версия</button>
+                    </div>
+                    {versionFormOpen && (
+                      <div className="mt-1.5 bg-zinc-800/40 rounded-lg p-2.5 space-y-1.5">
+                        <input className={INPUT} placeholder="Ссылка на файл (опционально)" value={versionForm.deliveryUrl} onChange={e => setVersionForm(f => ({ ...f, deliveryUrl: e.target.value }))} />
+                        <input className={INPUT} placeholder="Комментарий, напр. «Исправлены титры»" value={versionForm.comment} onChange={e => setVersionForm(f => ({ ...f, comment: e.target.value }))} />
+                        <button type="button" onClick={handleAddVersion} className="bg-[#00c26b] hover:bg-[#00b360] text-white text-xs font-medium px-3 py-1.5 rounded-lg transition-colors">Добавить версию</button>
+                      </div>
+                    )}
+                    <div className="mt-1.5 space-y-1">
+                      {detail.versions.map((v, i) => (
+                        <div key={v.id} className="flex items-center justify-between gap-2 text-xs">
+                          <span className={i === 0 ? 'text-zinc-200 font-mono' : 'text-zinc-500 font-mono'}>
+                            {v.fileCode}{i === 0 && <span className="text-[#00c26b] ml-1">· текущая</span>}
+                          </span>
+                          <span className="text-zinc-600 truncate flex-1 text-right">
+                            {formatDate(v.createdAt)}{v.comment ? ` · ${v.comment}` : ''}
+                            {v.deliveryUrl && <a href={v.deliveryUrl} target="_blank" rel="noopener noreferrer" className="text-[#00c26b] hover:underline ml-1">ссылка</a>}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             ) : montageFormOpen ? (
               <div className="space-y-2">
@@ -630,7 +735,6 @@ export default function SmmContentItemCard({ detail, editors, staff, onOpenChang
                   {CONTENT_SERVICE_TYPES.map(t => <option key={t} value={t}>{SMM_SERVICE_TYPE_LABELS[t]}</option>)}
                 </select>
                 <input className={`${INPUT} flex-1 min-w-[160px]`} placeholder="Название" value={derivedForm.title} onChange={e => setDerivedForm(f => ({ ...f, title: e.target.value }))} />
-                <input className={`${INPUT} w-32`} placeholder="Content Code" value={derivedForm.contentCode} onChange={e => setDerivedForm(f => ({ ...f, contentCode: e.target.value }))} />
                 <button type="button" onClick={handleCreateDerived} className="bg-[#00c26b] hover:bg-[#00b360] text-white text-xs font-medium px-3 py-2 rounded-lg transition-colors">Создать</button>
               </div>
             )}
@@ -638,7 +742,7 @@ export default function SmmContentItemCard({ detail, editors, staff, onOpenChang
               <div className="flex items-center gap-1.5 flex-wrap">
                 {detail.childContent.map(c => (
                   <button key={c.id} type="button" onClick={() => onOpenContentItem(c.id)} className="text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded-lg px-2.5 py-1.5 transition-colors">
-                    {c.contentCode || c.title || 'Без названия'}
+                    {c.title || 'Без названия'}
                   </button>
                 ))}
               </div>

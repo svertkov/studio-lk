@@ -73,6 +73,7 @@ export default function EditorProfileModal({ editorId, onOpenChange, onSaved, on
   const [specialization, setSpecialization] = useState('')
   const [notes, setNotes] = useState('')
   const [active, setActive] = useState(true)
+  const [editorCode, setEditorCode] = useState('')
 
   useEffect(() => {
     if (!editorId) return
@@ -89,6 +90,7 @@ export default function EditorProfileModal({ editorId, onOpenChange, onSaved, on
       setSpecialization(res.data.specialization ?? '')
       setNotes(res.data.notes ?? '')
       setActive(res.data.active)
+      setEditorCode(res.data.editorCode ?? '')
     })
     getMontageProjectsForEditor(editorId).then(res => { if (!cancelled) setProjects(res.data) })
     return () => { cancelled = true }
@@ -109,6 +111,7 @@ export default function EditorProfileModal({ editorId, onOpenChange, onSaved, on
       displayName, firstName: firstName || undefined, lastName: lastName || undefined,
       phone: phone || undefined, telegram: telegram || undefined, email: email || undefined,
       specialization: specialization || undefined, notes: notes || undefined, active,
+      editorCode: editorCode.trim() || null,
     }
     const result = isCreate ? await createEditorProfile(input) : await updateEditorProfile(editorId!, input)
     setSaving(false)
@@ -236,6 +239,12 @@ export default function EditorProfileModal({ editorId, onOpenChange, onSaved, on
               <Field><FieldLabel>Имя</FieldLabel><input value={firstName} onChange={e => setFirstName(e.target.value)} className={INPUT} /></Field>
               <Field><FieldLabel>Фамилия</FieldLabel><input value={lastName} onChange={e => setLastName(e.target.value)} className={INPUT} /></Field>
             </Row>
+            <Field>
+              {/* Код монтажёра для File Code (docs/business/SMM.md, «File Code») —
+                  напр. "AH" для Алисы Ходченковой, задаётся один раз вручную. */}
+              <FieldLabel>Код монтажёра (для File Code)</FieldLabel>
+              <input value={editorCode} onChange={e => setEditorCode(e.target.value)} placeholder="напр. AH" className={`${INPUT} w-32 font-mono uppercase`} />
+            </Field>
             <Row>
               <Field><FieldLabel>Телефон</FieldLabel><input value={phone} onChange={e => setPhone(e.target.value)} className={INPUT} /></Field>
               <Field><FieldLabel>Telegram</FieldLabel><input value={telegram} onChange={e => setTelegram(e.target.value)} className={INPUT} /></Field>

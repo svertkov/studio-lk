@@ -30,6 +30,9 @@ interface Props {
 export default function SmmProjectOverviewTab({ project, setProject, packageItems, contentItems, clientPayments, members }: Props) {
   const [savingFee, setSavingFee] = useState(false)
   const [feeInput, setFeeInput] = useState(project.monthlyFee != null ? String(project.monthlyFee) : '')
+  const [savingCode, setSavingCode] = useState(false)
+  const [projectCodeInput, setProjectCodeInput] = useState(project.projectCode ?? '')
+  const [codeError, setCodeError] = useState<string | null>(null)
 
   const period = computeSmmBillingPeriod(project.startDate, project.billingPeriodType)
   const progress = computePackageProgress(packageItems, contentItems, period)
@@ -62,6 +65,20 @@ export default function SmmProjectOverviewTab({ project, setProject, packageItem
     if (result.ok) setProject(() => result.data)
   }
 
+  // Код проекта для File Code (docs/business/SMM.md, «File Code») — короткий,
+  // редактируемый вручную, не вычисляется из названия клиента.
+  async function handleCodeBlur() {
+    const next = projectCodeInput.trim() || null
+    if (next === project.projectCode) return
+    setSavingCode(true)
+    setCodeError(null)
+    const result = await updateSmmProject(project.id, { projectCode: next })
+    setSavingCode(false)
+    if (!result.ok) { setCodeError(result.error); return }
+    setProject(() => result.data)
+    setProjectCodeInput(result.data.projectCode ?? '')
+  }
+
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -80,6 +97,14 @@ export default function SmmProjectOverviewTab({ project, setProject, packageItem
               <label className="block text-zinc-500 text-xs mb-1">Стоимость ведения, ₽/мес</label>
               <input className={INPUT} type="number" value={feeInput} onChange={e => setFeeInput(e.target.value)} onBlur={handleFeeBlur} disabled={savingFee} />
             </div>
+          </div>
+          <div>
+            <label className="block text-zinc-500 text-xs mb-1">Код проекта (для File Code)</label>
+            <input
+              className={`${INPUT} w-32 font-mono uppercase`} placeholder="напр. DIA" value={projectCodeInput}
+              onChange={e => setProjectCodeInput(e.target.value)} onBlur={handleCodeBlur} disabled={savingCode}
+            />
+            {codeError && <p className="text-red-400 text-xs mt-1">{codeError}</p>}
           </div>
           <div className="grid grid-cols-2 gap-3 text-sm">
             <div>

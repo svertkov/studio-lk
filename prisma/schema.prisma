@@ -368,6 +368,8 @@ model User {
   smmWorkItemsCreated                         SmmWorkItem[]
   smmPaymentsCreated                          SmmPayment[]
   smmPublicationMetricsCreated                SmmPublicationMetric[]
+  montageVersionsCreated                      MontageVersion[]
+  smmRecurringPayoutsCreated                  SmmRecurringPayout[]
 
   @@map("cms_user")
 }
@@ -1435,14 +1437,31 @@ model EditorProfile {
   // active в черновом списке ТЗ дублировали бы друг друга без второго
   // самостоятельного смысла).
   active         Boolean  @default(true)
+  // Короткий персональный код монтажёра для File Code (следующий этап после
+  // 2B, docs/business/SMM.md, «File Code») — напр. "AH" для Алисы Ходченковой.
+  // Nullable: старые/новые профили без кода просто не участвуют в генерации
+  // File Code, пока администратор его не задаст (действующий workflow не
+  // блокируется отсутствием кода). Задаётся один раз вручную, НЕ вычисляется
+  // из имени при каждом использовании — стабильный идентификатор, переживает
+  // переименование displayName.
+  editorCode     String?  @unique @map("editor_code")
+  // Атомарный счётчик следующего порядкового номера File Code ЭТОГО
+  // монтажёра (AH-001, AH-002, ...) — инкрементируется одним atomic UPDATE
+  // (`{ increment: 1 }`), не через SELECT max()+1 (см. «Гонки при генерации
+  // номера» в docs/business/SMM.md — Postgres блокирует строку на время
+  // UPDATE, конкурентные вызовы гарантированно получают разные значения).
+  // Присвоенный номер = возвращённое значение МИНУС 1 (счётчик хранит
+  // "следующий свободный", не "последний использованный").
+  nextFileSequence Int    @default(1) @map("next_file_sequence")
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
 
-  user            User?            @relation(fields: [userId], references: [id])
-  projects        MontageProject[]
-  smmContentItems SmmContentItem[]
-  smmWorkItems    SmmWorkItem[]
-  smmPayments     SmmPayment[]
+  user                User?                @relation(fields: [userId], references: [id])
+  projects            MontageProject[]
+  smmContentItems     SmmContentItem[]
+  smmWorkItems        SmmWorkItem[]
+  smmPayments         SmmPayment[]
+  smmRecurringPayouts SmmRecurringPayout[]
 
   @@map("cms_editor_profile")
 }
@@ -1584,6 +1603,28 @@ model MontageProject {
   deliveryUrl           String? @map("delivery_url")
   materialsComment      String? @map("materials_comment")
 
+  // ---- File Code (следующий этап после 2B, docs/business/SMM.md, «File
+  // Code») — единственный человекочитаемый идентификатор готового файла,
+  // заменяет прежний двойной Content Code/File Code. fileCodeBase — БЕЗ
+  // номера версии ("2026.08.09-DIA-AH-017"), формируется ОДИН РАЗ при первой
+  // передаче в монтаж (см. linkSmmContentToMontage, actions/smm.ts), когда
+  // известны SmmProject.projectCode + EditorProfile.editorCode + порядковый
+  // номер этого монтажёра. Дальнейшая смена editorId на этом же
+  // MontageProject НЕ регенерирует base — «старые File Code не должны
+  // задним числом менять своё имя» (ТЗ). База — бизнес-поле, не первичный
+  // ключ, admin может скорректировать её вручную при ошибке; уже созданные
+  // MontageVersion.fileCode при этом не переписываются (хранят готовую
+  // строку на момент своего создания), меняются только версии, добавленные
+  // ПОСЛЕ правки. @unique, но не на уровне таблицы SmmContentItem/этой —
+  // одна база = один готовый файл.
+  fileCodeBase      String? @unique @map("file_code_base")
+  // Атомарный счётчик следующего номера версии ЭТОГО проекта монтажа
+  // (V01, V02, ...) — тот же приём, что EditorProfile.nextFileSequence
+  // (atomic increment, не SELECT max()+1). Не относится к MontageProject,
+  // созданным вне SMM (fileCodeBase у них остаётся null, счётчик просто не
+  // используется).
+  nextVersionNumber Int     @default(1) @map("next_version_number")
+
   // ---- Правки ----
   revisionsIncluded Int?    @map("revisions_included")
   revisionsUsed     Int     @default(0) @map("revisions_used")
@@ -1621,6 +1662,7 @@ model MontageProject {
   documents      Document[]
   smmContentItem SmmContentItem?
   smmWorkItems   SmmWorkItem[]
+  versions       MontageVersion[]
 
   @@index([orderId])
   @@index([clientId])
@@ -1628,6 +1670,36 @@ model MontageProject {
   @@index([status])
   @@index([deadlineDate])
   @@map("cms_montage_project")
+}
+
+// История версий готового файла (следующий этап после 2B, docs/business/
+// SMM.md, «Версии») — один MontageProject/один ContentItem может иметь
+// несколько версий готового файла (V01 → правки → V02 → ...), НЕ отдельный
+// ContentItem на каждую версию. fileCode хранится материализованной строкой
+// на каждой строке (не пересчитывается от MontageProject.fileCodeBase на
+// лету) — так более ранняя версия не меняет своё имя задним числом, даже
+// если администратор позже скорректирует fileCodeBase проекта. Текущая/
+// последняя версия — просто строка с максимальным versionNumber, отдельного
+// флага isCurrent не заводим (тот же принцип "не хранить то, что легко
+// вычислить" что и у остальной SMM-модели). Не вводим отдельный код "FINAL" —
+// финал это утверждённая версия в существующем статусе-workflow, имя
+// остаётся VXX (ТЗ, «Master/Final»).
+model MontageVersion {
+  id               String   @id @default(cuid())
+  montageProjectId String   @map("montage_project_id")
+  versionNumber    Int      @map("version_number")
+  fileCode         String   @unique @map("file_code")
+  deliveryUrl      String?  @map("delivery_url")
+  comment          String?
+  createdById      String?  @map("created_by_id")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  montageProject MontageProject @relation(fields: [montageProjectId], references: [id], onDelete: Cascade)
+  createdBy      User?          @relation(fields: [createdById], references: [id])
+
+  @@unique([montageProjectId, versionNumber])
+  @@index([montageProjectId])
+  @@map("cms_montage_version")
 }
 
 // Как оформляются документы проекта монтажа — см. MontageProject.documentMode.
@@ -1888,6 +1960,11 @@ enum SmmClientPaymentStatus {
 model SmmProject {
   id                String               @id @default(cuid())
   clientId          String               @map("client_id")
+  // Короткий код проекта для File Code (следующий этап после 2B,
+  // docs/business/SMM.md, «File Code») — напр. "DIA" для Диамед. Nullable,
+  // редактируемый вручную администратором — НЕ генерируется автоматически
+  // из первых букв названия клиента (ТЗ: "не генерировать вслепую").
+  projectCode       String?              @unique @map("project_code")
   status            SmmProjectStatus     @default(ACTIVE)
   // Стоимость ведения — редактируемая сумма, НЕ хардкод (SMM.md, «Бизнес-
   // контекст»: суммы реальных клиентов студии примерные и обязаны
@@ -1906,14 +1983,15 @@ model SmmProject {
   createdAt         DateTime             @default(now()) @map("created_at")
   updatedAt         DateTime             @updatedAt @map("updated_at")
 
-  client        Client             @relation(fields: [clientId], references: [id])
-  packageItems  SmmPackageItem[]
-  contentItems  SmmContentItem[]
-  materialLinks SmmMaterialLink[]
-  members       SmmProjectMember[]
-  workItems     SmmWorkItem[]
-  payments      SmmClientPayment[]
-  scheduleLinks SmmScheduleLink[]
+  client           Client               @relation(fields: [clientId], references: [id])
+  packageItems     SmmPackageItem[]
+  contentItems     SmmContentItem[]
+  materialLinks    SmmMaterialLink[]
+  members          SmmProjectMember[]
+  workItems        SmmWorkItem[]
+  payments         SmmClientPayment[]
+  scheduleLinks    SmmScheduleLink[]
+  recurringPayouts SmmRecurringPayout[]
 
   @@index([clientId])
   @@index([status])
@@ -2004,11 +2082,15 @@ model SmmContentItem {
   // SmmPublication.url (по одной строке на каждую площадку). SMM.md, п.18
   // (Publication URL).
   publishedUrl         String?                 @map("published_url")
-  // Постоянный человекочитаемый бизнес-идентификатор контента (напр. "Д186",
-  // "ЗЛ1") — НЕ индекс файла монтажёра (это разные сущности, SMM.md, п.5).
-  // Физическая колонка сохранена как index_code (переименовано в схеме без
-  // миграции данных через @map — тот же физический столбец, только имя
-  // Prisma-поля/DTO стало однозначным).
+  // [DEPRECATED, следующий этап после 2B] Прежний параллельный
+  // человекочитаемый идентификатор ("Д186") — заменён единым File Code
+  // (MontageProject.fileCodeBase + MontageVersion.fileCode, docs/business/
+  // SMM.md, «File Code»): два конкурирующих идентификатора признаны
+  // архитектурной ошибкой (ТЗ: "Content Code как отдельная бизнес-система
+  // больше не нужен"). Колонка (index_code) и составной unique-индекс на
+  // ней сняты (0 реальных строк с кодом на момент удаления — см. отчёт
+  // задачи), поле оставлено nullable ради обратной совместимости уже
+  // написанного кода/скриптов, новый UI его не показывает и не пишет.
   contentCode          String?                 @map("index_code")
   // Техническое задание исполнителю ("Монтаж с 2:58. Вставить фрагмент...")
   // — отдельно от description (что это за материал по смыслу). Намеренно
@@ -2040,13 +2122,6 @@ model SmmContentItem {
   publications    SmmPublication[]
   scheduleLinks   SmmContentScheduleLink[]
 
-  // 2B, ТЗ п.37: contentCode уникален В ПРЕДЕЛАХ проекта, не глобально
-  // (у разных клиентов легитимно могут быть одинаковые коды). Postgres
-  // не считает несколько NULL конфликтующими в составном unique-индексе —
-  // единицы контента без кода по-прежнему создаются свободно. Добавлено
-  // только после проверки прод-данных: на момент 2B в проде 0 строк
-  // SmmContentItem, конфликтов быть не может (см. docs/business/SMM.md).
-  @@unique([smmProjectId, contentCode])
   @@index([smmProjectId])
   @@index([status])
   @@index([editorId])
@@ -2276,15 +2351,72 @@ model SmmPayment {
   periodEnd   DateTime?      @map("period_end")
   method      PaymentMethod?
   comment     String?
+  // Регулярное обязательство, которое закрывает эта выплата (следующий этап
+  // после 2B, docs/business/SMM.md, «Регулярные выплаты») — null для обычных
+  // сдельных/разовых выплат. periodDate — КАКОЕ ИМЕННО плановое число месяца
+  // закрыто ("2 числа за август"), нужно ТОЛЬКО вместе с recurringPayoutId,
+  // чтобы «Календарь выплат»/«К выплате» могли исключить уже оплаченные
+  // обязательства без пересчёта истории. @@unique ниже — защита от двойной
+  // оплаты одного и того же обязательства (composite unique игнорирует NULL,
+  // обычные сдельные выплаты — recurringPayoutId=null — не конфликтуют
+  // между собой, тот же приём, что @@unique([smmProjectId, contentCode])
+  // использовал раньше для nullable-поля).
+  recurringPayoutId String? @map("recurring_payout_id")
+  periodDate         DateTime?      @map("period_date")
   createdById String?        @map("created_by_id")
   createdAt   DateTime       @default(now()) @map("created_at")
 
-  performer EditorProfile @relation(fields: [performerId], references: [id])
-  createdBy User?         @relation(fields: [createdById], references: [id])
-  workItems SmmWorkItem[]
+  performer       EditorProfile       @relation(fields: [performerId], references: [id])
+  createdBy       User?               @relation(fields: [createdById], references: [id])
+  workItems       SmmWorkItem[]
+  recurringPayout SmmRecurringPayout? @relation(fields: [recurringPayoutId], references: [id])
+
+  @@unique([recurringPayoutId, periodDate])
+  @@index([performerId])
+  @@index([recurringPayoutId])
+  @@map("cms_smm_payment")
+}
+
+// Регулярное фиксированное обязательство перед исполнителем (следующий этап
+// после 2B, docs/business/SMM.md, «Регулярные выплаты») — напр. "Лиза
+// Ванесова, Diamed, 20 000₽ 2-го и 17-го числа". НЕ универсальный payroll
+// engine — только план (когда и сколько причитается), сам ФАКТ выплаты
+// создаёт обычный SmmPayment (type=SALARY, recurringPayoutId=этот план,
+// periodDate=конкретное число) — единая модель факта выплаты, не second
+// source of truth (ТЗ: "не создавать параллельный SalaryPayment"). Даты
+// обязательства не хранятся построчно на годы вперёд — вычисляются на лету
+// чистой функцией computeRecurringPayoutDueDates (smm-model.ts) для
+// запрошенного периода, тот же принцип, что computeSmmBillingPeriod.
+model SmmRecurringPayout {
+  id            String         @id @default(cuid())
+  performerId   String         @map("performer_id")
+  // Nullable — часть регулярных обязательств студии не привязана к
+  // конкретному SMM-клиенту (общая ставка), большинство реальных примеров
+  // ТЗ — привязаны к одному клиенту.
+  smmProjectId  String?        @map("smm_project_id")
+  amount        Float
+  // Дни месяца, когда наступает обязательство (1..31) — напр. [2, 17].
+  // Дни за пределами длины конкретного месяца (31 в феврале) клэмпятся к
+  // последнему дню месяца при вычислении дат (computeRecurringPayoutDueDates).
+  daysOfMonth   Int[]          @map("days_of_month")
+  startDate     DateTime       @map("start_date")
+  endDate       DateTime?      @map("end_date")
+  active        Boolean        @default(true)
+  paymentMethod PaymentMethod? @map("payment_method")
+  notes         String?
+  createdById   String?        @map("created_by_id")
+  createdAt     DateTime       @default(now()) @map("created_at")
+  updatedAt     DateTime       @updatedAt @map("updated_at")
+
+  performer  EditorProfile @relation(fields: [performerId], references: [id])
+  smmProject SmmProject?   @relation(fields: [smmProjectId], references: [id])
+  createdBy  User?         @relation(fields: [createdById], references: [id])
+  payments   SmmPayment[]
 
   @@index([performerId])
-  @@map("cms_smm_payment")
+  @@index([smmProjectId])
+  @@index([active])
+  @@map("cms_smm_recurring_payout")
 }
 
 // Плановый/фактический платёж SMM-клиента (SMM.md, п.22) — гибкий график

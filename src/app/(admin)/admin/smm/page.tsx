@@ -1,10 +1,11 @@
 import { getSmmProjectsSummary, getSmmDashboardStats, getUpcomingSmmClientPayments, getUnpaidApprovedWorkItems, getAllSmmContentItems, getAllActiveSmmProjectMembers } from '@/lib/actions/smm'
 import { getClients } from '@/lib/actions/clients'
 import { getStaffUsers } from '@/lib/actions/users'
+import { getAllEditorProfiles } from '@/lib/actions/editors'
 import SmmHubView from './SmmHubView'
 
 export default async function SmmPage() {
-  const [projectsResult, statsResult, upcomingPaymentsResult, unpaidWorkResult, contentResult, clientsResult, staffResult, membersResult] = await Promise.all([
+  const [projectsResult, statsResult, upcomingPaymentsResult, unpaidWorkResult, contentResult, clientsResult, staffResult, membersResult, editorsResult] = await Promise.all([
     getSmmProjectsSummary(),
     getSmmDashboardStats(),
     getUpcomingSmmClientPayments(),
@@ -13,6 +14,7 @@ export default async function SmmPage() {
     getClients(),
     getStaffUsers(),
     getAllActiveSmmProjectMembers(),
+    getAllEditorProfiles(),
   ])
 
   return (
@@ -31,6 +33,7 @@ export default async function SmmPage() {
         initialMembers={membersResult.data}
         clients={clientsResult.ok ? clientsResult.data : []}
         staff={staffResult.data}
+        editors={editorsResult.data}
       />
     </div>
   )

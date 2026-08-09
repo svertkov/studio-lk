@@ -19,7 +19,9 @@ import { MONTAGE_STATUS_LABELS } from '@/lib/montage-model'
 import { writeAuditLog, resolveValidUserId } from '@/lib/audit'
 import {
   wouldCreateContentParentCycle, getContentMontageShortState, getNearestPublicationInfo, computeContentMaterialsIndicator,
-  getSmmContentAttentionReasons, type SmmContentAttentionReason,
+  getSmmContentAttentionReasons, formatFileCodeBase, formatFileCode, getLatestMetricByType,
+  buildContentPlanPlatformCells, buildSmmCalendarEvents, computeSmmAnalyticsAggregates, computeRecurringPayoutDueDates,
+  type SmmContentAttentionReason, type SmmCalendarEvent, type SmmContentPlanPlatformCell, type SmmAnalyticsAggregates,
 } from '@/lib/smm-model'
 
 async function requireStaffSession(): Promise<{ ok: true; userId: string | null } | { ok: false; error: string }> {
@@ -50,6 +52,9 @@ export interface SmmProjectDTO {
   id: string
   clientId: string
   clientName: string | null
+  // Короткий код проекта для File Code ("DIA" — Диамед, docs/business/
+  // SMM.md, «File Code») — задаётся вручную, не генерируется из названия.
+  projectCode: string | null
   status: SmmProjectStatus
   monthlyFee: number | null
   currency: string
@@ -64,6 +69,7 @@ export interface SmmProjectDTO {
 
 export interface SmmProjectInput {
   clientId?: string
+  projectCode?: string | null
   status?: SmmProjectStatus
   monthlyFee?: number | null
   currency?: string
@@ -84,11 +90,21 @@ const SMM_PROJECT_INCLUDE = {
 
 type SmmProjectRow = Awaited<ReturnType<typeof prisma.smmProject.findFirstOrThrow<{ include: typeof SMM_PROJECT_INCLUDE }>>>
 
+// Нормализация кода проекта — тот же принцип, что EditorProfile.editorCode
+// (actions/editors.ts): короткий, uppercase, не форсируем длину жёстко.
+function normalizeProjectCode(value: string | null | undefined): string | null | undefined {
+  if (value === undefined) return undefined
+  if (value === null) return null
+  const trimmed = value.trim().toUpperCase()
+  return trimmed || null
+}
+
 function toProjectDTO(row: SmmProjectRow): SmmProjectDTO {
   return {
     id: row.id,
     clientId: row.clientId,
     clientName: row.client?.name ?? null,
+    projectCode: row.projectCode,
     status: row.status,
     monthlyFee: row.monthlyFee,
     currency: row.currency,
@@ -144,6 +160,7 @@ export async function createSmmProject(input: SmmProjectInput): Promise<{ ok: tr
     const created = await prisma.smmProject.create({
       data: {
         clientId: input.clientId,
+        projectCode: normalizeProjectCode(input.projectCode) ?? null,
         status: input.status ?? 'ACTIVE',
         monthlyFee: input.monthlyFee ?? null,
         currency: input.currency?.trim() || 'RUB',
@@ -160,6 +177,9 @@ export async function createSmmProject(input: SmmProjectInput): Promise<{ ok: tr
     revalidateSmmPaths(created.clientId, created.id)
     return { ok: true, data: toProjectDTO(created) }
   } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+      return { ok: false, error: 'Такой код проекта уже используется' }
+    }
     console.error('[createSmmProject]', e)
     return { ok: false, error: 'Не удалось создать SMM-проект' }
   }
@@ -172,6 +192,7 @@ export async function updateSmmProject(id: string, input: SmmProjectInput): Prom
     const updated = await prisma.smmProject.update({
       where: { id },
       data: {
+        ...(input.projectCode !== undefined && { projectCode: normalizeProjectCode(input.projectCode) }),
         ...(input.status !== undefined && { status: input.status }),
         ...(input.monthlyFee !== undefined && { monthlyFee: input.monthlyFee }),
         ...(input.currency !== undefined && { currency: input.currency.trim() || 'RUB' }),
@@ -187,6 +208,9 @@ export async function updateSmmProject(id: string, input: SmmProjectInput): Prom
     revalidateSmmPaths(updated.clientId, id)
     return { ok: true, data: toProjectDTO(updated) }
   } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+      return { ok: false, error: 'Такой код проекта уже используется' }
+    }
     console.error('[updateSmmProject]', e)
     return { ok: false, error: 'Не удалось обновить SMM-проект' }
   }
@@ -426,10 +450,17 @@ export interface SmmContentItemDTO {
   resultUrl: string | null
   // [DEPRECATED, 2A] источник правды теперь publications[].url (см. schema.prisma).
   publishedUrl: string | null
-  // Постоянный человекочитаемый бизнес-идентификатор ("Д186") — НЕ индекс
-  // файла монтажёра, физически та же колонка, что раньше называлась
-  // indexCode (см. schema.prisma).
+  // [DEPRECATED, следующий этап после 2B] см. schema.prisma — заменён File
+  // Code (fileCodeBase/currentFileCode на editingProject*, ниже). Поле
+  // оставлено только для чтения ради обратной совместимости, новый UI его
+  // не показывает и не пишет.
   contentCode: string | null
+  // Единый человекочитаемый идентификатор готового файла (docs/business/
+  // SMM.md, «File Code») — читается ЧЕРЕЗ реальный MontageProject, не
+  // копируется в отдельное поле здесь (тот же принцип, что
+  // editingProjectStatus/editingProjectDeliveryUrl). null, пока контент не
+  // передан в монтаж ИЛИ пока не заданы projectCode/editorCode.
+  editingProjectFileCode: string | null
   parentContentId: string | null
   parentContentTitle: string | null
   parentContentCode: string | null
@@ -453,8 +484,7 @@ export interface SmmContentItemInput {
   responsibleUserId?: string | null
   editorId?: string | null
   parentContentId?: string | null
-  contentCode?: string | null
-  // Legacy-поля (2A, deprecated) — принимаются на вход только ради обратной
+  // Legacy-поля (2A/2B, deprecated) — принимаются на вход только ради обратной
   // совместимости уже написанного кода/будущих скриптов миграции истории;
   // новый UI их больше не выставляет (см. SmmProjectContentTab.tsx).
   scheduleEventId?: string | null
@@ -468,7 +498,12 @@ export interface SmmContentItemInput {
 const CONTENT_ITEM_INCLUDE = {
   responsibleUser: { select: { name: true, email: true } },
   editor: { select: { displayName: true } },
-  editingProject: { select: { status: true, deliveryUrl: true } },
+  editingProject: {
+    select: {
+      status: true, deliveryUrl: true, fileCodeBase: true,
+      versions: { orderBy: { versionNumber: 'desc' }, take: 1, select: { fileCode: true } },
+    },
+  },
   parentContent: { select: { title: true, contentCode: true } },
   childContent: { select: { id: true, title: true, contentCode: true }, orderBy: { createdAt: 'asc' } },
   scheduleLinks: { include: { scheduleEvent: { select: { id: true, title: true, startAt: true } } }, orderBy: { createdAt: 'desc' } },
@@ -497,6 +532,7 @@ function toContentItemDTO(row: ContentItemRow): SmmContentItemDTO {
     editingProjectStatus: row.editingProject?.status ?? null,
     editingProjectStatusLabel: row.editingProject ? MONTAGE_STATUS_LABELS[row.editingProject.status] : null,
     editingProjectDeliveryUrl: row.editingProject?.deliveryUrl ?? null,
+    editingProjectFileCode: row.editingProject?.versions[0]?.fileCode ?? null,
     scheduleEventId: row.scheduleEventId,
     scheduleEvents: row.scheduleLinks.map(l => ({
       linkId: l.id, scheduleEventId: l.scheduleEventId, title: l.scheduleEvent.title, startAt: l.scheduleEvent.startAt?.toISOString() ?? null,
@@ -571,7 +607,6 @@ export async function createSmmContentItem(smmProjectId: string, input: SmmConte
         responsibleUserId: input.responsibleUserId || null,
         editorId: input.editorId || null,
         parentContentId: input.parentContentId || null,
-        contentCode: input.contentCode?.trim() || null,
         scheduleEventId: input.scheduleEventId || null,
         sourceUrl: input.sourceUrl?.trim() || null,
         resultUrl: input.resultUrl?.trim() || null,
@@ -584,9 +619,6 @@ export async function createSmmContentItem(smmProjectId: string, input: SmmConte
     revalidateSmmPaths(project.clientId, smmProjectId)
     return { ok: true, data: toContentItemDTO(created) }
   } catch (e) {
-    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
-      return { ok: false, error: 'Такой Content Code уже используется в этом проекте' }
-    }
     console.error('[createSmmContentItem]', e)
     return { ok: false, error: 'Не удалось создать единицу контента' }
   }
@@ -625,7 +657,6 @@ export async function updateSmmContentItem(id: string, input: SmmContentItemInpu
         ...(input.responsibleUserId !== undefined && { responsibleUserId: input.responsibleUserId || null }),
         ...(input.editorId !== undefined && { editorId: input.editorId || null }),
         ...(input.parentContentId !== undefined && { parentContentId: input.parentContentId || null }),
-        ...(input.contentCode !== undefined && { contentCode: input.contentCode?.trim() || null }),
         ...(input.scheduleEventId !== undefined && { scheduleEventId: input.scheduleEventId || null }),
         ...(input.sourceUrl !== undefined && { sourceUrl: input.sourceUrl?.trim() || null }),
         ...(input.resultUrl !== undefined && { resultUrl: input.resultUrl?.trim() || null }),
@@ -638,9 +669,6 @@ export async function updateSmmContentItem(id: string, input: SmmContentItemInpu
     revalidateSmmPaths(updated.smmProject.clientId, updated.smmProjectId)
     return { ok: true, data: toContentItemDTO(updated) }
   } catch (e) {
-    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
-      return { ok: false, error: 'Такой Content Code уже используется в этом проекте' }
-    }
     console.error('[updateSmmContentItem]', e)
     return { ok: false, error: 'Не удалось обновить единицу контента' }
   }
@@ -694,7 +722,7 @@ export async function linkSmmContentToMontage(
   try {
     const content = await prisma.smmContentItem.findUnique({
       where: { id: contentItemId },
-      include: { smmProject: { select: { clientId: true } } },
+      include: { smmProject: { select: { clientId: true, projectCode: true } } },
     })
     if (!content) return { ok: false, error: 'Единица контента не найдена' }
     if (content.editingProjectId) return { ok: false, error: 'Контент уже связан с проектом монтажа' }
@@ -711,6 +739,19 @@ export async function linkSmmContentToMontage(
       deadlineDate: input.deadlineDate || undefined,
     })
     if (!montageResult.ok) return { ok: false, error: montageResult.error }
+
+    // File Code (docs/business/SMM.md, «File Code») — формируется здесь,
+    // при ПЕРВОЙ передаче в монтаж, если известны и монтажёр, и его код, и
+    // код SMM-проекта. Молча пропускается, если чего-то не хватает —
+    // единица контента остаётся без File Code, администратор заполнит коды
+    // и вызовет generateMontageFileCode вручную позже (см. ниже).
+    if (montageEditorId) {
+      const editor = await prisma.editorProfile.findUnique({ where: { id: montageEditorId }, select: { editorCode: true } })
+      if (editor?.editorCode && content.smmProject.projectCode) {
+        const createdById = await resolveValidUserId(prisma, authResult.userId)
+        await generateFileCodeInternal(montageResult.data.id, montageEditorId, editor.editorCode, content.smmProject.projectCode, createdById)
+      }
+    }
 
     const updated = await prisma.smmContentItem.update({
       where: { id: contentItemId },
@@ -745,6 +786,154 @@ export async function linkSmmContentToMontage(
   } catch (e) {
     console.error('[linkSmmContentToMontage]', e)
     return { ok: false, error: 'Не удалось связать с проектом монтажа' }
+  }
+}
+
+// ============================================================
+// FILE CODE (docs/business/SMM.md, «File Code») — единственный
+// человекочитаемый идентификатор готового файла, заменяет прежний двойной
+// Content Code/File Code. «Гонки при генерации номера»: и порядковый номер
+// монтажёра (EditorProfile.nextFileSequence), и номер версии
+// (MontageProject.nextVersionNumber) — атомарные счётчики, инкрементируются
+// ОДНИМ UPDATE (`{ increment: 1 }`), не SELECT max()+1. Postgres блокирует
+// строку на время UPDATE — конкурентные вызовы гарантированно сериализуются
+// и получают разные значения без advisory-лока и без retry-цикла.
+// Присвоенный номер = возвращённое значение МИНУС 1 (счётчик хранит
+// "следующий свободный", не "последний использованный").
+// ============================================================
+
+async function generateFileCodeInternal(
+  montageProjectId: string, editorId: string, editorCode: string, projectCode: string, createdById: string | null,
+): Promise<{ fileCodeBase: string; fileCode: string }> {
+  return prisma.$transaction(async tx => {
+    const updatedEditor = await tx.editorProfile.update({
+      where: { id: editorId },
+      data: { nextFileSequence: { increment: 1 } },
+      select: { nextFileSequence: true },
+    })
+    const sequence = updatedEditor.nextFileSequence - 1
+    const base = formatFileCodeBase(new Date(), projectCode, editorCode, sequence)
+    // nextVersionNumber тоже проходит через тот же atomic increment (старт
+    // со схемного default=1 → становится 2) — единый механизм с
+    // addMontageVersion ниже, не два разных способа посчитать номер версии.
+    const updatedProject = await tx.montageProject.update({
+      where: { id: montageProjectId },
+      data: { fileCodeBase: base, nextVersionNumber: { increment: 1 } },
+      select: { nextVersionNumber: true },
+    })
+    const versionNumber = updatedProject.nextVersionNumber - 1
+    const fileCode = formatFileCode(base, versionNumber)
+    await tx.montageVersion.create({ data: { montageProjectId, versionNumber, fileCode, createdById } })
+    return { fileCodeBase: base, fileCode }
+  })
+}
+
+// Ручная генерация File Code для случая, когда при передаче в монтаж не
+// хватало кода проекта/монтажёра (ТЗ: "не заставлять пользователя заранее
+// знать монтажёра при создании идеи") — администратор заполняет коды позже
+// и вызывает это действие из карточки. Повторный вызов для уже
+// сгенерированного проекта отклоняется — база формируется РОВНО один раз.
+export async function generateMontageFileCode(
+  montageProjectId: string,
+): Promise<{ ok: true; data: { fileCodeBase: string; fileCode: string } } | { ok: false; error: string }> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, error: authResult.error }
+  try {
+    const mp = await prisma.montageProject.findUnique({
+      where: { id: montageProjectId },
+      select: { fileCodeBase: true, editorId: true, smmContentItem: { select: { smmProject: { select: { projectCode: true } } } } },
+    })
+    if (!mp) return { ok: false, error: 'Проект монтажа не найден' }
+    if (mp.fileCodeBase) return { ok: false, error: 'File Code уже присвоен этому проекту' }
+    if (!mp.editorId) return { ok: false, error: 'Сначала назначьте монтажёра' }
+    const projectCode = mp.smmContentItem?.smmProject.projectCode
+    if (!projectCode) return { ok: false, error: 'У SMM-проекта не задан код (projectCode) — задайте его в карточке проекта' }
+    const editor = await prisma.editorProfile.findUnique({ where: { id: mp.editorId }, select: { editorCode: true } })
+    if (!editor?.editorCode) return { ok: false, error: 'У монтажёра не задан код (editorCode) — задайте его в карточке монтажёра' }
+
+    const createdById = await resolveValidUserId(prisma, authResult.userId)
+    const result = await generateFileCodeInternal(montageProjectId, mp.editorId, editor.editorCode, projectCode, createdById)
+
+    revalidatePath('/admin/editing')
+    revalidatePath('/admin/smm')
+    revalidatePath('/admin/smm/production')
+    return { ok: true, data: result }
+  } catch (e) {
+    console.error('[generateMontageFileCode]', e)
+    return { ok: false, error: 'Не удалось сгенерировать File Code' }
+  }
+}
+
+// Ручная коррекция базы File Code администратором при ошибке (ТЗ: "File
+// Code — бизнес-поле, НЕ primary key, может быть исправлен администратором
+// при ошибке"). УЖЕ созданные MontageVersion.fileCode при этом НЕ
+// переписываются задним числом (хранят готовую строку на момент своего
+// создания) — меняются только версии, добавленные ПОСЛЕ правки. Это
+// осознанное поведение, не баг (ТЗ: "старые File Code не должны задним
+// числом менять своё имя").
+export async function updateMontageFileCodeBase(
+  montageProjectId: string, newBase: string,
+): Promise<{ ok: true; data: { fileCodeBase: string } } | { ok: false; error: string }> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, error: authResult.error }
+  const trimmed = newBase.trim()
+  if (!trimmed) return { ok: false, error: 'Укажите File Code' }
+  try {
+    const updated = await prisma.montageProject.update({ where: { id: montageProjectId }, data: { fileCodeBase: trimmed }, select: { fileCodeBase: true } })
+    await writeAuditLog({
+      userId: authResult.userId, action: 'MONTAGE_FILE_CODE_BASE_CORRECTED', entityType: 'MontageProject', entityId: montageProjectId,
+      metadata: { fileCodeBase: trimmed },
+    })
+    revalidatePath('/admin/editing')
+    revalidatePath('/admin/smm')
+    revalidatePath('/admin/smm/production')
+    return { ok: true, data: { fileCodeBase: updated.fileCodeBase! } }
+  } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+      return { ok: false, error: 'Такой File Code уже используется другим проектом' }
+    }
+    console.error('[updateMontageFileCodeBase]', e)
+    return { ok: false, error: 'Не удалось изменить File Code' }
+  }
+}
+
+export interface AddMontageVersionInput {
+  deliveryUrl?: string | null
+  comment?: string | null
+}
+
+// «Добавить версию» (docs/business/SMM.md, «Версии») — НЕ создаёт новый
+// ContentItem/MontageProject, только новую строку истории версий с
+// увеличенным номером (V01 → V02 → ...); порядковый номер МОНТАЖЁРА
+// (AH-017) при этом не меняется — это всё та же работа (ТЗ: "не создавать
+// новую последовательность AH-018").
+export async function addMontageVersion(
+  montageProjectId: string, input: AddMontageVersionInput = {},
+): Promise<{ ok: true; data: { versionNumber: number; fileCode: string } } | { ok: false; error: string }> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, error: authResult.error }
+  try {
+    const mp = await prisma.montageProject.findUnique({ where: { id: montageProjectId }, select: { fileCodeBase: true } })
+    if (!mp) return { ok: false, error: 'Проект монтажа не найден' }
+    if (!mp.fileCodeBase) return { ok: false, error: 'Сначала должен быть присвоен File Code' }
+    const createdById = await resolveValidUserId(prisma, authResult.userId)
+    const created = await prisma.$transaction(async tx => {
+      const updatedProject = await tx.montageProject.update({
+        where: { id: montageProjectId }, data: { nextVersionNumber: { increment: 1 } }, select: { nextVersionNumber: true },
+      })
+      const versionNumber = updatedProject.nextVersionNumber - 1
+      const fileCode = formatFileCode(mp.fileCodeBase!, versionNumber)
+      return tx.montageVersion.create({
+        data: { montageProjectId, versionNumber, fileCode, deliveryUrl: input.deliveryUrl?.trim() || null, comment: input.comment?.trim() || null, createdById },
+      })
+    })
+    revalidatePath('/admin/editing')
+    revalidatePath('/admin/smm')
+    revalidatePath('/admin/smm/production')
+    return { ok: true, data: { versionNumber: created.versionNumber, fileCode: created.fileCode } }
+  } catch (e) {
+    console.error('[addMontageVersion]', e)
+    return { ok: false, error: 'Не удалось добавить версию' }
   }
 }
 
@@ -1390,6 +1579,11 @@ export interface SmmWorkItemDTO {
   status: SmmWorkStatus
   paymentStatus: SmmWorkPaymentStatus
   paymentId: string | null
+  // File Code связанного готового файла (docs/business/SMM.md, «File
+  // Code») — читается через реальный MontageProject (editingProjectId),
+  // делает финансовую таблицу выплат понятной без захода в карточку
+  // ("Алиса — 2026.08.09-DIA-AH-017-V01 — Монтаж — 1000₽").
+  fileCode: string | null
   createdAt: string
 }
 
@@ -1411,6 +1605,7 @@ const WORK_ITEM_INCLUDE = {
   performer: { select: { displayName: true } },
   contentItem: { select: { title: true } },
   smmProject: { select: { clientId: true, client: { select: { name: true } } } },
+  editingProject: { select: { versions: { orderBy: { versionNumber: 'desc' }, take: 1, select: { fileCode: true } } } },
 } as const
 type WorkItemRow = Awaited<ReturnType<typeof prisma.smmWorkItem.findFirstOrThrow<{ include: typeof WORK_ITEM_INCLUDE }>>>
 
@@ -1434,6 +1629,7 @@ function toWorkItemDTO(row: WorkItemRow): SmmWorkItemDTO {
     status: row.status,
     paymentStatus: row.paymentStatus,
     paymentId: row.paymentId,
+    fileCode: row.editingProject?.versions[0]?.fileCode ?? null,
     createdAt: row.createdAt.toISOString(),
   }
 }
@@ -1529,6 +1725,10 @@ export interface SmmPaymentDTO {
   comment: string | null
   createdAt: string
   workItems: SmmWorkItemDTO[]
+  // Регулярное обязательство, которое закрывает эта выплата (docs/business/
+  // SMM.md, «Регулярные выплаты») — null для сдельных/разовых выплат.
+  recurringPayoutId: string | null
+  periodDate: string | null
 }
 
 const PAYMENT_INCLUDE = {
@@ -1551,6 +1751,8 @@ function toPaymentDTO(row: PaymentRow): SmmPaymentDTO {
     comment: row.comment,
     createdAt: row.createdAt.toISOString(),
     workItems: row.workItems.map(toWorkItemDTO),
+    recurringPayoutId: row.recurringPayoutId,
+    periodDate: row.periodDate?.toISOString() ?? null,
   }
 }
 
@@ -1824,6 +2026,14 @@ export interface SmmProductionRowDTO {
   smmProjectId: string
   smmProjectClientId: string
   clientName: string | null
+  // Единственный человекочитаемый идентификатор готового файла
+  // (docs/business/SMM.md, «File Code») — null, пока контент не передан в
+  // монтаж или пока не заданы коды проекта/монтажёра. Заменяет прежний
+  // contentCode колонки "Код" (см. ниже, deprecated).
+  fileCode: string | null
+  // [DEPRECATED] см. schema.prisma — оставлено только для совместимости
+  // существующих потребителей DTO, новый UI (таблица Production) больше не
+  // показывает это поле.
   contentCode: string | null
   title: string | null
   serviceType: SmmServiceType
@@ -1858,7 +2068,10 @@ const PRODUCTION_ROW_INCLUDE = {
   responsibleUser: { select: { name: true, email: true } },
   editor: { select: { displayName: true } },
   editingProject: {
-    select: { status: true, editorId: true, editor: { select: { displayName: true } }, deadlineDate: true, deliveryUrl: true },
+    select: {
+      status: true, editorId: true, editor: { select: { displayName: true } }, deadlineDate: true, deliveryUrl: true,
+      versions: { orderBy: { versionNumber: 'desc' }, take: 1, select: { fileCode: true } },
+    },
   },
   publications: { select: { platform: true, status: true, plannedPublishAt: true, url: true } },
   materialLinks: { select: { materialType: true, category: true } },
@@ -1891,6 +2104,7 @@ function toProductionRowDTO(row: ProductionRow, now: Date): SmmProductionRowDTO 
     smmProjectId: row.smmProjectId,
     smmProjectClientId: row.smmProject.clientId,
     clientName: row.smmProject.client?.name ?? null,
+    fileCode: row.editingProject?.versions[0]?.fileCode ?? null,
     contentCode: row.contentCode,
     title: row.title,
     serviceType: row.serviceType,
@@ -1948,12 +2162,26 @@ export async function getSmmProductionItems(): Promise<{ ok: true; data: SmmProd
 // запросом: только то, что реально показывает карточка.
 // ============================================================
 
+export interface SmmMontageVersionDTO {
+  id: string
+  versionNumber: number
+  fileCode: string
+  deliveryUrl: string | null
+  comment: string | null
+  createdByName: string | null
+  createdAt: string
+}
+
 export interface SmmContentItemDetailDTO {
   id: string
   smmProjectId: string
   smmProjectClientId: string
   smmProjectClientName: string | null
   smmProjectStatus: SmmProjectStatus
+  // Код SMM-проекта (docs/business/SMM.md, «File Code») — нужен карточке,
+  // чтобы объяснить, ПОЧЕМУ File Code ещё не создан ("нет кода проекта"),
+  // и предложить сгенерировать вручную, когда данные появятся.
+  smmProjectCode: string | null
   serviceType: SmmServiceType
   customServiceType: string | null
   contentCode: string | null
@@ -1973,11 +2201,19 @@ export interface SmmContentItemDetailDTO {
   editingProjectDeliveryUrl: string | null
   editingProjectEditorId: string | null
   editingProjectEditorName: string | null
+  editingProjectEditorCode: string | null
   editingProjectDeadlineDate: string | null
   editingProjectClientAmount: number | null
   editingProjectEditorAmount: number | null
   editingProjectDescription: string | null
   editingProjectRequirements: string | null
+  // File Code (docs/business/SMM.md, «File Code») — база без версии и
+  // полный текущий код (последняя версия). currentFileCode=null означает
+  // "ещё не сгенерирован" — карточка сама решает, показать кнопку
+  // генерации или подсказку о недостающих кодах, по наличию versions/base.
+  editingProjectFileCodeBase: string | null
+  currentFileCode: string | null
+  versions: SmmMontageVersionDTO[]
   parentContentId: string | null
   parentContentTitle: string | null
   parentContentCode: string | null
@@ -1998,13 +2234,14 @@ export interface SmmContentItemDetailDTO {
 }
 
 const CONTENT_ITEM_DETAIL_INCLUDE = {
-  smmProject: { select: { status: true, client: { select: { id: true, name: true } } } },
+  smmProject: { select: { status: true, projectCode: true, client: { select: { id: true, name: true } } } },
   responsibleUser: { select: { name: true, email: true } },
   editor: { select: { displayName: true } },
   editingProject: {
     select: {
-      status: true, editorId: true, editor: { select: { displayName: true } }, deadlineDate: true, deliveryUrl: true,
-      clientAmount: true, editorAmount: true, description: true, requirements: true,
+      status: true, editorId: true, editor: { select: { displayName: true, editorCode: true } }, deadlineDate: true, deliveryUrl: true,
+      clientAmount: true, editorAmount: true, description: true, requirements: true, fileCodeBase: true,
+      versions: { orderBy: { versionNumber: 'desc' }, include: { createdBy: { select: { name: true, email: true } } } },
     },
   },
   parentContent: { select: { title: true, contentCode: true } },
@@ -2041,6 +2278,7 @@ function toContentItemDetailDTO(row: ContentItemDetailRow, now: Date): SmmConten
     smmProjectClientId: row.smmProject.client?.id ?? '',
     smmProjectClientName: row.smmProject.client?.name ?? null,
     smmProjectStatus: row.smmProject.status,
+    smmProjectCode: row.smmProject.projectCode,
     serviceType: row.serviceType,
     customServiceType: row.customServiceType,
     contentCode: row.contentCode,
@@ -2060,11 +2298,18 @@ function toContentItemDetailDTO(row: ContentItemDetailRow, now: Date): SmmConten
     editingProjectDeliveryUrl: row.editingProject?.deliveryUrl ?? null,
     editingProjectEditorId: row.editingProject?.editorId ?? null,
     editingProjectEditorName: row.editingProject?.editor?.displayName ?? null,
+    editingProjectEditorCode: row.editingProject?.editor?.editorCode ?? null,
     editingProjectDeadlineDate: row.editingProject?.deadlineDate?.toISOString() ?? null,
     editingProjectClientAmount: row.editingProject?.clientAmount ?? null,
     editingProjectEditorAmount: row.editingProject?.editorAmount ?? null,
     editingProjectDescription: row.editingProject?.description ?? null,
     editingProjectRequirements: row.editingProject?.requirements ?? null,
+    editingProjectFileCodeBase: row.editingProject?.fileCodeBase ?? null,
+    currentFileCode: row.editingProject?.versions[0]?.fileCode ?? null,
+    versions: (row.editingProject?.versions ?? []).map(v => ({
+      id: v.id, versionNumber: v.versionNumber, fileCode: v.fileCode, deliveryUrl: v.deliveryUrl, comment: v.comment,
+      createdByName: v.createdBy?.name ?? v.createdBy?.email ?? null, createdAt: v.createdAt.toISOString(),
+    })),
     parentContentId: row.parentContentId,
     parentContentTitle: row.parentContent?.title ?? null,
     parentContentCode: row.parentContent?.contentCode ?? null,
@@ -2101,5 +2346,662 @@ export async function getSmmContentItemDetail(id: string): Promise<{ ok: true; d
   } catch (e) {
     console.error('[getSmmContentItemDetail]', e)
     return { ok: false, error: 'Не удалось загрузить карточку контента' }
+  }
+}
+
+// ============================================================
+// ПОЛНОЦЕННАЯ ТАБЛИЦА КОНТЕНТА КЛИЕНТА (docs/business/SMM.md, «Views») —
+// SMM → Клиенты → проект → Контент. Тот же SmmContentItem, что в Production
+// (не вторая модель) — отдельный include под колонки именно этой таблицы
+// (Съёмки/Опубликовано X/Y/Просмотры), которых нет в PRODUCTION_ROW_INCLUDE.
+// ============================================================
+
+export interface SmmClientContentRowDTO {
+  id: string
+  fileCode: string | null
+  title: string | null
+  serviceType: SmmServiceType
+  customServiceType: string | null
+  status: SmmContentStatus
+  plannedPublishDate: string | null
+  publicationPlatforms: SmmPublicationPlatform[]
+  publishedCount: number
+  totalPublicationsCount: number
+  scheduleCount: number
+  hasSourceMaterials: boolean
+  hasMasterMaterial: boolean
+  editorName: string | null
+  montageShortState: string
+  deliveryUrl: string | null
+  // Сумма latest VIEWS-снимков по всем публикациям этой единицы контента —
+  // компактный показатель для таблицы, полная история — в самой карточке
+  // (ТЗ: "не терять историю, но не грузить все снимки в таблицу").
+  latestViewsTotal: number
+  attentionReasons: SmmContentAttentionReason[]
+  isOverdue: boolean
+}
+
+const CLIENT_CONTENT_ROW_INCLUDE = {
+  editor: { select: { displayName: true } },
+  editingProject: {
+    select: {
+      status: true, editorId: true, editor: { select: { displayName: true } }, deadlineDate: true, deliveryUrl: true,
+      versions: { orderBy: { versionNumber: 'desc' }, take: 1, select: { fileCode: true } },
+    },
+  },
+  publications: {
+    select: {
+      platform: true, status: true, plannedPublishAt: true, url: true,
+      metrics: { where: { metricType: 'VIEWS' }, orderBy: { capturedAt: 'desc' }, take: 1, select: { value: true } },
+    },
+  },
+  materialLinks: { select: { materialType: true, category: true } },
+  scheduleLinks: { select: { id: true } },
+} as const
+
+type ClientContentRow = Awaited<ReturnType<typeof prisma.smmContentItem.findFirstOrThrow<{ include: typeof CLIENT_CONTENT_ROW_INCLUDE }>>>
+
+function toClientContentRowDTO(row: ClientContentRow, now: Date): SmmClientContentRowDTO {
+  const materials = computeContentMaterialsIndicator(row.materialLinks)
+  const hasMasterMaterial = materials.hasMaster || !!row.editingProject?.deliveryUrl
+  const activePublications = row.publications.filter(p => p.status !== 'CANCELLED')
+  const publicationsIso = row.publications.map(p => ({ status: p.status, plannedPublishAt: p.plannedPublishAt?.toISOString() ?? null, url: p.url }))
+  const deadlineIso = row.deadline?.toISOString() ?? null
+  const editingDeadlineIso = row.editingProject?.deadlineDate?.toISOString() ?? null
+
+  const attentionReasons = getSmmContentAttentionReasons({
+    status: row.status,
+    deadline: deadlineIso,
+    editingProjectStatus: row.editingProject?.status ?? null,
+    editingProjectDeadlineDate: editingDeadlineIso,
+    editingProjectEditorId: row.editingProject?.editorId ?? null,
+    hasSourceMaterials: materials.hasSource,
+    publications: publicationsIso,
+  }, now)
+
+  return {
+    id: row.id,
+    fileCode: row.editingProject?.versions[0]?.fileCode ?? null,
+    title: row.title,
+    serviceType: row.serviceType,
+    customServiceType: row.customServiceType,
+    status: row.status,
+    plannedPublishDate: row.plannedPublishDate?.toISOString() ?? null,
+    publicationPlatforms: [...new Set(activePublications.map(p => p.platform))],
+    publishedCount: row.publications.filter(p => p.status === 'PUBLISHED').length,
+    totalPublicationsCount: activePublications.length,
+    scheduleCount: row.scheduleLinks.length,
+    hasSourceMaterials: materials.hasSource,
+    hasMasterMaterial,
+    // Тот же приоритет, что в Production: реальный MontageProject.editor,
+    // если монтаж уже создан, иначе pre-assignment ContentItem.editorId.
+    editorName: row.editingProject?.editor?.displayName ?? row.editor?.displayName ?? null,
+    montageShortState: getContentMontageShortState(row.editingProject?.status ?? null),
+    deliveryUrl: row.editingProject?.deliveryUrl ?? null,
+    latestViewsTotal: row.publications.reduce((sum, p) => sum + (p.metrics[0]?.value ?? 0), 0),
+    attentionReasons,
+    isOverdue: attentionReasons.includes('OVERDUE_PRODUCTION') || attentionReasons.includes('OVERDUE_PUBLICATION'),
+  }
+}
+
+// Читает контент ОДНОГО SMM-проекта, без ограничения по статусу проекта
+// (в отличие от Production) — карточка клиента должна показывать историю
+// контента даже для приостановленного/архивного проекта.
+export async function getSmmProjectContentRows(smmProjectId: string): Promise<{ ok: true; data: SmmClientContentRowDTO[] } | { ok: false; data: SmmClientContentRowDTO[]; error: string }> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, data: [], error: authResult.error }
+  try {
+    const rows = await prisma.smmContentItem.findMany({ where: { smmProjectId }, include: CLIENT_CONTENT_ROW_INCLUDE, orderBy: { createdAt: 'desc' } })
+    return { ok: true, data: rows.map(r => toClientContentRowDTO(r, new Date())) }
+  } catch (e) {
+    console.error('[getSmmProjectContentRows]', e)
+    return { ok: false, data: [], error: 'Не удалось загрузить контент проекта' }
+  }
+}
+
+// ============================================================
+// КОНТЕНТ-ПЛАН КЛИЕНТА (docs/business/SMM.md, «Views») — pivot-представление
+// над ТЕМИ ЖЕ SmmContentItem/SmmPublication, не новая таблица БД. Не грузит
+// всю историю клиента одним запросом — только выбранный период (ТЗ, п.23).
+// ============================================================
+
+export interface SmmContentPlanRowDTO {
+  id: string
+  fileCode: string | null
+  title: string | null
+  serviceType: SmmServiceType
+  customServiceType: string | null
+  status: SmmContentStatus
+  // Дата, по которой строка попала в план и сортируется — plannedPublishDate
+  // единицы контента, либо (если не задана) ближайшая plannedPublishAt среди
+  // её публикаций внутри периода.
+  relevantDate: string
+  platformCells: Partial<Record<SmmPublicationPlatform, SmmContentPlanPlatformCell>>
+}
+
+const CONTENT_PLAN_ROW_INCLUDE = {
+  editingProject: { select: { versions: { orderBy: { versionNumber: 'desc' }, take: 1, select: { fileCode: true } } } },
+  publications: { select: { id: true, platform: true, status: true, plannedPublishAt: true, publishedAt: true, url: true } },
+} as const
+
+export async function getSmmContentPlanRows(
+  smmProjectId: string, periodStart: string, periodEnd: string,
+): Promise<{ ok: true; data: SmmContentPlanRowDTO[] } | { ok: false; data: SmmContentPlanRowDTO[]; error: string }> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, data: [], error: authResult.error }
+  try {
+    const start = new Date(periodStart)
+    const end = new Date(periodEnd)
+    const rows = await prisma.smmContentItem.findMany({
+      where: {
+        smmProjectId,
+        OR: [
+          { plannedPublishDate: { gte: start, lte: end } },
+          { publications: { some: { plannedPublishAt: { gte: start, lte: end } } } },
+        ],
+      },
+      include: CONTENT_PLAN_ROW_INCLUDE,
+    })
+
+    const data = rows.map(row => {
+      const publicationsIso = row.publications.map(p => ({
+        id: p.id, platform: p.platform, status: p.status,
+        plannedPublishAt: p.plannedPublishAt?.toISOString() ?? null, publishedAt: p.publishedAt?.toISOString() ?? null, url: p.url,
+      }))
+      const nearestInRange = publicationsIso
+        .filter(p => p.plannedPublishAt && new Date(p.plannedPublishAt) >= start && new Date(p.plannedPublishAt) <= end)
+        .sort((a, b) => new Date(a.plannedPublishAt!).getTime() - new Date(b.plannedPublishAt!).getTime())[0]
+      const relevantDate = row.plannedPublishDate?.toISOString() ?? nearestInRange?.plannedPublishAt ?? row.createdAt.toISOString()
+      return {
+        id: row.id,
+        fileCode: row.editingProject?.versions[0]?.fileCode ?? null,
+        title: row.title,
+        serviceType: row.serviceType,
+        customServiceType: row.customServiceType,
+        status: row.status,
+        relevantDate,
+        platformCells: buildContentPlanPlatformCells(publicationsIso),
+      }
+    })
+    data.sort((a, b) => new Date(a.relevantDate).getTime() - new Date(b.relevantDate).getTime())
+    return { ok: true, data }
+  } catch (e) {
+    console.error('[getSmmContentPlanRows]', e)
+    return { ok: false, data: [], error: 'Не удалось загрузить контент-план' }
+  }
+}
+
+// ============================================================
+// ГЛОБАЛЬНЫЙ КАЛЕНДАРЬ SMM (docs/business/SMM.md, «Views») — /admin/smm/
+// calendar, агрегирует уже существующие источники, ничего своего не хранит.
+// Тип события ("публикация"/"съёмка"/"дедлайн") фильтруется НА КЛИЕНТЕ
+// (filterSmmCalendarEvents, smm-model.ts) — период уже сужает объём данных
+// на сервере, дальше это просто вид уже загруженного маленького набора.
+// ============================================================
+
+export async function getSmmCalendarEvents(
+  periodStart: string, periodEnd: string,
+): Promise<{ ok: true; data: SmmCalendarEvent[] } | { ok: false; data: SmmCalendarEvent[]; error: string }> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, data: [], error: authResult.error }
+  try {
+    const start = new Date(periodStart)
+    const end = new Date(periodEnd)
+
+    const [publicationRows, shootRows, deadlineCandidates] = await Promise.all([
+      prisma.smmPublication.findMany({
+        where: { plannedPublishAt: { gte: start, lte: end }, contentItem: { smmProject: { status: 'ACTIVE' } } },
+        select: {
+          id: true, plannedPublishAt: true, platform: true,
+          contentItem: { select: { id: true, title: true, smmProjectId: true, smmProject: { select: { client: { select: { name: true } } } } } },
+        },
+      }),
+      prisma.smmScheduleLink.findMany({
+        where: { scheduleEvent: { startAt: { gte: start, lte: end } }, smmProject: { status: 'ACTIVE' } },
+        select: {
+          id: true, smmProjectId: true,
+          scheduleEvent: { select: { id: true, title: true, startAt: true, orderId: true } },
+          smmProject: { select: { client: { select: { name: true } } } },
+        },
+      }),
+      prisma.smmContentItem.findMany({
+        where: {
+          smmProject: { status: 'ACTIVE' },
+          status: { notIn: ['PUBLISHED', 'CANCELLED'] },
+          OR: [{ deadline: { gte: start, lte: end } }, { editingProject: { deadlineDate: { gte: start, lte: end } } }],
+        },
+        select: {
+          id: true, title: true, smmProjectId: true, status: true, deadline: true,
+          editingProject: { select: { deadlineDate: true } },
+          smmProject: { select: { client: { select: { name: true } } } },
+        },
+      }),
+    ])
+
+    const publications = publicationRows.map(p => ({
+      id: p.id, date: p.plannedPublishAt!.toISOString(), title: p.contentItem.title ?? 'Публикация',
+      smmProjectId: p.contentItem.smmProjectId, clientName: p.contentItem.smmProject.client?.name ?? null,
+      contentItemId: p.contentItem.id, platform: p.platform,
+    }))
+    const shoots = shootRows.map(s => ({
+      id: s.id, date: s.scheduleEvent.startAt!.toISOString(), title: s.scheduleEvent.title ?? 'Съёмка',
+      smmProjectId: s.smmProjectId, clientName: s.smmProject.client?.name ?? null,
+      scheduleEventId: s.scheduleEvent.id, orderId: s.scheduleEvent.orderId,
+    }))
+    // Релевантная дата дедлайна — та же приоритизация, что у Production
+    // (sortDeadline): при IN_EDIT реальный срок держит MontageProject, иначе
+    // собственный deadline ContentItem. OR выше мог найти строку по ЛЮБОМУ
+    // из двух полей — здесь выбираем именно ту дату и проверяем, что она
+    // реально попадает в период (не вторая дата "за компанию").
+    const deadlines = deadlineCandidates
+      .map(d => {
+        const editingDeadline = d.editingProject?.deadlineDate?.toISOString() ?? null
+        const relevant = d.status === 'IN_EDIT' && editingDeadline ? editingDeadline : d.deadline?.toISOString() ?? null
+        return relevant ? { id: d.id, date: relevant, title: d.title ?? 'Дедлайн производства', smmProjectId: d.smmProjectId, clientName: d.smmProject.client?.name ?? null, contentItemId: d.id } : null
+      })
+      .filter((d): d is NonNullable<typeof d> => d !== null && new Date(d.date) >= start && new Date(d.date) <= end)
+
+    return { ok: true, data: buildSmmCalendarEvents({ publications, shoots, deadlines }) }
+  } catch (e) {
+    console.error('[getSmmCalendarEvents]', e)
+    return { ok: false, data: [], error: 'Не удалось загрузить календарь' }
+  }
+}
+
+// ============================================================
+// АНАЛИТИКА (docs/business/SMM.md, «Views») — SMM → Аналитика, первый
+// полноценный табличный вид над Publication+SmmPublicationMetric. take=500
+// без периода — защита от загрузки всей истории одним запросом (ТЗ,
+// «Performance»), при реальном использовании период почти всегда задан.
+// ============================================================
+
+export interface SmmAnalyticsRowDTO {
+  id: string
+  contentItemId: string
+  date: string | null
+  smmProjectId: string
+  clientName: string | null
+  fileCode: string | null
+  contentTitle: string | null
+  serviceType: SmmServiceType
+  platform: SmmPublicationPlatform
+  url: string | null
+  status: SmmPublicationStatus
+  metrics: Partial<Record<SmmMetricType, number>>
+}
+
+export interface SmmAnalyticsFilters {
+  smmProjectId?: string
+  periodStart?: string
+  periodEnd?: string
+  platform?: SmmPublicationPlatform
+  serviceType?: SmmServiceType
+}
+
+const ANALYTICS_ROW_INCLUDE = {
+  contentItem: {
+    select: {
+      title: true, serviceType: true, smmProjectId: true,
+      smmProject: { select: { client: { select: { name: true } } } },
+      editingProject: { select: { versions: { orderBy: { versionNumber: 'desc' }, take: 1, select: { fileCode: true } } } },
+    },
+  },
+  metrics: { orderBy: { capturedAt: 'desc' } },
+} as const
+
+type AnalyticsRow = Awaited<ReturnType<typeof prisma.smmPublication.findFirstOrThrow<{ include: typeof ANALYTICS_ROW_INCLUDE }>>>
+
+function toAnalyticsRowDTO(row: AnalyticsRow): SmmAnalyticsRowDTO {
+  const latest = getLatestMetricByType(row.metrics.map(m => ({ metricType: m.metricType, value: m.value, capturedAt: m.capturedAt.toISOString() })))
+  const metrics: Partial<Record<SmmMetricType, number>> = {}
+  for (const key of Object.keys(latest) as SmmMetricType[]) metrics[key] = latest[key]!.value
+  return {
+    id: row.id,
+    contentItemId: row.contentItemId,
+    date: row.publishedAt?.toISOString() ?? row.plannedPublishAt?.toISOString() ?? null,
+    smmProjectId: row.contentItem.smmProjectId,
+    clientName: row.contentItem.smmProject.client?.name ?? null,
+    fileCode: row.contentItem.editingProject?.versions[0]?.fileCode ?? null,
+    contentTitle: row.contentItem.title,
+    serviceType: row.contentItem.serviceType,
+    platform: row.platform,
+    url: row.url,
+    status: row.status,
+    metrics,
+  }
+}
+
+export async function getSmmAnalyticsRows(
+  filters: SmmAnalyticsFilters = {},
+): Promise<{ ok: true; data: { rows: SmmAnalyticsRowDTO[]; aggregates: SmmAnalyticsAggregates } } | { ok: false; data: null; error: string }> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, data: null, error: authResult.error }
+  try {
+    const where: Prisma.SmmPublicationWhereInput = {}
+    const contentItemWhere: Prisma.SmmContentItemWhereInput = {}
+    if (filters.smmProjectId) contentItemWhere.smmProjectId = filters.smmProjectId
+    if (filters.serviceType) contentItemWhere.serviceType = filters.serviceType
+    if (Object.keys(contentItemWhere).length > 0) where.contentItem = contentItemWhere
+    if (filters.platform) where.platform = filters.platform
+    if (filters.periodStart || filters.periodEnd) {
+      const gte = filters.periodStart ? new Date(filters.periodStart) : undefined
+      const lte = filters.periodEnd ? new Date(filters.periodEnd) : undefined
+      where.OR = [{ plannedPublishAt: { gte, lte } }, { publishedAt: { gte, lte } }]
+    }
+
+    const rows = await prisma.smmPublication.findMany({
+      where, include: ANALYTICS_ROW_INCLUDE, orderBy: { createdAt: 'desc' },
+      take: filters.periodStart || filters.periodEnd ? undefined : 500,
+    })
+    const dtoRows = rows.map(toAnalyticsRowDTO)
+    const aggregates = computeSmmAnalyticsAggregates(dtoRows.map(r => ({
+      status: r.status, title: r.contentTitle, latestViews: r.metrics.VIEWS ?? null, latestFollowersGained: r.metrics.FOLLOWERS_GAINED ?? null,
+    })))
+    return { ok: true, data: { rows: dtoRows, aggregates } }
+  } catch (e) {
+    console.error('[getSmmAnalyticsRows]', e)
+    return { ok: false, data: null, error: 'Не удалось загрузить аналитику' }
+  }
+}
+
+// ============================================================
+// РЕГУЛЯРНЫЕ ВЫПЛАТЫ (docs/business/SMM.md, «Регулярные выплаты») — план
+// обязательства (SmmRecurringPayout) отдельно от факта выплаты (обычный
+// SmmPayment с recurringPayoutId+periodDate) — не создаём параллельный
+// SalaryPayment (ТЗ, п.41).
+// ============================================================
+
+export interface SmmRecurringPayoutDTO {
+  id: string
+  performerId: string
+  performerName: string
+  smmProjectId: string | null
+  smmProjectClientName: string | null
+  amount: number
+  daysOfMonth: number[]
+  startDate: string
+  endDate: string | null
+  active: boolean
+  paymentMethod: PaymentMethod | null
+  notes: string | null
+  createdAt: string
+}
+
+export interface SmmRecurringPayoutInput {
+  performerId: string
+  smmProjectId?: string | null
+  amount: number
+  daysOfMonth: number[]
+  startDate: string
+  endDate?: string | null
+  active?: boolean
+  paymentMethod?: PaymentMethod | null
+  notes?: string | null
+}
+
+const RECURRING_PAYOUT_INCLUDE = {
+  performer: { select: { displayName: true } },
+  smmProject: { select: { client: { select: { name: true } } } },
+} as const
+type RecurringPayoutRow = Awaited<ReturnType<typeof prisma.smmRecurringPayout.findFirstOrThrow<{ include: typeof RECURRING_PAYOUT_INCLUDE }>>>
+
+function toRecurringPayoutDTO(row: RecurringPayoutRow): SmmRecurringPayoutDTO {
+  return {
+    id: row.id,
+    performerId: row.performerId,
+    performerName: row.performer.displayName,
+    smmProjectId: row.smmProjectId,
+    smmProjectClientName: row.smmProject?.client.name ?? null,
+    amount: row.amount,
+    daysOfMonth: row.daysOfMonth,
+    startDate: row.startDate.toISOString(),
+    endDate: row.endDate?.toISOString() ?? null,
+    active: row.active,
+    paymentMethod: row.paymentMethod,
+    notes: row.notes,
+    createdAt: row.createdAt.toISOString(),
+  }
+}
+
+export async function getSmmRecurringPayouts(): Promise<{ ok: true; data: SmmRecurringPayoutDTO[] } | { ok: false; data: SmmRecurringPayoutDTO[]; error: string }> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, data: [], error: authResult.error }
+  try {
+    const rows = await prisma.smmRecurringPayout.findMany({ include: RECURRING_PAYOUT_INCLUDE, orderBy: { createdAt: 'desc' } })
+    return { ok: true, data: rows.map(toRecurringPayoutDTO) }
+  } catch (e) {
+    console.error('[getSmmRecurringPayouts]', e)
+    return { ok: false, data: [], error: 'Не удалось загрузить регулярные выплаты' }
+  }
+}
+
+function validateDaysOfMonth(days: number[]): string | null {
+  if (days.length === 0) return 'Укажите хотя бы один день месяца'
+  if (days.some(d => !Number.isInteger(d) || d < 1 || d > 31)) return 'День месяца должен быть числом от 1 до 31'
+  return null
+}
+
+export async function createSmmRecurringPayout(input: SmmRecurringPayoutInput): Promise<{ ok: true; data: SmmRecurringPayoutDTO } | { ok: false; error: string }> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, error: authResult.error }
+  if (!input.performerId) return { ok: false, error: 'Укажите исполнителя' }
+  if (!(input.amount > 0)) return { ok: false, error: 'Укажите сумму выплаты' }
+  const daysError = validateDaysOfMonth(input.daysOfMonth)
+  if (daysError) return { ok: false, error: daysError }
+  try {
+    const createdById = await resolveValidUserId(prisma, authResult.userId)
+    const created = await prisma.smmRecurringPayout.create({
+      data: {
+        performerId: input.performerId,
+        smmProjectId: input.smmProjectId || null,
+        amount: input.amount,
+        daysOfMonth: [...new Set(input.daysOfMonth)].sort((a, b) => a - b),
+        startDate: new Date(input.startDate),
+        endDate: input.endDate ? new Date(input.endDate) : null,
+        active: input.active ?? true,
+        paymentMethod: input.paymentMethod ?? null,
+        notes: input.notes?.trim() || null,
+        createdById,
+      },
+      include: RECURRING_PAYOUT_INCLUDE,
+    })
+    revalidatePath('/admin/smm/payouts')
+    return { ok: true, data: toRecurringPayoutDTO(created) }
+  } catch (e) {
+    console.error('[createSmmRecurringPayout]', e)
+    return { ok: false, error: 'Не удалось создать регулярную выплату' }
+  }
+}
+
+export async function updateSmmRecurringPayout(
+  id: string, input: Partial<SmmRecurringPayoutInput>,
+): Promise<{ ok: true; data: SmmRecurringPayoutDTO } | { ok: false; error: string }> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, error: authResult.error }
+  if (input.daysOfMonth !== undefined) {
+    const daysError = validateDaysOfMonth(input.daysOfMonth)
+    if (daysError) return { ok: false, error: daysError }
+  }
+  try {
+    const updated = await prisma.smmRecurringPayout.update({
+      where: { id },
+      data: {
+        ...(input.smmProjectId !== undefined && { smmProjectId: input.smmProjectId || null }),
+        ...(input.amount !== undefined && { amount: input.amount }),
+        ...(input.daysOfMonth !== undefined && { daysOfMonth: [...new Set(input.daysOfMonth)].sort((a, b) => a - b) }),
+        ...(input.startDate !== undefined && { startDate: new Date(input.startDate) }),
+        ...(input.endDate !== undefined && { endDate: input.endDate ? new Date(input.endDate) : null }),
+        ...(input.active !== undefined && { active: input.active }),
+        ...(input.paymentMethod !== undefined && { paymentMethod: input.paymentMethod }),
+        ...(input.notes !== undefined && { notes: input.notes?.trim() || null }),
+      },
+      include: RECURRING_PAYOUT_INCLUDE,
+    })
+    revalidatePath('/admin/smm/payouts')
+    return { ok: true, data: toRecurringPayoutDTO(updated) }
+  } catch (e) {
+    console.error('[updateSmmRecurringPayout]', e)
+    return { ok: false, error: 'Не удалось обновить регулярную выплату' }
+  }
+}
+
+// Soft — тот же принцип, что EditorProfile.active/MontageProject.isArchived
+// (платформа не удаляет операционные записи физически, см. AGENTS.md).
+export async function setSmmRecurringPayoutActive(id: string, active: boolean): Promise<{ ok: true; data: SmmRecurringPayoutDTO } | { ok: false; error: string }> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, error: authResult.error }
+  try {
+    const updated = await prisma.smmRecurringPayout.update({ where: { id }, data: { active }, include: RECURRING_PAYOUT_INCLUDE })
+    revalidatePath('/admin/smm/payouts')
+    return { ok: true, data: toRecurringPayoutDTO(updated) }
+  } catch (e) {
+    console.error('[setSmmRecurringPayoutActive]', e)
+    return { ok: false, error: 'Не удалось изменить статус регулярной выплаты' }
+  }
+}
+
+// ============================================================
+// «КАЛЕНДАРЬ ВЫПЛАТ» / «К ВЫПЛАТЕ» — единый due-list (docs/business/SMM.md,
+// «Выплаты») из ДВУХ источников: сдельные APPROVED/UNPAID SmmWorkItem (уже
+// существующая основа "К выплате") + due-даты активных SmmRecurringPayout,
+// ещё не закрытые платежом (SmmPayment.recurringPayoutId+periodDate).
+// ============================================================
+
+export interface SmmPayoutDueItemDTO {
+  kind: 'PIECEWORK' | 'RECURRING'
+  id: string
+  date: string
+  performerId: string
+  performerName: string
+  smmProjectClientName: string | null
+  fileCode: string | null
+  // PIECEWORK: тип и контекст работы (workType/customWorkType — та же пара,
+  // что у SmmWorkItemDTO, лейбл строит UI через SMM_WORK_TYPE_LABELS, не
+  // сервер). RECURRING: свободный текст обязательства (RecurringPayout.notes).
+  workType: SmmWorkType | null
+  customWorkType: string | null
+  contentItemTitle: string | null
+  description: string | null
+  amount: number
+  recurringPayoutId: string | null
+  periodDate: string | null
+  workItemId: string | null
+}
+
+export async function getSmmPayoutDueList(
+  periodStart: string, periodEnd: string,
+): Promise<{ ok: true; data: SmmPayoutDueItemDTO[] } | { ok: false; data: SmmPayoutDueItemDTO[]; error: string }> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, data: [], error: authResult.error }
+  try {
+    const start = new Date(periodStart)
+    const end = new Date(periodEnd)
+    const [workItemRows, payouts, alreadyPaid] = await Promise.all([
+      prisma.smmWorkItem.findMany({ where: { status: 'APPROVED', paymentStatus: 'UNPAID' }, include: WORK_ITEM_INCLUDE, orderBy: { workDate: 'asc' } }),
+      prisma.smmRecurringPayout.findMany({ where: { active: true }, include: RECURRING_PAYOUT_INCLUDE }),
+      prisma.smmPayment.findMany({ where: { recurringPayoutId: { not: null }, periodDate: { gte: start, lte: end } }, select: { recurringPayoutId: true, periodDate: true } }),
+    ])
+    const workItems = workItemRows.map(toWorkItemDTO)
+    const paidSet = new Set(alreadyPaid.map(p => `${p.recurringPayoutId}:${p.periodDate!.toISOString()}`))
+
+    const pieceworkItems: SmmPayoutDueItemDTO[] = workItems.map(w => ({
+      kind: 'PIECEWORK',
+      id: w.id,
+      date: w.workDate,
+      performerId: w.performerId,
+      performerName: w.performerName,
+      smmProjectClientName: w.smmProjectClientName,
+      fileCode: w.fileCode,
+      workType: w.workType,
+      customWorkType: w.customWorkType,
+      contentItemTitle: w.contentItemTitle,
+      description: w.description,
+      amount: w.amount,
+      recurringPayoutId: null,
+      periodDate: null,
+      workItemId: w.id,
+    }))
+
+    const recurringItems: SmmPayoutDueItemDTO[] = []
+    for (const payout of payouts) {
+      const dueDates = computeRecurringPayoutDueDates(
+        { daysOfMonth: payout.daysOfMonth, startDate: payout.startDate.toISOString(), endDate: payout.endDate?.toISOString() ?? null },
+        start, end,
+      )
+      for (const due of dueDates) {
+        const key = `${payout.id}:${due.toISOString()}`
+        if (paidSet.has(key)) continue
+        recurringItems.push({
+          kind: 'RECURRING',
+          id: key,
+          date: due.toISOString(),
+          performerId: payout.performerId,
+          performerName: payout.performer.displayName,
+          smmProjectClientName: payout.smmProject?.client.name ?? null,
+          fileCode: null,
+          workType: null,
+          customWorkType: null,
+          contentItemTitle: null,
+          description: payout.notes,
+          amount: payout.amount,
+          recurringPayoutId: payout.id,
+          periodDate: due.toISOString(),
+          workItemId: null,
+        })
+      }
+    }
+
+    return { ok: true, data: [...pieceworkItems, ...recurringItems].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()) }
+  } catch (e) {
+    console.error('[getSmmPayoutDueList]', e)
+    return { ok: false, data: [], error: 'Не удалось загрузить список к выплате' }
+  }
+}
+
+export interface PaySmmRecurringPayoutDueInput {
+  amount?: number
+  method?: PaymentMethod | null
+  comment?: string | null
+}
+
+// Закрывает ОДНО конкретное обязательство (например "2 числа за август") —
+// создаёт обычный SmmPayment (type=SALARY), не отдельную модель факта
+// выплаты (ТЗ, п.41). @@unique([recurringPayoutId, periodDate]) в схеме не
+// даёт оплатить одно и то же обязательство дважды даже при двойном клике.
+export async function paySmmRecurringPayoutDue(
+  recurringPayoutId: string, periodDate: string, input: PaySmmRecurringPayoutDueInput = {},
+): Promise<{ ok: true; data: SmmPaymentDTO } | { ok: false; error: string }> {
+  const authResult = await requireStaffSession()
+  if (!authResult.ok) return { ok: false, error: authResult.error }
+  try {
+    const payout = await prisma.smmRecurringPayout.findUnique({ where: { id: recurringPayoutId } })
+    if (!payout) return { ok: false, error: 'Регулярная выплата не найдена' }
+    const createdById = await resolveValidUserId(prisma, authResult.userId)
+    const created = await prisma.smmPayment.create({
+      data: {
+        performerId: payout.performerId,
+        type: 'SALARY',
+        amount: input.amount ?? payout.amount,
+        method: input.method ?? payout.paymentMethod ?? null,
+        comment: input.comment?.trim() || null,
+        recurringPayoutId,
+        periodDate: new Date(periodDate),
+        createdById,
+      },
+      include: PAYMENT_INCLUDE,
+    })
+    await writeAuditLog({
+      userId: authResult.userId, action: 'SMM_RECURRING_PAYOUT_PAID', entityType: 'SmmPayment', entityId: created.id,
+      metadata: { recurringPayoutId, periodDate },
+    })
+    revalidatePath('/admin/smm/payouts')
+    revalidatePath('/admin/smm')
+    return { ok: true, data: toPaymentDTO(created) }
+  } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+      return { ok: false, error: 'Это обязательство уже оплачено' }
+    }
+    console.error('[paySmmRecurringPayoutDue]', e)
+    return { ok: false, error: 'Не удалось создать выплату' }
   }
 }

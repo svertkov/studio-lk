@@ -6,6 +6,8 @@ import {
   getContentMontageShortState, getNearestPublicationInfo, computeContentMaterialsIndicator,
   getSmmContentAttentionReasons, isSmmContentOperationallyOverdue, sortSmmProductionRowsDefault,
   computeSmmProductionKpis, matchesSmmProductionDateFilter, filterSmmProductionRows, SMM_PRODUCTION_DEFAULT_FILTERS,
+  formatFileCodeBase, formatFileCode, buildContentPlanPlatformCells, buildSmmCalendarEvents, filterSmmCalendarEvents,
+  median, computeSmmAnalyticsAggregates, computeRecurringPayoutDueDates,
   type SmmPublicationPlatform,
 } from './smm-model'
 import type { SmmProjectDTO, SmmPackageItemDTO, SmmContentItemDTO, SmmProjectMemberDTO, SmmPublicationDTO, SmmPublicationMetricDTO } from './actions/smm'
@@ -25,6 +27,7 @@ function makeContentItem(overrides: Partial<SmmContentItemDTO> = {}): SmmContent
     responsibleUserId: null, responsibleUserName: null, editorId: null, editorName: null,
     editingProjectId: null, editingProjectStatus: null, editingProjectStatusLabel: null, editingProjectDeliveryUrl: null,
     scheduleEventId: null, scheduleEvents: [], sourceUrl: null, resultUrl: null, publishedUrl: null, contentCode: null,
+    editingProjectFileCode: null,
     parentContentId: null, parentContentTitle: null, parentContentCode: null, childContent: [], publications: [],
     clientApprovalStatus: 'NOT_REQUIRED', notes: null, createdAt: '2026-08-08T00:00:00.000Z', updatedAt: '2026-08-08T00:00:00.000Z',
     ...overrides,
@@ -41,7 +44,7 @@ function makeMember(overrides: Partial<SmmProjectMemberDTO> = {}): SmmProjectMem
 
 function makeProject(overrides: Partial<SmmProjectDTO> = {}): SmmProjectDTO {
   return {
-    id: 'project-1', clientId: 'client-1', clientName: 'Diamed', status: 'ACTIVE', monthlyFee: 185000,
+    id: 'project-1', clientId: 'client-1', clientName: 'Diamed', projectCode: 'DIA', status: 'ACTIVE', monthlyFee: 185000,
     currency: 'RUB', startDate: '2026-08-08T00:00:00.000Z', endDate: null, billingPeriodType: 'CUSTOM',
     paymentTerms: null, notes: null, createdAt: '2026-08-08T00:00:00.000Z', updatedAt: '2026-08-08T00:00:00.000Z',
     ...overrides,
@@ -637,7 +640,7 @@ describe('matchesSmmProductionDateFilter', () => {
 
 function productionRow(overrides: Partial<Parameters<typeof filterSmmProductionRows>[0][number]> = {}) {
   return {
-    smmProjectId: 'project-1', clientName: 'Diamed', contentCode: 'Д186', title: 'Ролик про УЗИ',
+    smmProjectId: 'project-1', clientName: 'Diamed', fileCode: '2026.08.09-DIA-AH-001-V01', title: 'Ролик про УЗИ',
     status: 'IN_EDIT' as const, serviceType: 'SHORT_VIDEO' as const, editorId: null as string | null, publicationPlatforms: [] as SmmPublicationPlatform[],
     sortDeadline: null, nearestPublicationDate: null, isOverdue: false,
     ...overrides,
@@ -650,8 +653,8 @@ describe('filterSmmProductionRows', () => {
     expect(filterSmmProductionRows(rows, SMM_PRODUCTION_DEFAULT_FILTERS)).toHaveLength(2)
   })
 
-  it('search matches contentCode, title, or client name (case-insensitive)', () => {
-    const rows = [productionRow({ contentCode: 'Д186', title: 'Ролик про УЗИ', clientName: 'Diamed' })]
+  it('search matches fileCode, title, or client name (case-insensitive)', () => {
+    const rows = [productionRow({ fileCode: '2026.08.09-DIA-AH-001-V01', title: 'Ролик про УЗИ', clientName: 'Diamed' })]
     expect(filterSmmProductionRows(rows, { ...SMM_PRODUCTION_DEFAULT_FILTERS, search: 'узи' })).toHaveLength(1)
     expect(filterSmmProductionRows(rows, { ...SMM_PRODUCTION_DEFAULT_FILTERS, search: 'diamed' })).toHaveLength(1)
     expect(filterSmmProductionRows(rows, { ...SMM_PRODUCTION_DEFAULT_FILTERS, search: 'нет такого' })).toHaveLength(0)
@@ -693,5 +696,208 @@ describe('filterSmmProductionRows', () => {
     ]
     const result = filterSmmProductionRows(rows, { ...SMM_PRODUCTION_DEFAULT_FILTERS, smmProjectId: 'a', status: 'IN_EDIT' })
     expect(result).toHaveLength(1)
+  })
+})
+
+describe('formatFileCodeBase / formatFileCode', () => {
+  it('builds the base as date-projectCode-editorCode-sequence(3 digits)', () => {
+    expect(formatFileCodeBase(new Date(2026, 7, 9), 'DIA', 'AH', 17)).toBe('2026.08.09-DIA-AH-017')
+  })
+
+  it('pads a single-digit sequence to 3 digits', () => {
+    expect(formatFileCodeBase(new Date(2026, 7, 9), 'DIA', 'AH', 1)).toBe('2026.08.09-DIA-AH-001')
+  })
+
+  it('pads day/month to 2 digits', () => {
+    expect(formatFileCodeBase(new Date(2026, 0, 5), 'DIA', 'AH', 1)).toBe('2026.01.05-DIA-AH-001')
+  })
+
+  it('appends the version suffix, padded to 2 digits', () => {
+    expect(formatFileCode('2026.08.09-DIA-AH-001', 1)).toBe('2026.08.09-DIA-AH-001-V01')
+    expect(formatFileCode('2026.08.09-DIA-AH-001', 12)).toBe('2026.08.09-DIA-AH-001-V12')
+  })
+})
+
+describe('buildContentPlanPlatformCells', () => {
+  function pub(overrides: Partial<Parameters<typeof buildContentPlanPlatformCells>[0][number]> = {}) {
+    return {
+      id: 'pub-1', platform: 'INSTAGRAM' as SmmPublicationPlatform, status: 'PLANNED' as const,
+      plannedPublishAt: '2026-08-10T00:00:00.000Z', publishedAt: null, url: null,
+      ...overrides,
+    }
+  }
+
+  it('puts each platform into its own cell', () => {
+    const cells = buildContentPlanPlatformCells([pub({ platform: 'INSTAGRAM' }), pub({ id: 'pub-2', platform: 'TELEGRAM' })])
+    expect(cells.INSTAGRAM?.publicationId).toBe('pub-1')
+    expect(cells.TELEGRAM?.publicationId).toBe('pub-2')
+    expect(cells.VK).toBeUndefined()
+  })
+
+  it('when a platform has several publications, keeps the one with the nearest plannedPublishAt', () => {
+    const cells = buildContentPlanPlatformCells([
+      pub({ id: 'far', plannedPublishAt: '2026-08-20T00:00:00.000Z' }),
+      pub({ id: 'near', plannedPublishAt: '2026-08-10T00:00:00.000Z' }),
+    ])
+    expect(cells.INSTAGRAM?.publicationId).toBe('near')
+  })
+
+  it('prefers a publication with a known date over one with none', () => {
+    const cells = buildContentPlanPlatformCells([
+      pub({ id: 'no-date', plannedPublishAt: null }),
+      pub({ id: 'has-date', plannedPublishAt: '2026-08-10T00:00:00.000Z' }),
+    ])
+    expect(cells.INSTAGRAM?.publicationId).toBe('has-date')
+  })
+})
+
+describe('buildSmmCalendarEvents', () => {
+  it('merges publications/shoots/deadlines into one list sorted by date', () => {
+    const events = buildSmmCalendarEvents({
+      publications: [{ id: 'p1', date: '2026-08-15', title: 'Публикация', smmProjectId: 'a', clientName: 'Diamed', contentItemId: 'c1', platform: 'INSTAGRAM' }],
+      shoots: [{ id: 's1', date: '2026-08-10', title: 'Съёмка', smmProjectId: 'a', clientName: 'Diamed', scheduleEventId: 'ev1', orderId: 'ord1' }],
+      deadlines: [{ id: 'd1', date: '2026-08-12', title: 'Дедлайн монтажа', smmProjectId: 'a', clientName: 'Diamed', contentItemId: 'c1' }],
+    })
+    expect(events.map(e => e.kind)).toEqual(['SHOOT', 'DEADLINE', 'PUBLICATION'])
+    expect(events[0].id).toBe('shoot-s1')
+    expect(events[0].orderId).toBe('ord1')
+    expect(events[2].platform).toBe('INSTAGRAM')
+  })
+
+  it('returns an empty list when nothing is passed', () => {
+    expect(buildSmmCalendarEvents({ publications: [], shoots: [], deadlines: [] })).toEqual([])
+  })
+})
+
+describe('filterSmmCalendarEvents', () => {
+  const events = buildSmmCalendarEvents({
+    publications: [{ id: 'p1', date: '2026-08-15', title: 'Публикация', smmProjectId: 'a', clientName: 'Diamed', contentItemId: 'c1', platform: 'INSTAGRAM' }],
+    shoots: [{ id: 's1', date: '2026-08-10', title: 'Съёмка', smmProjectId: 'b', clientName: 'ТОК', scheduleEventId: 'ev1', orderId: null }],
+    deadlines: [],
+  })
+
+  it('ALL/ALL/ALL keeps everything', () => {
+    expect(filterSmmCalendarEvents(events, { smmProjectId: 'ALL', kind: 'ALL', platform: 'ALL' })).toHaveLength(2)
+  })
+
+  it('filters by smmProjectId', () => {
+    expect(filterSmmCalendarEvents(events, { smmProjectId: 'a', kind: 'ALL', platform: 'ALL' })).toHaveLength(1)
+  })
+
+  it('filters by kind', () => {
+    expect(filterSmmCalendarEvents(events, { smmProjectId: 'ALL', kind: 'SHOOT', platform: 'ALL' })).toHaveLength(1)
+  })
+
+  it('filters by platform (only matches events that carry that platform)', () => {
+    expect(filterSmmCalendarEvents(events, { smmProjectId: 'ALL', kind: 'ALL', platform: 'INSTAGRAM' })).toHaveLength(1)
+  })
+})
+
+describe('median', () => {
+  it('returns 0 for an empty array', () => {
+    expect(median([])).toBe(0)
+  })
+
+  it('returns the single value for one element', () => {
+    expect(median([42])).toBe(42)
+  })
+
+  it('returns the middle value for an odd-length array (order-independent)', () => {
+    expect(median([5, 1, 3])).toBe(3)
+  })
+
+  it('averages the two middle values for an even-length array', () => {
+    expect(median([1, 2, 3, 4])).toBe(2.5)
+  })
+})
+
+describe('computeSmmAnalyticsAggregates', () => {
+  function row(overrides: Partial<Parameters<typeof computeSmmAnalyticsAggregates>[0][number]> = {}) {
+    return { status: 'PUBLISHED' as const, title: 'Ролик', latestViews: 100, latestFollowersGained: 5, ...overrides }
+  }
+
+  it('counts only PUBLISHED rows', () => {
+    const result = computeSmmAnalyticsAggregates([row({ status: 'PUBLISHED' }), row({ status: 'PLANNED' })])
+    expect(result.publishedCount).toBe(1)
+  })
+
+  it('sums totalViews and computes averageViews/medianViews from published rows with known views', () => {
+    const result = computeSmmAnalyticsAggregates([row({ latestViews: 100 }), row({ latestViews: 300 }), row({ latestViews: null })])
+    expect(result.totalViews).toBe(400)
+    expect(result.averageViews).toBe(200)
+    expect(result.medianViews).toBe(200)
+  })
+
+  it('picks the best content by highest latestViews', () => {
+    const result = computeSmmAnalyticsAggregates([
+      row({ title: 'Слабый', latestViews: 50 }),
+      row({ title: 'Хит', latestViews: 900 }),
+    ])
+    expect(result.bestContentTitle).toBe('Хит')
+    expect(result.bestContentViews).toBe(900)
+  })
+
+  it('sums followersGained across published rows only', () => {
+    const result = computeSmmAnalyticsAggregates([row({ latestFollowersGained: 5 }), row({ latestFollowersGained: 3, status: 'PLANNED' })])
+    expect(result.followersGained).toBe(5)
+  })
+
+  it('handles an empty list without dividing by zero', () => {
+    const result = computeSmmAnalyticsAggregates([])
+    expect(result).toEqual({
+      publishedCount: 0, totalViews: 0, averageViews: 0, medianViews: 0,
+      bestContentTitle: null, bestContentViews: null, followersGained: 0,
+    })
+  })
+})
+
+describe('computeRecurringPayoutDueDates', () => {
+  it('produces one date per configured day of month, within the period', () => {
+    const dates = computeRecurringPayoutDueDates(
+      { daysOfMonth: [2, 17], startDate: '2026-01-01T00:00:00.000Z', endDate: null },
+      new Date(2026, 7, 1), new Date(2026, 7, 31, 23, 59, 59),
+    )
+    expect(dates.map(d => d.getDate())).toEqual([2, 17])
+  })
+
+  it('clamps a day beyond the month length to the last day of that month', () => {
+    const dates = computeRecurringPayoutDueDates(
+      { daysOfMonth: [31], startDate: '2026-01-01T00:00:00.000Z', endDate: null },
+      new Date(2026, 1, 1), new Date(2026, 1, 28, 23, 59, 59),
+    )
+    expect(dates).toHaveLength(1)
+    expect(dates[0].getDate()).toBe(28)
+  })
+
+  it('excludes occurrences before startDate', () => {
+    const dates = computeRecurringPayoutDueDates(
+      { daysOfMonth: [2, 17], startDate: '2026-08-10T00:00:00.000Z', endDate: null },
+      new Date(2026, 7, 1), new Date(2026, 7, 31, 23, 59, 59),
+    )
+    expect(dates.map(d => d.getDate())).toEqual([17])
+  })
+
+  it('excludes occurrences after endDate', () => {
+    const dates = computeRecurringPayoutDueDates(
+      { daysOfMonth: [2, 17], startDate: '2026-01-01T00:00:00.000Z', endDate: '2026-08-05T00:00:00.000Z' },
+      new Date(2026, 7, 1), new Date(2026, 7, 31, 23, 59, 59),
+    )
+    expect(dates.map(d => d.getDate())).toEqual([2])
+  })
+
+  it('returns an empty array when daysOfMonth is empty', () => {
+    const dates = computeRecurringPayoutDueDates(
+      { daysOfMonth: [], startDate: '2026-01-01T00:00:00.000Z', endDate: null },
+      new Date(2026, 7, 1), new Date(2026, 7, 31),
+    )
+    expect(dates).toEqual([])
+  })
+
+  it('spans multiple months within the requested period', () => {
+    const dates = computeRecurringPayoutDueDates(
+      { daysOfMonth: [15], startDate: '2026-01-01T00:00:00.000Z', endDate: null },
+      new Date(2026, 6, 1), new Date(2026, 8, 30, 23, 59, 59),
+    )
+    expect(dates).toHaveLength(3)
   })
 })

@@ -654,7 +654,7 @@ export const SMM_PRODUCTION_DEFAULT_FILTERS: SmmProductionFilters = {
 interface SmmProductionFilterableRow extends DateFilterableRow {
   smmProjectId: string
   clientName: string | null
-  contentCode: string | null
+  fileCode: string | null
   title: string | null
   status: SmmContentStatus
   serviceType: SmmServiceType
@@ -662,13 +662,16 @@ interface SmmProductionFilterableRow extends DateFilterableRow {
   publicationPlatforms: SmmPublicationPlatform[]
 }
 
+// Поиск ищет по File Code (docs/business/SMM.md, «File Code»), не по
+// прежнему Content Code — тот больше не показывается и не заполняется в
+// новых данных.
 export function filterSmmProductionRows<T extends SmmProductionFilterableRow>(
   rows: T[], filters: SmmProductionFilters, now: Date = new Date(),
 ): T[] {
   const q = filters.search.trim().toLowerCase()
   return rows.filter(r => {
     if (q) {
-      const haystack = [r.contentCode, r.title, r.clientName].filter(Boolean).join(' ').toLowerCase()
+      const haystack = [r.fileCode, r.title, r.clientName].filter(Boolean).join(' ').toLowerCase()
       if (!haystack.includes(q)) return false
     }
     if (filters.smmProjectId !== 'ALL' && r.smmProjectId !== filters.smmProjectId) return false
@@ -680,4 +683,246 @@ export function filterSmmProductionRows<T extends SmmProductionFilterableRow>(
     if (!matchesSmmProductionDateFilter(r, filters.dateFilter, now)) return false
     return true
   })
+}
+
+// ============================================================
+// FILE CODE (следующий этап после 2B, docs/business/SMM.md, «File Code») —
+// единственный человекочитаемый идентификатор готового файла, заменяет
+// прежний двойной Content Code/File Code. Формат:
+// ГГГГ.ММ.ДД-{projectCode}-{editorCode}-{порядковый номер монтажёра}-V{версия}
+// Чистое форматирование живёт здесь; генерация номера (атомарный счётчик,
+// см. «Гонки при генерации номера») — в actions/smm.ts, у базы данных.
+// ============================================================
+
+function padNumber(n: number, width: number): string {
+  return String(n).padStart(width, '0')
+}
+
+export function formatFileCodeDate(date: Date): string {
+  return `${date.getFullYear()}.${padNumber(date.getMonth() + 1, 2)}.${padNumber(date.getDate(), 2)}`
+}
+
+// База БЕЗ версии ("2026.08.09-DIA-AH-017") — формируется один раз при
+// первой передаче в монтаж, дальше не пересчитывается (MontageProject.fileCodeBase).
+export function formatFileCodeBase(date: Date, projectCode: string, editorCode: string, sequence: number): string {
+  return `${formatFileCodeDate(date)}-${projectCode}-${editorCode}-${padNumber(sequence, 3)}`
+}
+
+// Полный File Code конкретной версии — единственное, что видит пользователь
+// как "имя файла" (ТЗ, «Master File Code»: не показывать base и version
+// отдельно как две конкурирующие системы).
+export function formatFileCode(base: string, versionNumber: number): string {
+  return `${base}-V${padNumber(versionNumber, 2)}`
+}
+
+// ============================================================
+// КОНТЕНТ-ПЛАН (следующий этап после 2B, docs/business/SMM.md, «Views») —
+// pivot-представление Publication по площадкам, НЕ отдельные физические
+// поля instagram/telegram/vk/youtube (ТЗ: "если появились новые площадки —
+// backend не меняется"). Чистая функция группировки, площадки, которых нет
+// в данных, просто отсутствуют в результирующем объекте — UI решает, что
+// показать вместо них ("—").
+// ============================================================
+
+export interface SmmContentPlanPlatformCell {
+  publicationId: string
+  status: SmmPublicationStatus
+  plannedPublishAt: string | null
+  publishedAt: string | null
+  url: string | null
+}
+
+interface ContentPlanPublicationInput {
+  id: string
+  platform: SmmPublicationPlatform
+  status: SmmPublicationStatus
+  plannedPublishAt: string | null
+  publishedAt: string | null
+  url: string | null
+}
+
+// Если на одной площадке легитимно несколько публикаций (ТЗ 2B, п.21) —
+// в pivot-ячейку попадает ближайшая по плановой дате, не первая/последняя
+// по порядку создания (иначе ячейка "плавала" бы в зависимости от порядка
+// добавления, а не от реальной хронологии).
+export function buildContentPlanPlatformCells(
+  publications: ContentPlanPublicationInput[],
+): Partial<Record<SmmPublicationPlatform, SmmContentPlanPlatformCell>> {
+  const cells: Partial<Record<SmmPublicationPlatform, SmmContentPlanPlatformCell>> = {}
+  for (const p of publications) {
+    const existing = cells[p.platform]
+    const isCloser = existing && p.plannedPublishAt && existing.plannedPublishAt && p.plannedPublishAt < existing.plannedPublishAt
+    if (!existing || (existing && !existing.plannedPublishAt && p.plannedPublishAt) || isCloser) {
+      cells[p.platform] = { publicationId: p.id, status: p.status, plannedPublishAt: p.plannedPublishAt, publishedAt: p.publishedAt, url: p.url }
+    }
+  }
+  return cells
+}
+
+// ============================================================
+// ГЛОБАЛЬНЫЙ КАЛЕНДАРЬ SMM (следующий этап после 2B, docs/business/SMM.md,
+// «Views») — /admin/smm/calendar ничего своего не хранит, агрегирует уже
+// существующие источники: Publication (план/факт), ScheduleEvent SMM-съёмок,
+// дедлайны ContentItem/MontageProject. Здесь — только объединение уже
+// смаппленных построчных источников в один отсортированный список +
+// фильтрация; сама выборка строк из БД — в actions/smm.ts.
+// ============================================================
+
+export type SmmCalendarEventKind = 'PUBLICATION' | 'SHOOT' | 'DEADLINE'
+
+export interface SmmCalendarEvent {
+  id: string
+  kind: SmmCalendarEventKind
+  date: string
+  title: string
+  smmProjectId: string
+  clientName: string | null
+  contentItemId: string | null
+  publicationId: string | null
+  platform: SmmPublicationPlatform | null
+  scheduleEventId: string | null
+  orderId: string | null
+}
+
+interface CalendarPublicationInput {
+  id: string; date: string; title: string; smmProjectId: string; clientName: string | null; contentItemId: string; platform: SmmPublicationPlatform
+}
+interface CalendarShootInput {
+  id: string; date: string; title: string; smmProjectId: string; clientName: string | null; scheduleEventId: string; orderId: string | null
+}
+interface CalendarDeadlineInput {
+  id: string; date: string; title: string; smmProjectId: string; clientName: string | null; contentItemId: string
+}
+
+export function buildSmmCalendarEvents(input: {
+  publications: CalendarPublicationInput[]
+  shoots: CalendarShootInput[]
+  deadlines: CalendarDeadlineInput[]
+}): SmmCalendarEvent[] {
+  const events: SmmCalendarEvent[] = [
+    ...input.publications.map(p => ({
+      id: `pub-${p.id}`, kind: 'PUBLICATION' as const, date: p.date, title: p.title, smmProjectId: p.smmProjectId, clientName: p.clientName,
+      contentItemId: p.contentItemId, publicationId: p.id, platform: p.platform, scheduleEventId: null, orderId: null,
+    })),
+    ...input.shoots.map(s => ({
+      id: `shoot-${s.id}`, kind: 'SHOOT' as const, date: s.date, title: s.title, smmProjectId: s.smmProjectId, clientName: s.clientName,
+      contentItemId: null, publicationId: null, platform: null, scheduleEventId: s.scheduleEventId, orderId: s.orderId,
+    })),
+    ...input.deadlines.map(d => ({
+      id: `deadline-${d.id}`, kind: 'DEADLINE' as const, date: d.date, title: d.title, smmProjectId: d.smmProjectId, clientName: d.clientName,
+      contentItemId: d.contentItemId, publicationId: null, platform: null, scheduleEventId: null, orderId: null,
+    })),
+  ]
+  return events.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+}
+
+export interface SmmCalendarFilters {
+  smmProjectId: string | 'ALL'
+  kind: SmmCalendarEventKind | 'ALL'
+  platform: SmmPublicationPlatform | 'ALL'
+}
+
+export function filterSmmCalendarEvents(events: SmmCalendarEvent[], filters: SmmCalendarFilters): SmmCalendarEvent[] {
+  return events.filter(e => {
+    if (filters.smmProjectId !== 'ALL' && e.smmProjectId !== filters.smmProjectId) return false
+    if (filters.kind !== 'ALL' && e.kind !== filters.kind) return false
+    if (filters.platform !== 'ALL' && e.platform !== filters.platform) return false
+    return true
+  })
+}
+
+// ============================================================
+// АНАЛИТИКА (следующий этап после 2B, docs/business/SMM.md, «Views») —
+// агрегаты считаются из уже загруженного набора строк аналитической таблицы
+// (latest snapshot на публикацию), не отдельным SQL-агрегатом — тот же
+// объём данных, что и так на экране (ТЗ 2B «Production KPI», тот же приём).
+// ============================================================
+
+export function median(values: number[]): number {
+  if (values.length === 0) return 0
+  const sorted = [...values].sort((a, b) => a - b)
+  const mid = Math.floor(sorted.length / 2)
+  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid]
+}
+
+export interface SmmAnalyticsAggregates {
+  publishedCount: number
+  totalViews: number
+  averageViews: number
+  medianViews: number
+  bestContentTitle: string | null
+  bestContentViews: number | null
+  followersGained: number
+}
+
+interface AnalyticsRowInput {
+  status: SmmPublicationStatus
+  title: string | null
+  latestViews: number | null
+  latestFollowersGained: number | null
+}
+
+export function computeSmmAnalyticsAggregates(rows: AnalyticsRowInput[]): SmmAnalyticsAggregates {
+  const published = rows.filter(r => r.status === 'PUBLISHED')
+  const viewsList = published.map(r => r.latestViews).filter((v): v is number => v != null)
+  const totalViews = viewsList.reduce((sum, v) => sum + v, 0)
+
+  let bestContentTitle: string | null = null
+  let bestContentViews: number | null = null
+  for (const r of published) {
+    if (r.latestViews != null && (bestContentViews === null || r.latestViews > bestContentViews)) {
+      bestContentViews = r.latestViews
+      bestContentTitle = r.title
+    }
+  }
+
+  return {
+    publishedCount: published.length,
+    totalViews,
+    averageViews: viewsList.length > 0 ? Math.round(totalViews / viewsList.length) : 0,
+    medianViews: Math.round(median(viewsList)),
+    bestContentTitle,
+    bestContentViews,
+    followersGained: published.reduce((sum, r) => sum + (r.latestFollowersGained ?? 0), 0),
+  }
+}
+
+// ============================================================
+// РЕГУЛЯРНЫЕ ВЫПЛАТЫ (следующий этап после 2B, docs/business/SMM.md,
+// «Регулярные выплаты») — SmmRecurringPayout хранит ТОЛЬКО план (дни месяца
+// + границы действия), сами даты обязательств за конкретный период
+// вычисляются здесь на лету, не хранятся построчно на годы вперёд (тот же
+// принцип, что computeSmmBillingPeriod). Дни за пределами длины конкретного
+// месяца (31 в феврале) клэмпятся к последнему дню месяца.
+// ============================================================
+
+export interface SmmRecurringPayoutScheduleInput {
+  daysOfMonth: number[]
+  startDate: string
+  endDate: string | null
+}
+
+export function computeRecurringPayoutDueDates(payout: SmmRecurringPayoutScheduleInput, periodStart: Date, periodEnd: Date): Date[] {
+  if (payout.daysOfMonth.length === 0) return []
+  const start = new Date(payout.startDate)
+  const end = payout.endDate ? new Date(payout.endDate) : null
+  const dates: Date[] = []
+
+  let cursor = new Date(periodStart.getFullYear(), periodStart.getMonth(), 1)
+  const lastMonth = new Date(periodEnd.getFullYear(), periodEnd.getMonth(), 1)
+  while (cursor <= lastMonth) {
+    const year = cursor.getFullYear()
+    const month = cursor.getMonth()
+    const daysInMonth = new Date(year, month + 1, 0).getDate()
+    for (const day of payout.daysOfMonth) {
+      const clampedDay = Math.min(day, daysInMonth)
+      const due = new Date(year, month, clampedDay)
+      if (due < start) continue
+      if (end && due > end) continue
+      if (due < periodStart || due > periodEnd) continue
+      dates.push(due)
+    }
+    cursor = new Date(year, month + 1, 1)
+  }
+  return dates.sort((a, b) => a.getTime() - b.getTime())
 }
