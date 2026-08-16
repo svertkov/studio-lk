@@ -53,9 +53,14 @@ function materialsRowClassName(state: MontageMaterialsState): string {
 // (getMontageMaterialsMissingFields — та же причина, что видна в "Требует
 // внимания", просто в виде плашки, а не текста).
 function MontageMaterialsCell({ project, onOpenMaterials }: { project: MontageProjectDTO; onOpenMaterials: () => void }) {
-  const { materialsState, sourceMaterialsNasUrl, mountedMaterialNasUrl } = project
+  // effectiveSourceMaterialsNasUrl (не сырое project.sourceMaterialsNasUrl) —
+  // та же ссылка, что уже используется для materialsState/getMontageAttentionReasons
+  // на сервере (см. toDTO, actions/montage.ts): если у связанного заказа уже
+  // есть NAS-бэкап со съёмки, таблица не должна показывать "нет исходников",
+  // пока carточка показывает их присутствующими (единый источник данных).
+  const { materialsState, effectiveSourceMaterialsNasUrl, mountedMaterialNasUrl } = project
 
-  if (materialsState === 'NOT_TRACKED' && !sourceMaterialsNasUrl && !mountedMaterialNasUrl) {
+  if (materialsState === 'NOT_TRACKED' && !effectiveSourceMaterialsNasUrl && !mountedMaterialNasUrl) {
     return <span className="text-zinc-600 text-xs">—</span>
   }
 
@@ -71,12 +76,14 @@ function MontageMaterialsCell({ project, onOpenMaterials }: { project: MontagePr
     )
   }
 
-  const { missingSource, missingFinal } = getMontageMaterialsMissingFields(project)
+  const { missingSource, missingFinal } = getMontageMaterialsMissingFields({
+    status: project.status, sourceMaterialsNasUrl: effectiveSourceMaterialsNasUrl, mountedMaterialNasUrl: project.mountedMaterialNasUrl,
+  })
 
   return (
     <div className="flex flex-col items-start gap-1">
-      {sourceMaterialsNasUrl ? (
-        <GlowPill as="a" href={sourceMaterialsNasUrl} ariaLabel="Открыть исходники на NAS" color="green" size="sm" icon={Cloud}>
+      {effectiveSourceMaterialsNasUrl ? (
+        <GlowPill as="a" href={effectiveSourceMaterialsNasUrl} ariaLabel="Открыть исходники на NAS" color="green" size="sm" icon={Cloud}>
           Исходники NAS
         </GlowPill>
       ) : missingSource ? (
@@ -101,7 +108,7 @@ function MontageMaterialsCell({ project, onOpenMaterials }: { project: MontagePr
           Нет готового
         </GlowPill>
       ) : null}
-      {!sourceMaterialsNasUrl && !missingSource && !mountedMaterialNasUrl && !missingFinal && (
+      {!effectiveSourceMaterialsNasUrl && !missingSource && !mountedMaterialNasUrl && !missingFinal && (
         <span className="text-zinc-600 text-xs">—</span>
       )}
     </div>

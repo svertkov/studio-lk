@@ -10,8 +10,9 @@ import type {
 } from '@prisma/client'
 import {
   computeMontageProfit, computeMontageDeadline, isMontageOverdue, montageDeadlineLabel,
-  getMontageSourceMaterialsUrl, getMontageAttentionReasons, mapMontageStatusToOrderStatus,
+  getMontageSourceMaterialsUrl, getMontageSourceMaterialsNasUrl, getMontageAttentionReasons, mapMontageStatusToOrderStatus,
   computeMontageDashboardStats, classifyMontageContentType, getMontageMaterialsState, MONTAGE_ARCHIVABLE_STATUSES,
+  buildMontageAutoTitle,
   type MontageAttentionReason, type MontageDashboardStats, type MontageMaterialsState,
 } from '@/lib/montage-model'
 import { getDocumentDisplayNumber } from '@/lib/document-model'
@@ -61,7 +62,7 @@ function revalidateMontagePaths(clientId?: string | null): void {
 
 type MontageOrder = Pick<Order, 'id' | 'title' | 'status' | 'clientId' | 'clientName' | 'companyName'> & {
   client: Pick<Client, 'name' | 'companyName'> | null
-  scheduleEvent: { yandexDiskUrl: string | null } | null
+  scheduleEvent: { yandexDiskUrl: string | null; nasBackupUrl: string | null } | null
 }
 type MontageClient = Pick<Client, 'id' | 'name' | 'companyName'>
 type MontageEditor = Pick<EditorProfile, 'id' | 'displayName'>
@@ -79,7 +80,7 @@ const MONTAGE_INCLUDE = {
     select: {
       id: true, title: true, status: true, clientId: true, clientName: true, companyName: true,
       client: { select: { name: true, companyName: true } },
-      scheduleEvent: { select: { yandexDiskUrl: true } },
+      scheduleEvent: { select: { yandexDiskUrl: true, nasBackupUrl: true } },
     },
   },
   client: { select: { id: true, name: true, companyName: true } },
@@ -152,7 +153,18 @@ export interface MontageProjectDTO {
   effectiveSourceMaterialsUrl: string | null
   // Контроль материалов на NAS (ТЗ "точечно доработать контроль материалов") —
   // два независимых NAS-поля, единое состояние — см. getMontageMaterialsState.
+  // Сырое собственное поле проекта (для формы/ручного переопределения) —
+  // сравни с effectiveSourceMaterialsNasUrl ниже.
   sourceMaterialsNasUrl: string | null
+  // Эффективная ссылка на исходники на NAS — см. getMontageSourceMaterialsNasUrl
+  // (montage-model.ts): собственное поле проекта, иначе NAS-бэкап связанного
+  // заказа (order.scheduleEvent.nasBackupUrl). Используется везде, где раньше
+  // читалось сырое sourceMaterialsNasUrl для решения "есть ли ссылка" (карточка,
+  // таблица проектов, "Требует внимания", дашборд) — упрощение карточки
+  // монтажа, раздел "Убрать дублирование ссылок на исходники": администратор
+  // не должен вводить одну и ту же NAS-ссылку дважды (один раз на заказе, один
+  // раз на проекте монтажа).
+  effectiveSourceMaterialsNasUrl: string | null
   mountedMaterialNasUrl: string | null
   materialsState: MontageMaterialsState
   deliveryUrl: string | null
@@ -203,12 +215,16 @@ function toDTO(row: MontageProjectWithRelations): MontageProjectDTO {
     { sourceMaterialsUrl: row.sourceMaterialsUrl },
     row.order?.scheduleEvent?.yandexDiskUrl ?? null,
   )
+  const effectiveSourceMaterialsNasUrl = getMontageSourceMaterialsNasUrl(
+    { sourceMaterialsNasUrl: row.sourceMaterialsNasUrl },
+    row.order?.scheduleEvent?.nasBackupUrl ?? null,
+  )
   const deadlineState = { deadlineDate: row.deadlineDate, status: row.status, deliveredAt: row.deliveredAt, isArchived: row.isArchived }
   const hasNoClientLink = !row.orderId && !row.clientId
   const isHistoricalImport = !!row.importSource
   const materialsState = getMontageMaterialsState({
     status: row.status, sourceReceivedAt: row.sourceReceivedAt,
-    sourceMaterialsNasUrl: row.sourceMaterialsNasUrl, mountedMaterialNasUrl: row.mountedMaterialNasUrl,
+    sourceMaterialsNasUrl: effectiveSourceMaterialsNasUrl, mountedMaterialNasUrl: row.mountedMaterialNasUrl,
     isArchived: row.isArchived,
   })
 
@@ -253,6 +269,7 @@ function toDTO(row: MontageProjectWithRelations): MontageProjectDTO {
     sourceMaterialsUrl: row.sourceMaterialsUrl,
     effectiveSourceMaterialsUrl,
     sourceMaterialsNasUrl: row.sourceMaterialsNasUrl,
+    effectiveSourceMaterialsNasUrl,
     mountedMaterialNasUrl: row.mountedMaterialNasUrl,
     materialsState,
     deliveryUrl: row.deliveryUrl,
@@ -272,7 +289,7 @@ function toDTO(row: MontageProjectWithRelations): MontageProjectDTO {
     deadlineLabel: montageDeadlineLabel(deadlineState),
     attentionReasons: getMontageAttentionReasons({
       status: row.status, editorId: row.editorId, deadlineDate: row.deadlineDate, deliveredAt: row.deliveredAt,
-      effectiveSourceMaterialsUrl, sourceMaterialsNasUrl: row.sourceMaterialsNasUrl, mountedMaterialNasUrl: row.mountedMaterialNasUrl,
+      effectiveSourceMaterialsUrl, sourceMaterialsNasUrl: effectiveSourceMaterialsNasUrl, mountedMaterialNasUrl: row.mountedMaterialNasUrl,
       sourceReceivedAt: row.sourceReceivedAt,
       clientAmount: row.clientAmount, clientPaymentStatus: row.clientPaymentStatus,
       title: row.title, description: row.description, hasNoClientLink, isHistoricalImport,
@@ -502,6 +519,33 @@ export async function createMontageProject(
       }
     }
 
+    // Автозаполнение названия (упрощение карточки монтажа) — та же логика,
+    // что ensureMontageProjectForOrder использует для автосозданных проектов;
+    // здесь нужна отдельно, потому что это РУЧНОЕ создание (карточка
+    // "Привязать к существующему заказу" в MontageProjectModal.tsx), не
+    // проходящее через ensureMontageProjectForOrder вовсе. Срабатывает, только
+    // если админ не ввёл название сам (форма стартует с пустым title, когда
+    // проект ещё не существует, см. buildMontageFormValues(null)).
+    let autoTitle: string | null = null
+    if (!input.title?.trim() && input.orderId) {
+      const orderForTitle = await prisma.order.findUnique({
+        where: { id: input.orderId },
+        select: {
+          serviceType: true, clientName: true, plannedStartTime: true,
+          client: { select: { name: true } },
+          scheduleEvent: { select: { startAt: true } },
+        },
+      })
+      if (orderForTitle) {
+        const classification = orderForTitle.serviceType ? classifyMontageContentType(orderForTitle.serviceType) : null
+        autoTitle = buildMontageAutoTitle({
+          contentType: classification?.contentType ?? null,
+          shootDate: orderForTitle.scheduleEvent?.startAt ?? orderForTitle.plannedStartTime,
+          clientName: orderForTitle.client?.name ?? orderForTitle.clientName,
+        })
+      }
+    }
+
     const deadlineDate = computeMontageDeadline({
       sourceReceivedAt: input.sourceReceivedAt ?? null,
       deadlineType: input.deadlineType ?? null,
@@ -515,7 +559,7 @@ export async function createMontageProject(
       data: {
         orderId: input.orderId ?? null,
         clientId: input.orderId ? null : (input.clientId ?? null),
-        title: input.title?.trim() || null,
+        title: input.title?.trim() || autoTitle,
         description: input.description?.trim() || null,
         contentType: input.contentType ?? null,
         customContentType: resolveCustomContentType(input.contentType, input.customContentType),
@@ -899,9 +943,10 @@ export async function ensureMontageProjectForOrder(orderId: string): Promise<voi
       const order = await tx.order.findUnique({
         where: { id: orderId },
         select: {
-          title: true, serviceType: true, clientId: true,
+          serviceType: true, clientId: true, plannedStartTime: true,
           client: { select: { name: true } },
           clientName: true,
+          scheduleEvent: { select: { startAt: true } },
         },
       })
       if (!order) return { created: false as const }
@@ -912,10 +957,24 @@ export async function ensureMontageProjectForOrder(orderId: string): Promise<voi
       // импорт (classifyMontageContentType, montage-model.ts), а не заводим
       // вторую эвристику здесь (AGENTS.md, п.4: не дублировать логику).
       const classification = order.serviceType ? classifyMontageContentType(order.serviceType) : null
+      // Дата съёмки — ScheduleEvent, если он есть, побеждает над собственным
+      // plannedStartTime заказа (AGENTS.md, п.3: поля связанной записи
+      // расписания — источник правды поверх собственных полей Order), иначе
+      // берём то, что есть у самого заказа (заказы, созданные вручную через
+      // CRM без события календаря).
+      const shootDate = order.scheduleEvent?.startAt ?? order.plannedStartTime
+      const autoTitle = buildMontageAutoTitle({
+        contentType: classification?.contentType ?? null,
+        shootDate,
+        clientName: clientLabel,
+      })
       await tx.montageProject.create({
         data: {
           orderId,
-          title: order.title ?? (clientLabel ? `Монтаж — ${clientLabel}` : null),
+          // Автозаполнение названия (упрощение карточки монтажа, раздел
+          // "Автозаполнение названия") — редактируемое значение по умолчанию,
+          // не финальное имя: администратор может изменить его в любой момент.
+          title: autoTitle,
           contentType: classification?.contentType ?? null,
           customContentType: classification?.customContentType ?? null,
           // NEW — "ещё не начали", покрывает и то, что раньше было NEEDS_INFO

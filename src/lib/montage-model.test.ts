@@ -64,6 +64,7 @@ function makeProject(overrides: Partial<MontageProjectDTO> = {}): MontageProject
     sourceMaterialsUrl: 'https://disk.yandex.ru/source',
     effectiveSourceMaterialsUrl: 'https://disk.yandex.ru/source',
     sourceMaterialsNasUrl: null,
+    effectiveSourceMaterialsNasUrl: null,
     mountedMaterialNasUrl: null,
     materialsState: 'MISSING',
     deliveryUrl: null,
@@ -647,7 +648,7 @@ describe('computeMontageDashboardStats — единый источник KPI д�
       deadlineDate: '2025-10-17',
       deliveredAt: '2025-10-16',
       effectiveSourceMaterialsUrl: 'https://source',
-      sourceMaterialsNasUrl: 'https://nas/source',
+      effectiveSourceMaterialsNasUrl: 'https://nas/source',
       mountedMaterialNasUrl: 'https://nas',
       title: 'Монтаж подкаста',
       description: null,
@@ -751,14 +752,14 @@ describe('computeMontageDashboardStats — единый источник KPI д�
 
   it('a project missing NAS materials (received on/after the tracking date) counts toward attentionCount', () => {
     const stats = computeMontageDashboardStats([
-      makeStatsInput({ sourceReceivedAt: '2026-07-08', sourceMaterialsNasUrl: null, mountedMaterialNasUrl: null }),
+      makeStatsInput({ sourceReceivedAt: '2026-07-08', effectiveSourceMaterialsNasUrl: null, mountedMaterialNasUrl: null }),
     ], now)
     expect(stats.attentionCount).toBe(1)
   })
 
   it('the same missing materials do NOT count toward attentionCount for a project received before the tracking date', () => {
     const stats = computeMontageDashboardStats([
-      makeStatsInput({ sourceReceivedAt: '2026-07-07', sourceMaterialsNasUrl: null, mountedMaterialNasUrl: null }),
+      makeStatsInput({ sourceReceivedAt: '2026-07-07', effectiveSourceMaterialsNasUrl: null, mountedMaterialNasUrl: null }),
     ], now)
     expect(stats.attentionCount).toBe(0)
   })

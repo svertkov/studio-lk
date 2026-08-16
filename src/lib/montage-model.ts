@@ -109,6 +109,20 @@ export const MONTAGE_CONTENT_TYPE_LABELS: Record<MontageContentType, string> = {
   OTHER:         'Прочее',
 }
 
+// Родительный падеж — отдельная карта ТОЛЬКО для шаблона автоназвания
+// (buildMontageAutoTitle ниже): "Монтаж подкаста", а не "Монтаж Подкаст".
+// MONTAGE_CONTENT_TYPE_LABELS (именительный) продолжает использоваться в
+// select'ах/таблицах, где склонение было бы неверным — не переиспользуем её
+// вместо этой, чтобы не сломать существующие места.
+export const MONTAGE_CONTENT_TYPE_GENITIVE_LABELS: Record<MontageContentType, string> = {
+  PODCAST:       'подкаста',
+  SHORT_FORM:    'рилса',
+  TALKING_HEAD:  'говорящей головы',
+  MOTION_DESIGN: 'motion-проекта',
+  PRESENTATION:  'презентации',
+  OTHER:         'проекта',
+}
+
 // Ключевые слова для автоматической классификации исторических/импортированных
 // проектов по названию (ТЗ п.7) — ПОРЯДОК ВАЖЕН: правила проверяются по
 // очереди, побеждает первое совпадение. PRESENTATION проверяется раньше
@@ -151,6 +165,41 @@ export function classifyMontageContentType(text: string): MontageContentTypeClas
     if (rule.pattern.test(trimmed)) return { contentType: rule.type, customContentType: null }
   }
   return { contentType: 'OTHER', customContentType: trimmed || null }
+}
+
+function formatShootDateForTitle(value: string | Date | null): string | null {
+  if (!value) return null
+  const d = new Date(value)
+  const dd = String(d.getDate()).padStart(2, '0')
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  return `${dd}.${mm}.${d.getFullYear()}`
+}
+
+export interface MontageAutoTitleInput {
+  contentType: MontageContentType | null
+  shootDate: string | Date | null
+  clientName: string | null
+}
+
+// Автоназвание проекта при создании (упрощение карточки монтажа, раздел
+// "Автозаполнение названия"): "Монтаж <тип, р.п.> от <дата съёмки>
+// (<клиент>)" — например "Монтаж подкаста от 30.07.2026 (Иванов Иван)".
+// Каждый кусок необязателен по отдельности (проект может быть создан без
+// известной даты съёмки/клиента) — при отсутствии данных кусок просто
+// пропускается, а не подставляется заглушкой; поле title в форме остаётся
+// обычным редактируемым текстом в любом случае, это только значение по
+// умолчанию. Имя клиента используется как хранится (Client.name/
+// Order.clientName, "Имя Фамилия") — на платформе нет отдельных
+// структурированных полей имя/фамилия, надёжно переставить их местами из
+// одной свободнотекстовой строки нельзя, поэтому шаблон сознательно не
+// пытается получить порядок "Фамилия Имя" из примеров ТЗ.
+export function buildMontageAutoTitle(input: MontageAutoTitleInput): string {
+  const typeLabel = MONTAGE_CONTENT_TYPE_GENITIVE_LABELS[input.contentType ?? 'OTHER']
+  const dateLabel = formatShootDateForTitle(input.shootDate)
+  let title = `Монтаж ${typeLabel}`
+  if (dateLabel) title += ` от ${dateLabel}`
+  if (input.clientName) title += ` (${input.clientName})`
+  return title
 }
 
 // ============================================================
@@ -304,6 +353,22 @@ export function getMontageSourceMaterialsUrl(
   return project.sourceMaterialsUrl ?? orderYandexDiskUrl ?? null
 }
 
+// Тот же принцип, что getMontageSourceMaterialsUrl выше, но для NAS-ссылки на
+// исходники (упрощение карточки монтажа, раздел "Убрать дублирование ссылок
+// на исходники"): ScheduleEvent.nasBackupUrl — это уже сохранённая при
+// бронировании NAS-копия отснятого материала (см. схему), тот же смысл, что
+// MontageProject.sourceMaterialsNasUrl, только зафиксированный раньше по
+// времени. Собственное поле проекта побеждает, если задано (нужно для
+// самостоятельных проектов без заказа или когда фактическая ссылка
+// отличается), иначе — ссылка заказа, чтобы администратору не приходилось
+// вводить её дважды.
+export function getMontageSourceMaterialsNasUrl(
+  project: { sourceMaterialsNasUrl: string | null },
+  orderNasBackupUrl: string | null,
+): string | null {
+  return project.sourceMaterialsNasUrl ?? orderNasBackupUrl ?? null
+}
+
 // Архивировать можно только проект, уже покинувший производственный цикл —
 // та же граница, что actions/montage.ts проверяет на сервере перед
 // archiveMontageProject; экспортирована отсюда (а не задана заново в
@@ -438,6 +503,9 @@ export interface MontageAttentionInput {
   effectiveSourceMaterialsUrl: string | null
   // Контроль материалов на NAS (см. getMontageMaterialsState выше) — два
   // независимых NAS-поля + дата поступления, обязательность зависит от статуса.
+  // sourceMaterialsNasUrl здесь ожидается уже РЕЗОЛВЛЕННЫМ (см.
+  // getMontageSourceMaterialsNasUrl) — тем же принципом, что и
+  // effectiveSourceMaterialsUrl выше, а не сырым MontageProject.sourceMaterialsNasUrl.
   sourceReceivedAt: string | Date | null
   sourceMaterialsNasUrl: string | null
   mountedMaterialNasUrl: string | null
@@ -557,7 +625,10 @@ export interface MontageStatsInput {
   deadlineDate: string | Date | null
   deliveredAt: string | Date | null
   effectiveSourceMaterialsUrl: string | null
-  sourceMaterialsNasUrl: string | null
+  // Уже РЕЗОЛВЛЕННАЯ ссылка на исходники на NAS (см. getMontageSourceMaterialsNasUrl)
+  // — та же причина, что и у effectiveSourceMaterialsUrl выше: без заказа не
+  // считаем ссылку отсутствующей, если она уже есть у связанного заказа.
+  effectiveSourceMaterialsNasUrl: string | null
   mountedMaterialNasUrl: string | null
   title: string | null
   description: string | null
@@ -629,7 +700,7 @@ export function computeMontageDashboardStats(projects: MontageStatsInput[], now:
     const attention = getMontageAttentionReasons({
       status: p.status, editorId: p.editorId, deadlineDate: p.deadlineDate, deliveredAt: p.deliveredAt,
       effectiveSourceMaterialsUrl: p.effectiveSourceMaterialsUrl, mountedMaterialNasUrl: p.mountedMaterialNasUrl,
-      sourceReceivedAt: p.sourceReceivedAt, sourceMaterialsNasUrl: p.sourceMaterialsNasUrl,
+      sourceReceivedAt: p.sourceReceivedAt, sourceMaterialsNasUrl: p.effectiveSourceMaterialsNasUrl,
       clientAmount: p.clientAmount, clientPaymentStatus: p.clientPaymentStatus, title: p.title, description: p.description,
       hasNoClientLink: p.hasNoClientLink, isHistoricalImport: p.isHistoricalImport, isArchived: p.isArchived,
     }, now)
